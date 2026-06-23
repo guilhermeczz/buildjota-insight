@@ -1,4 +1,6 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import type { Session } from "@supabase/supabase-js";
+import { supabase } from "@/lib/supabase";
 
 export type UserRole = "admin" | "operador" | "visualizador";
 
@@ -7,103 +9,75 @@ export type AppUser = {
   nome: string;
   email: string;
   role: UserRole;
-  senha: string; // mock only
   ativo: boolean;
   created_at: string;
 };
 
-const USERS_KEY = "radar_cj_users";
-const SESSION_KEY = "radar_cj_session";
-
-const SEED_USERS: AppUser[] = [
-  {
-    id: "u1",
-    nome: "Administrador",
-    email: "admin@construjota.com.br",
-    role: "admin",
-    senha: "admin123",
-    ativo: true,
-    created_at: new Date().toISOString(),
-  },
-  {
-    id: "u2",
-    nome: "João Operador",
-    email: "joao@construjota.com.br",
-    role: "operador",
-    senha: "operador123",
-    ativo: true,
-    created_at: new Date().toISOString(),
-  },
-  {
-    id: "u3",
-    nome: "Maria Visualizadora",
-    email: "maria@construjota.com.br",
-    role: "visualizador",
-    senha: "viewer123",
-    ativo: false,
-    created_at: new Date().toISOString(),
-  },
-];
-
-export function loadUsers(): AppUser[] {
-  try {
-    const raw = localStorage.getItem(USERS_KEY);
-    if (!raw) {
-      localStorage.setItem(USERS_KEY, JSON.stringify(SEED_USERS));
-      return SEED_USERS;
-    }
-    return JSON.parse(raw);
-  } catch {
-    return SEED_USERS;
-  }
-}
-
-export function saveUsers(users: AppUser[]) {
-  localStorage.setItem(USERS_KEY, JSON.stringify(users));
-}
-
-type SessionUser = Omit<AppUser, "senha">;
-
 type AuthCtx = {
-  user: SessionUser | null;
+  user: AppUser | null;
   loading: boolean;
   login: (email: string, senha: string) => Promise<{ ok: boolean; error?: string }>;
-  logout: () => void;
+  logout: () => Promise<void>;
 };
 
 const Ctx = createContext<AuthCtx | null>(null);
 
+async function loadProfile(session: Session | null): Promise<AppUser | null> {
+  if (!session?.user) return null;
+
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id,nome,email,role,ativo,created_at")
+    .eq("id", session.user.id)
+    .maybeSingle();
+
+  if (error || !data || !data.ativo) {
+    await supabase.auth.signOut();
+    return null;
+  }
+
+  return data as AppUser;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<SessionUser | null>(null);
+  const [user, setUser] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    loadUsers();
-    try {
-      const raw = localStorage.getItem(SESSION_KEY);
-      if (raw) setUser(JSON.parse(raw));
-    } catch {}
-    setLoading(false);
+    let mounted = true;
+
+    const refreshUser = async (session: Session | null) => {
+      const profile = await loadProfile(session);
+      if (!mounted) return;
+      setUser(profile);
+      setLoading(false);
+    };
+
+    supabase.auth.getSession().then(({ data }) => refreshUser(data.session));
+
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      refreshUser(session);
+    });
+
+    return () => {
+      mounted = false;
+      data.subscription.unsubscribe();
+    };
   }, []);
 
   const login: AuthCtx["login"] = async (email, senha) => {
-    await new Promise((r) => setTimeout(r, 700)); // UX feel
-    const users = loadUsers();
-    const found = users.find(
-      (u) => u.email.toLowerCase() === email.toLowerCase().trim(),
-    );
-    if (!found) return { ok: false, error: "Usuário não encontrado." };
-    if (!found.ativo) return { ok: false, error: "Usuário inativo. Contate o administrador." };
-    if (found.senha !== senha) return { ok: false, error: "Senha incorreta." };
-    const { senha: _s, ...rest } = found;
-    setUser(rest);
-    localStorage.setItem(SESSION_KEY, JSON.stringify(rest));
+    const { error } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password: senha,
+    });
+
+    if (error) return { ok: false, error: "E-mail ou senha inválidos." };
     return { ok: true };
   };
 
-  const logout = () => {
+  const logout = async () => {
     setUser(null);
-    localStorage.removeItem(SESSION_KEY);
+    await supabase.auth.signOut();
   };
 
   return <Ctx.Provider value={{ user, loading, login, logout }}>{children}</Ctx.Provider>;

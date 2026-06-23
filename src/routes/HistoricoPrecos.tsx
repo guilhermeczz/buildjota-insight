@@ -1,74 +1,197 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import PageHeader from "@/components/layout/PageHeader";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { historico, mapeamentos, fornecedores, familias, getProduto, getFornecedor, getMapeamento, formatBRL, formatPct, formatDateTime } from "@/lib/mock-data";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { formatBRL, formatDateTime, formatPct } from "@/lib/format";
+import { supabase } from "@/lib/supabase";
+import { toast } from "sonner";
+
+type Familia = {
+  id: string;
+  nome: string;
+};
+
+type Concorrente = {
+  id: string;
+  nome: string;
+};
+
+type HistoricoRow = {
+  id: string;
+  preco_construjota: number;
+  preco_concorrente: number;
+  diferenca_valor: number;
+  diferenca_percentual: number;
+  status: "sucesso" | "erro" | "pendente";
+  mensagem_erro: string | null;
+  coletado_em: string;
+  mapeamentos_sku?: {
+    sku_concorrente: string;
+    produto_id: string;
+    concorrente_id: string;
+    produtos?: {
+      nome: string;
+      sku_interno: string;
+      familia_id: string | null;
+      familias?: { nome: string } | null;
+    } | null;
+    concorrentes?: { nome: string } | null;
+  } | null;
+};
+
+function normalizeHistorico(row: HistoricoRow): HistoricoRow {
+  return {
+    ...row,
+    preco_construjota: Number(row.preco_construjota ?? 0),
+    preco_concorrente: Number(row.preco_concorrente ?? 0),
+    diferenca_valor: Number(row.diferenca_valor ?? 0),
+    diferenca_percentual: Number(row.diferenca_percentual ?? 0),
+  };
+}
 
 export default function HistoricoPrecos() {
   const [periodo, setPeriodo] = useState("7");
   const [familiaFilter, setFamiliaFilter] = useState("todas");
-  const [fornecedorFilter, setFornecedorFilter] = useState("todos");
+  const [concorrenteFilter, setConcorrenteFilter] = useState("todos");
   const [statusFilter, setStatusFilter] = useState("todos");
   const [q, setQ] = useState("");
+  const [familias, setFamilias] = useState<Familia[]>([]);
+  const [concorrentes, setConcorrentes] = useState<Concorrente[]>([]);
+  const [rows, setRows] = useState<HistoricoRow[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - parseInt(periodo));
+  async function refreshData() {
+    const [familiasResult, concorrentesResult, historicoResult] = await Promise.all([
+      supabase.from("familias").select("id,nome").order("nome"),
+      supabase.from("concorrentes").select("id,nome").order("nome"),
+      supabase
+        .from("historico_precos")
+        .select(
+          "id,preco_construjota,preco_concorrente,diferenca_valor,diferenca_percentual,status,mensagem_erro,coletado_em,mapeamentos_sku(sku_concorrente,produto_id,concorrente_id,produtos(nome,sku_interno,familia_id,familias(nome)),concorrentes(nome))",
+        )
+        .order("coletado_em", { ascending: false })
+        .limit(1000),
+    ]);
 
-  const rows = historico
-    .filter((h) => new Date(h.coletado_em) >= cutoff || periodo === "0")
-    .filter((h) => {
-      const m = getMapeamento(h.mapeamento_id);
-      if (!m) return false;
-      const p = getProduto(m.produto_id)!;
-      if (familiaFilter !== "todas" && p.familia_id !== familiaFilter) return false;
-      if (fornecedorFilter !== "todos" && m.fornecedor_id !== fornecedorFilter) return false;
-      if (statusFilter === "sucesso" && h.status !== "sucesso") return false;
-      if (statusFilter === "erro" && h.status !== "erro") return false;
-      if (statusFilter === "mais-caros" && h.diferenca_valor <= 0) return false;
-      if (statusFilter === "mais-baratos" && h.diferenca_valor >= 0) return false;
+    if (familiasResult.error || concorrentesResult.error || historicoResult.error) {
+      toast.error("Nao foi possivel carregar o historico");
+      setLoading(false);
+      return;
+    }
+
+    setFamilias((familiasResult.data ?? []) as Familia[]);
+    setConcorrentes((concorrentesResult.data ?? []) as Concorrente[]);
+    setRows(((historicoResult.data ?? []) as HistoricoRow[]).map(normalizeHistorico));
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    void refreshData();
+  }, []);
+
+  const filtered = useMemo(() => {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - Number(periodo));
+
+    return rows.filter((row) => {
+      const mapeamento = row.mapeamentos_sku;
+      const produto = mapeamento?.produtos;
+      const coletadoEm = new Date(row.coletado_em);
+
+      if (periodo !== "0" && coletadoEm < cutoff) return false;
+      if (familiaFilter !== "todas" && produto?.familia_id !== familiaFilter) return false;
+      if (concorrenteFilter !== "todos" && mapeamento?.concorrente_id !== concorrenteFilter) {
+        return false;
+      }
+      if (statusFilter === "sucesso" && row.status !== "sucesso") return false;
+      if (statusFilter === "erro" && row.status !== "erro") return false;
+      if (statusFilter === "mais-caros" && row.diferenca_valor <= 0) return false;
+      if (statusFilter === "mais-baratos" && row.diferenca_valor >= 0) return false;
       if (q) {
         const needle = q.toLowerCase();
-        if (!p.nome.toLowerCase().includes(needle) && !p.sku_interno.toLowerCase().includes(needle)) return false;
+        if (
+          !produto?.nome.toLowerCase().includes(needle) &&
+          !produto?.sku_interno.toLowerCase().includes(needle) &&
+          !mapeamento?.sku_concorrente.toLowerCase().includes(needle)
+        ) {
+          return false;
+        }
       }
       return true;
-    })
-    .sort((a, b) => new Date(b.coletado_em).getTime() - new Date(a.coletado_em).getTime());
+    });
+  }, [concorrenteFilter, familiaFilter, periodo, q, rows, statusFilter]);
 
   return (
     <>
-      <PageHeader title="Histórico de Preços" description="Todas as coletas executadas pelo robô externo." />
+      <PageHeader
+        title="Historico de Precos"
+        description="Todas as coletas registradas pelo robo externo."
+      />
 
       <Card className="mb-4 shadow-sm">
-        <CardContent className="p-5 grid grid-cols-1 md:grid-cols-5 gap-3">
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Pesquisar produto/SKU..." />
+        <CardContent className="grid grid-cols-1 gap-3 p-5 md:grid-cols-5">
+          <Input
+            value={q}
+            onChange={(event) => setQ(event.target.value)}
+            placeholder="Pesquisar produto/SKU..."
+          />
           <Select value={periodo} onValueChange={setPeriodo}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
             <SelectContent>
-              <SelectItem value="7">Últimos 7 dias</SelectItem>
-              <SelectItem value="30">Últimos 30 dias</SelectItem>
-              <SelectItem value="90">Últimos 90 dias</SelectItem>
-              <SelectItem value="0">Todo o período</SelectItem>
+              <SelectItem value="7">Ultimos 7 dias</SelectItem>
+              <SelectItem value="30">Ultimos 30 dias</SelectItem>
+              <SelectItem value="90">Ultimos 90 dias</SelectItem>
+              <SelectItem value="0">Todo o periodo</SelectItem>
             </SelectContent>
           </Select>
           <Select value={familiaFilter} onValueChange={setFamiliaFilter}>
-            <SelectTrigger><SelectValue placeholder="Família" /></SelectTrigger>
+            <SelectTrigger>
+              <SelectValue placeholder="Familia" />
+            </SelectTrigger>
             <SelectContent>
-              <SelectItem value="todas">Todas as famílias</SelectItem>
-              {familias.map((f) => <SelectItem key={f.id} value={f.id}>{f.nome}</SelectItem>)}
+              <SelectItem value="todas">Todas as familias</SelectItem>
+              {familias.map((familia) => (
+                <SelectItem key={familia.id} value={familia.id}>
+                  {familia.nome}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
-          <Select value={fornecedorFilter} onValueChange={setFornecedorFilter}>
-            <SelectTrigger><SelectValue placeholder="Fornecedor" /></SelectTrigger>
+          <Select value={concorrenteFilter} onValueChange={setConcorrenteFilter}>
+            <SelectTrigger>
+              <SelectValue placeholder="Concorrente" />
+            </SelectTrigger>
             <SelectContent>
-              <SelectItem value="todos">Todos os fornecedores</SelectItem>
-              {fornecedores.map((f) => <SelectItem key={f.id} value={f.id}>{f.nome}</SelectItem>)}
+              <SelectItem value="todos">Todos os concorrentes</SelectItem>
+              {concorrentes.map((concorrente) => (
+                <SelectItem key={concorrente.id} value={concorrente.id}>
+                  {concorrente.nome}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
             <SelectContent>
               <SelectItem value="todos">Todos os status</SelectItem>
               <SelectItem value="sucesso">Apenas sucesso</SelectItem>
@@ -89,43 +212,83 @@ export default function HistoricoPrecos() {
                   <TableHead>Data/hora</TableHead>
                   <TableHead>Produto</TableHead>
                   <TableHead>SKU CJ</TableHead>
-                  <TableHead>Fornecedor</TableHead>
-                  <TableHead>SKU Forn.</TableHead>
-                  <TableHead>Preço CJ</TableHead>
-                  <TableHead>Preço Forn.</TableHead>
-                  <TableHead>Diferença</TableHead>
+                  <TableHead>Concorrente</TableHead>
+                  <TableHead>SKU Conc.</TableHead>
+                  <TableHead>Preco CJ</TableHead>
+                  <TableHead>Preco Conc.</TableHead>
+                  <TableHead>Diferenca</TableHead>
                   <TableHead>%</TableHead>
                   <TableHead>Status</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {rows.length === 0 && (
-                  <TableRow><TableCell colSpan={10} className="text-center py-10 text-muted-foreground">Nenhum registro encontrado</TableCell></TableRow>
+                {loading && (
+                  <TableRow>
+                    <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
+                      Carregando historico...
+                    </TableCell>
+                  </TableRow>
                 )}
-                {rows.map((h) => {
-                  const m = getMapeamento(h.mapeamento_id)!;
-                  const p = getProduto(m.produto_id)!;
-                  const f = getFornecedor(m.fornecedor_id)!;
+                {!loading && filtered.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
+                      Nenhum registro encontrado
+                    </TableCell>
+                  </TableRow>
+                )}
+                {filtered.map((row) => {
+                  const mapeamento = row.mapeamentos_sku;
+                  const produto = mapeamento?.produtos;
+                  const concorrente = mapeamento?.concorrentes;
+
                   return (
-                    <TableRow key={h.id}>
-                      <TableCell className="text-xs whitespace-nowrap">{formatDateTime(h.coletado_em)}</TableCell>
-                      <TableCell className="font-medium">{p.nome}</TableCell>
-                      <TableCell className="font-mono text-xs">{p.sku_interno}</TableCell>
-                      <TableCell>{f.nome}</TableCell>
-                      <TableCell className="font-mono text-xs">{m.sku_fornecedor}</TableCell>
-                      <TableCell>{formatBRL(h.preco_construjota)}</TableCell>
-                      <TableCell>{h.status === "erro" ? "—" : formatBRL(h.preco_fornecedor)}</TableCell>
-                      <TableCell className={h.diferenca_valor > 0 ? "text-destructive font-medium" : h.diferenca_valor < 0 ? "text-success font-medium" : ""}>
-                        {h.status === "erro" ? "—" : `${h.diferenca_valor > 0 ? "+" : ""}${formatBRL(h.diferenca_valor)}`}
+                    <TableRow key={row.id}>
+                      <TableCell className="whitespace-nowrap text-xs">
+                        {formatDateTime(row.coletado_em)}
                       </TableCell>
-                      <TableCell className={h.diferenca_percentual > 0 ? "text-destructive font-medium" : h.diferenca_percentual < 0 ? "text-success font-medium" : ""}>
-                        {h.status === "erro" ? "—" : formatPct(h.diferenca_percentual)}
+                      <TableCell className="font-medium">{produto?.nome ?? "-"}</TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {produto?.sku_interno ?? "-"}
+                      </TableCell>
+                      <TableCell>{concorrente?.nome ?? "-"}</TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {mapeamento?.sku_concorrente ?? "-"}
+                      </TableCell>
+                      <TableCell>{formatBRL(row.preco_construjota)}</TableCell>
+                      <TableCell>
+                        {row.status === "erro" ? "-" : formatBRL(row.preco_concorrente)}
+                      </TableCell>
+                      <TableCell
+                        className={
+                          row.diferenca_valor > 0
+                            ? "font-medium text-destructive"
+                            : row.diferenca_valor < 0
+                              ? "font-medium text-success"
+                              : ""
+                        }
+                      >
+                        {row.status === "erro"
+                          ? "-"
+                          : `${row.diferenca_valor > 0 ? "+" : ""}${formatBRL(row.diferenca_valor)}`}
+                      </TableCell>
+                      <TableCell
+                        className={
+                          row.diferenca_percentual > 0
+                            ? "font-medium text-destructive"
+                            : row.diferenca_percentual < 0
+                              ? "font-medium text-success"
+                              : ""
+                        }
+                      >
+                        {row.status === "erro" ? "-" : formatPct(row.diferenca_percentual)}
                       </TableCell>
                       <TableCell>
-                        {h.status === "sucesso" ? (
+                        {row.status === "sucesso" ? (
                           <Badge className="bg-success text-success-foreground">Sucesso</Badge>
                         ) : (
-                          <Badge variant="destructive" title={h.mensagem_erro}>Erro</Badge>
+                          <Badge variant="destructive" title={row.mensagem_erro ?? undefined}>
+                            Erro
+                          </Badge>
                         )}
                       </TableCell>
                     </TableRow>

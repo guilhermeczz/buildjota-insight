@@ -7,7 +7,7 @@ import Login from "@/routes/Login";
 import Dashboard from "@/routes/Dashboard";
 import Familias from "@/routes/Familias";
 import Produtos from "@/routes/Produtos";
-import Fornecedores from "@/routes/Fornecedores";
+import Concorrentes from "@/routes/Concorrentes";
 import MapeamentosSku from "@/routes/MapeamentosSku";
 import HistoricoPrecos from "@/routes/HistoricoPrecos";
 import Relatorios from "@/routes/Relatorios";
@@ -32,7 +32,7 @@ export default function App() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/familias" element={<Familias />} />
           <Route path="/produtos" element={<Produtos />} />
-          <Route path="/fornecedores" element={<Fornecedores />} />
+          <Route path="/concorrentes" element={<Concorrentes />} />
           <Route path="/mapeamentos" element={<MapeamentosSku />} />
           <Route path="/historico" element={<HistoricoPrecos />} />
           <Route path="/relatorios" element={<Relatorios />} />

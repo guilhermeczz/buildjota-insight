@@ -11,7 +11,8 @@ export default function Login() {
   const { login, user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const from = (location.state as any)?.from?.pathname || "/dashboard";
+  const from =
+    (location.state as { from?: { pathname?: string } } | null)?.from?.pathname || "/dashboard";
 
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
@@ -87,8 +88,8 @@ export default function Login() {
                 <br /> e comprar melhor.
               </h2>
               <p className="text-sm text-white/70">
-                Monitore os preços do mercado em tempo real, compare com seu catálogo
-                e tome decisões mais rápidas e seguras.
+                Monitore os preços do mercado em tempo real, compare com seu catálogo e tome
+                decisões mais rápidas e seguras.
               </p>
               <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-3 text-xs text-white/70">
                 <ShieldCheck className="h-4 w-4 text-primary" />
@@ -96,9 +97,7 @@ export default function Login() {
               </div>
             </div>
 
-            <div className="text-xs text-white/40">
-              © 2025 ConstruJota Atacadista
-            </div>
+            <div className="text-xs text-white/40">© 2025 ConstruJota Atacadista</div>
           </div>
 
           {/* Form side */}
@@ -112,14 +111,14 @@ export default function Login() {
                   CJ
                 </div>
                 <h1 className="text-2xl font-bold text-white">Acessar o sistema</h1>
-                <p className="text-sm text-white/60">
-                  Entre com suas credenciais corporativas.
-                </p>
+                <p className="text-sm text-white/60">Entre com suas credenciais corporativas.</p>
               </div>
 
               <div className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="email" className="text-white/80">E-mail</Label>
+                  <Label htmlFor="email" className="text-white/80">
+                    E-mail
+                  </Label>
                   <div className="group relative">
                     <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/40 transition-colors group-focus-within:text-primary" />
                     <Input
@@ -136,7 +135,9 @@ export default function Login() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="senha" className="text-white/80">Senha</Label>
+                  <Label htmlFor="senha" className="text-white/80">
+                    Senha
+                  </Label>
                   <div className="group relative">
                     <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/40 transition-colors group-focus-within:text-primary" />
                     <Input
@@ -178,11 +179,6 @@ export default function Login() {
                   </>
                 )}
               </Button>
-
-              <div className="rounded-lg border border-white/10 bg-white/5 p-3 text-xs text-white/60">
-                <div className="mb-1 font-semibold text-white/80">Credenciais de teste</div>
-                <div>admin@construjota.com.br · <span className="text-primary">admin123</span></div>
-              </div>
 
               <p className="text-center text-xs text-white/40">
                 O cadastro de novos usuários é feito apenas pelo administrador.

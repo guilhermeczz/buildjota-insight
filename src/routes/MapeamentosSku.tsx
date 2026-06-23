@@ -1,88 +1,292 @@
-import { useState } from "react";
-import PageHeader from "@/components/layout/PageHeader";
-import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Search, Pencil, Power, History, ExternalLink } from "lucide-react";
-import { mapeamentos as initial, produtos, fornecedores, getProduto, getFornecedor, getFamiliaNome, formatBRL, formatDateTime, type MapeamentoSku } from "@/lib/mock-data";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { toast } from "sonner";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import PageHeader from "@/components/layout/PageHeader";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
+import { formatBRL, formatDateTime } from "@/lib/format";
+import { supabase } from "@/lib/supabase";
+import { ExternalLink, History, Pencil, Plus, Power, Search } from "lucide-react";
+import { toast } from "sonner";
+
+type ProdutoOption = {
+  id: string;
+  sku_interno: string;
+  nome: string;
+  familia_id: string | null;
+  preco_atual: number;
+  familias?: { nome: string } | null;
+};
+
+type ConcorrenteOption = {
+  id: string;
+  nome: string;
+  ativo: boolean;
+};
+
+type Mapeamento = {
+  id: string;
+  produto_id: string;
+  concorrente_id: string;
+  sku_concorrente: string;
+  url_produto: string;
+  unidade_equivalente: string;
+  seletor_preco: string | null;
+  observacoes: string;
+  ativo: boolean;
+  ultimo_preco: number | null;
+  ultima_atualizacao: string | null;
+  status_coleta: "sucesso" | "erro" | "pendente";
+  produtos?: ProdutoOption | null;
+  concorrentes?: { nome: string } | null;
+};
+
+type MapeamentoForm = {
+  produto_id: string;
+  concorrente_id: string;
+  sku_concorrente: string;
+  url_produto: string;
+  unidade_equivalente: string;
+  seletor_preco: string;
+  observacoes: string;
+};
+
+const emptyForm: MapeamentoForm = {
+  produto_id: "",
+  concorrente_id: "",
+  sku_concorrente: "",
+  url_produto: "",
+  unidade_equivalente: "",
+  seletor_preco: "",
+  observacoes: "",
+};
+
+function normalizeMapeamento(row: Mapeamento): Mapeamento {
+  return {
+    ...row,
+    ultimo_preco: row.ultimo_preco === null ? null : Number(row.ultimo_preco),
+  };
+}
 
 export default function MapeamentosSku() {
-  const [list, setList] = useState<MapeamentoSku[]>(initial);
+  const [list, setList] = useState<Mapeamento[]>([]);
+  const [produtos, setProdutos] = useState<ProdutoOption[]>([]);
+  const [concorrentes, setConcorrentes] = useState<ConcorrenteOption[]>([]);
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<MapeamentoSku | null>(null);
-  const [form, setForm] = useState<Partial<MapeamentoSku>>({});
+  const [editing, setEditing] = useState<Mapeamento | null>(null);
+  const [form, setForm] = useState<MapeamentoForm>(emptyForm);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
-  const filtered = list.filter((m) => {
-    if (!q) return true;
-    const p = getProduto(m.produto_id);
-    const f = getFornecedor(m.fornecedor_id);
-    const needle = q.toLowerCase();
-    return (
-      p?.nome.toLowerCase().includes(needle) ||
-      p?.sku_interno.toLowerCase().includes(needle) ||
-      m.sku_fornecedor.toLowerCase().includes(needle) ||
-      f?.nome.toLowerCase().includes(needle)
-    );
-  });
+  async function refreshData() {
+    const [produtosResult, concorrentesResult, mapeamentosResult] = await Promise.all([
+      supabase
+        .from("produtos")
+        .select("id,sku_interno,nome,familia_id,preco_atual,familias(nome)")
+        .eq("ativo", true)
+        .order("nome"),
+      supabase.from("concorrentes").select("id,nome,ativo").eq("ativo", true).order("nome"),
+      supabase
+        .from("mapeamentos_sku")
+        .select(
+          "id,produto_id,concorrente_id,sku_concorrente,url_produto,unidade_equivalente,seletor_preco,observacoes,ativo,ultimo_preco,ultima_atualizacao,status_coleta,produtos(id,sku_interno,nome,familia_id,preco_atual,familias(nome)),concorrentes(nome)",
+        )
+        .order("created_at", { ascending: false }),
+    ]);
+
+    if (produtosResult.error || concorrentesResult.error || mapeamentosResult.error) {
+      toast.error("Nao foi possivel carregar os mapeamentos");
+      setLoading(false);
+      return;
+    }
+
+    setProdutos((produtosResult.data ?? []) as ProdutoOption[]);
+    setConcorrentes((concorrentesResult.data ?? []) as ConcorrenteOption[]);
+    setList(((mapeamentosResult.data ?? []) as Mapeamento[]).map(normalizeMapeamento));
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    void refreshData();
+  }, []);
+
+  const filtered = useMemo(
+    () =>
+      list.filter((mapeamento) => {
+        if (!q) return true;
+        const needle = q.toLowerCase();
+        const produto = mapeamento.produtos;
+        const concorrente = mapeamento.concorrentes;
+        return (
+          produto?.nome.toLowerCase().includes(needle) ||
+          produto?.sku_interno.toLowerCase().includes(needle) ||
+          mapeamento.sku_concorrente.toLowerCase().includes(needle) ||
+          concorrente?.nome.toLowerCase().includes(needle)
+        );
+      }),
+    [list, q],
+  );
 
   function openNew() {
     setEditing(null);
-    setForm({ produto_id: produtos[0]?.id, fornecedor_id: fornecedores[0]?.id, sku_fornecedor: "", url_produto: "", unidade_equivalente: "", observacoes: "" });
+    setForm({
+      ...emptyForm,
+      produto_id: produtos[0]?.id ?? "",
+      concorrente_id: concorrentes[0]?.id ?? "",
+    });
     setOpen(true);
   }
-  function openEdit(m: MapeamentoSku) {
-    setEditing(m);
-    setForm(m);
+
+  function openEdit(mapeamento: Mapeamento) {
+    setEditing(mapeamento);
+    setForm({
+      produto_id: mapeamento.produto_id,
+      concorrente_id: mapeamento.concorrente_id,
+      sku_concorrente: mapeamento.sku_concorrente,
+      url_produto: mapeamento.url_produto,
+      unidade_equivalente: mapeamento.unidade_equivalente,
+      seletor_preco: mapeamento.seletor_preco ?? "",
+      observacoes: mapeamento.observacoes,
+    });
     setOpen(true);
   }
-  function save() {
-    if (!form.produto_id || !form.fornecedor_id || !form.sku_fornecedor) {
-      toast.error("Preencha produto, fornecedor e SKU do fornecedor");
+
+  async function save() {
+    if (!form.produto_id || !form.concorrente_id || !form.sku_concorrente.trim()) {
+      toast.error("Preencha produto, concorrente e SKU do concorrente");
       return;
     }
+
+    const payload = {
+      produto_id: form.produto_id,
+      concorrente_id: form.concorrente_id,
+      sku_concorrente: form.sku_concorrente.trim(),
+      url_produto: form.url_produto.trim(),
+      unidade_equivalente: form.unidade_equivalente.trim(),
+      seletor_preco: form.seletor_preco.trim() || null,
+      observacoes: form.observacoes.trim(),
+    };
+
+    setSaving(true);
+
     if (editing) {
-      setList((l) => l.map((x) => (x.id === editing.id ? { ...x, ...(form as MapeamentoSku) } : x)));
+      const { error } = await supabase.from("mapeamentos_sku").update(payload).eq("id", editing.id);
+
+      setSaving(false);
+
+      if (error) {
+        toast.error(
+          error.code === "23505"
+            ? "Esse mapeamento ja existe"
+            : "Nao foi possivel atualizar o mapeamento",
+        );
+        return;
+      }
+
+      await refreshData();
       toast.success("Mapeamento atualizado");
-    } else {
-      setList((l) => [...l, { ...(form as MapeamentoSku), id: `m${Date.now()}`, ativo: true }]);
-      toast.success("Mapeamento criado");
+      setOpen(false);
+      return;
     }
+
+    const { error } = await supabase.from("mapeamentos_sku").insert({
+      ...payload,
+      ativo: true,
+      status_coleta: "pendente",
+    });
+
+    setSaving(false);
+
+    if (error) {
+      toast.error(
+        error.code === "23505"
+          ? "Esse mapeamento ja existe"
+          : "Nao foi possivel criar o mapeamento",
+      );
+      return;
+    }
+
+    await refreshData();
+    toast.success("Mapeamento criado");
     setOpen(false);
+  }
+
+  async function toggleAtivo(mapeamento: Mapeamento) {
+    const ativo = !mapeamento.ativo;
+    const { error } = await supabase
+      .from("mapeamentos_sku")
+      .update({ ativo })
+      .eq("id", mapeamento.id);
+
+    if (error) {
+      toast.error("Nao foi possivel alterar o status do mapeamento");
+      return;
+    }
+
+    setList((current) =>
+      current.map((item) => (item.id === mapeamento.id ? { ...item, ativo } : item)),
+    );
   }
 
   return (
     <>
       <PageHeader
         title="Mapeamento de SKUs"
-        description="Configure manualmente: este SKU da ConstruJota deve ser comparado com este SKU do fornecedor."
+        description="Conecte o SKU da ConstruJota ao SKU equivalente em cada concorrente."
         actions={
-          <Button onClick={openNew} className="bg-primary text-primary-foreground hover:bg-primary/90">
-            <Plus className="h-4 w-4 mr-1" /> Novo mapeamento
+          <Button
+            onClick={openNew}
+            className="bg-primary text-primary-foreground hover:bg-primary/90"
+          >
+            <Plus className="mr-1 h-4 w-4" /> Novo mapeamento
           </Button>
         }
       />
 
       <Card className="mb-4 bg-secondary text-secondary-foreground">
         <CardContent className="p-4 text-sm">
-          A comparação não depende da descrição do produto — depende deste mapeamento manual.
-          Cada mapeamento conecta um SKU interno da ConstruJota a um SKU equivalente em um fornecedor.
+          A comparacao depende deste mapeamento manual. Cada linha conecta um produto interno a um
+          produto equivalente de um concorrente.
         </CardContent>
       </Card>
 
       <Card className="shadow-sm">
-        <CardContent className="p-5 space-y-4">
+        <CardContent className="space-y-4 p-5">
           <div className="relative max-w-md">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Pesquisar..." className="pl-9" />
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={q}
+              onChange={(event) => setQ(event.target.value)}
+              placeholder="Pesquisar..."
+              className="pl-9"
+            />
           </div>
 
           <div className="overflow-x-auto">
@@ -91,43 +295,93 @@ export default function MapeamentosSku() {
                 <TableRow>
                   <TableHead>Produto CJ</TableHead>
                   <TableHead>SKU CJ</TableHead>
-                  <TableHead>Fornecedor</TableHead>
-                  <TableHead>SKU Forn.</TableHead>
-                  <TableHead>Família</TableHead>
+                  <TableHead>Concorrente</TableHead>
+                  <TableHead>SKU Conc.</TableHead>
+                  <TableHead>Familia</TableHead>
                   <TableHead>URL</TableHead>
-                  <TableHead>Último preço</TableHead>
-                  <TableHead>Última atualização</TableHead>
+                  <TableHead>Ultimo preco</TableHead>
+                  <TableHead>Ultima atualizacao</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Ações</TableHead>
+                  <TableHead className="text-right">Acoes</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((m) => {
-                  const p = getProduto(m.produto_id)!;
-                  const f = getFornecedor(m.fornecedor_id)!;
+                {loading && (
+                  <TableRow>
+                    <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
+                      Carregando mapeamentos...
+                    </TableCell>
+                  </TableRow>
+                )}
+                {!loading && filtered.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
+                      Nenhum mapeamento encontrado
+                    </TableCell>
+                  </TableRow>
+                )}
+                {filtered.map((mapeamento) => {
+                  const produto = mapeamento.produtos;
+                  const concorrente = mapeamento.concorrentes;
                   return (
-                    <TableRow key={m.id}>
-                      <TableCell className="font-medium">{p.nome}</TableCell>
-                      <TableCell className="font-mono text-xs">{p.sku_interno}</TableCell>
-                      <TableCell>{f.nome}</TableCell>
-                      <TableCell className="font-mono text-xs">{m.sku_fornecedor}</TableCell>
-                      <TableCell className="text-muted-foreground text-xs">{getFamiliaNome(p.familia_id)}</TableCell>
-                      <TableCell>
-                        <a href={m.url_produto} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-primary hover:underline text-xs">
-                          abrir <ExternalLink className="h-3 w-3" />
-                        </a>
+                    <TableRow key={mapeamento.id}>
+                      <TableCell className="font-medium">{produto?.nome ?? "-"}</TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {produto?.sku_interno ?? "-"}
                       </TableCell>
-                      <TableCell>{m.ultimo_preco ? formatBRL(m.ultimo_preco) : "—"}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{m.ultima_atualizacao ? formatDateTime(m.ultima_atualizacao) : "—"}</TableCell>
+                      <TableCell>{concorrente?.nome ?? "-"}</TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {mapeamento.sku_concorrente}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {produto?.familias?.nome ?? "Sem familia"}
+                      </TableCell>
                       <TableCell>
-                        {m.status_coleta === "sucesso" && <Badge className="bg-success text-success-foreground">Sucesso</Badge>}
-                        {m.status_coleta === "erro" && <Badge variant="destructive">Erro</Badge>}
-                        {!m.status_coleta && <Badge variant="secondary">Pendente</Badge>}
+                        {mapeamento.url_produto ? (
+                          <a
+                            href={mapeamento.url_produto}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                          >
+                            abrir <ExternalLink className="h-3 w-3" />
+                          </a>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {mapeamento.ultimo_preco ? formatBRL(mapeamento.ultimo_preco) : "-"}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                        {mapeamento.ultima_atualizacao
+                          ? formatDateTime(mapeamento.ultima_atualizacao)
+                          : "-"}
+                      </TableCell>
+                      <TableCell>
+                        {mapeamento.status_coleta === "sucesso" && (
+                          <Badge className="bg-success text-success-foreground">Sucesso</Badge>
+                        )}
+                        {mapeamento.status_coleta === "erro" && (
+                          <Badge variant="destructive">Erro</Badge>
+                        )}
+                        {mapeamento.status_coleta === "pendente" && (
+                          <Badge variant="secondary">Pendente</Badge>
+                        )}
+                        {!mapeamento.ativo && <Badge variant="outline">Inativo</Badge>}
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button asChild size="sm" variant="ghost"><Link to="/historico" title="Histórico"><History className="h-4 w-4" /></Link></Button>
-                        <Button size="sm" variant="ghost" onClick={() => openEdit(m)}><Pencil className="h-4 w-4" /></Button>
-                        <Button size="sm" variant="ghost" onClick={() => setList((l) => l.map((x) => x.id === m.id ? { ...x, ativo: !x.ativo } : x))}><Power className="h-4 w-4" /></Button>
+                        <Button asChild size="sm" variant="ghost">
+                          <Link to="/historico" title="Historico">
+                            <History className="h-4 w-4" />
+                          </Link>
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => openEdit(mapeamento)}>
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => toggleAtivo(mapeamento)}>
+                          <Power className="h-4 w-4" />
+                        </Button>
                       </TableCell>
                     </TableRow>
                   );
@@ -142,36 +396,95 @@ export default function MapeamentosSku() {
         <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>{editing ? "Editar mapeamento" : "Novo mapeamento de SKU"}</DialogTitle>
-            <DialogDescription>Defina a equivalência entre o produto interno e o produto do fornecedor.</DialogDescription>
+            <DialogDescription>
+              Defina a equivalencia entre o produto interno e o produto do concorrente.
+            </DialogDescription>
           </DialogHeader>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label>Produto ConstruJota</Label>
-              <Select value={form.produto_id} onValueChange={(v) => setForm({ ...form, produto_id: v })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+              <Select
+                value={form.produto_id}
+                onValueChange={(value) => setForm({ ...form, produto_id: value })}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione" />
+                </SelectTrigger>
                 <SelectContent>
-                  {produtos.map((p) => <SelectItem key={p.id} value={p.id}>{p.sku_interno} — {p.nome}</SelectItem>)}
+                  {produtos.map((produto) => (
+                    <SelectItem key={produto.id} value={produto.id}>
+                      {produto.sku_interno} - {produto.nome}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label>Fornecedor</Label>
-              <Select value={form.fornecedor_id} onValueChange={(v) => setForm({ ...form, fornecedor_id: v })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+              <Label>Concorrente</Label>
+              <Select
+                value={form.concorrente_id}
+                onValueChange={(value) => setForm({ ...form, concorrente_id: value })}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione" />
+                </SelectTrigger>
                 <SelectContent>
-                  {fornecedores.map((f) => <SelectItem key={f.id} value={f.id}>{f.nome}</SelectItem>)}
+                  {concorrentes.map((concorrente) => (
+                    <SelectItem key={concorrente.id} value={concorrente.id}>
+                      {concorrente.nome}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5"><Label>SKU no fornecedor</Label><Input value={form.sku_fornecedor ?? ""} onChange={(e) => setForm({ ...form, sku_fornecedor: e.target.value })} /></div>
-            <div className="space-y-1.5"><Label>Unidade equivalente</Label><Input value={form.unidade_equivalente ?? ""} onChange={(e) => setForm({ ...form, unidade_equivalente: e.target.value })} /></div>
-            <div className="space-y-1.5 col-span-2"><Label>URL do produto</Label><Input value={form.url_produto ?? ""} onChange={(e) => setForm({ ...form, url_produto: e.target.value })} /></div>
-            <div className="space-y-1.5 col-span-2"><Label>Seletor de preço (opcional)</Label><Input value={form.seletor_preco ?? ""} onChange={(e) => setForm({ ...form, seletor_preco: e.target.value })} placeholder="ex: .product-price__value" /></div>
-            <div className="space-y-1.5 col-span-2"><Label>Observações</Label><Textarea value={form.observacoes ?? ""} onChange={(e) => setForm({ ...form, observacoes: e.target.value })} /></div>
+            <div className="space-y-1.5">
+              <Label>SKU no concorrente</Label>
+              <Input
+                value={form.sku_concorrente}
+                onChange={(event) => setForm({ ...form, sku_concorrente: event.target.value })}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Unidade equivalente</Label>
+              <Input
+                value={form.unidade_equivalente}
+                onChange={(event) => setForm({ ...form, unidade_equivalente: event.target.value })}
+              />
+            </div>
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label>URL do produto</Label>
+              <Input
+                value={form.url_produto}
+                onChange={(event) => setForm({ ...form, url_produto: event.target.value })}
+              />
+            </div>
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label>Seletor de preco</Label>
+              <Input
+                value={form.seletor_preco}
+                onChange={(event) => setForm({ ...form, seletor_preco: event.target.value })}
+                placeholder="ex: .product-price__value"
+              />
+            </div>
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label>Observacoes</Label>
+              <Textarea
+                value={form.observacoes}
+                onChange={(event) => setForm({ ...form, observacoes: event.target.value })}
+              />
+            </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>Cancelar</Button>
-            <Button onClick={save} className="bg-primary text-primary-foreground hover:bg-primary/90">Salvar mapeamento</Button>
+            <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={save}
+              disabled={saving}
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              {saving ? "Salvando..." : "Salvar mapeamento"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

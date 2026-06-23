@@ -1,4 +1,5 @@
-import { Bell, ChevronDown, LogOut, UserCog } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Bell, Bot, ChevronDown, LogOut, UserCog } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -10,20 +11,82 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { execucoes, formatDateTime } from "@/lib/mock-data";
 import { roleLabel, useAuth } from "@/lib/auth";
+import { formatDateTime } from "@/lib/format";
+import { supabase } from "@/lib/supabase";
+
+type ExecucaoNotification = {
+  id: string;
+  status: "sucesso" | "parcial" | "erro" | "pendente";
+  origem: string;
+  iniciado_em: string;
+  finalizado_em: string | null;
+  total_processados: number;
+  total_sucesso: number;
+  total_erro: number;
+  mensagem: string;
+};
+
+const statusBadge: Record<ExecucaoNotification["status"], string> = {
+  sucesso: "bg-success text-success-foreground hover:bg-success",
+  parcial: "bg-primary text-primary-foreground hover:bg-primary",
+  erro: "bg-destructive text-destructive-foreground hover:bg-destructive",
+  pendente: "bg-secondary-foreground/10 text-secondary-foreground hover:bg-secondary-foreground/10",
+};
 
 export default function Topbar() {
-  const last = execucoes[0];
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const [execucoes, setExecucoes] = useState<ExecucaoNotification[]>([]);
 
-  const initials = user
-    ? user.nome.split(" ").map((n) => n[0]).slice(0, 2).join("").toUpperCase()
-    : "CJ";
+  const last = execucoes[0];
+  const unreadCount = execucoes.length;
 
-  const handleLogout = () => {
-    logout();
+  useEffect(() => {
+    let mounted = true;
+
+    const loadExecucoes = async () => {
+      const { data } = await supabase
+        .from("execucoes_robo")
+        .select(
+          "id,status,origem,iniciado_em,finalizado_em,total_processados,total_sucesso,total_erro,mensagem",
+        )
+        .order("iniciado_em", { ascending: false })
+        .limit(5);
+
+      if (mounted) setExecucoes((data ?? []) as ExecucaoNotification[]);
+    };
+
+    loadExecucoes();
+
+    const channel = supabase
+      .channel("topbar-execucoes-robo")
+      .on("postgres_changes", { event: "*", schema: "public", table: "execucoes_robo" }, () => {
+        loadExecucoes();
+      })
+      .subscribe();
+
+    return () => {
+      mounted = false;
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const initials = useMemo(
+    () =>
+      user
+        ? user.nome
+            .split(" ")
+            .map((n) => n[0])
+            .slice(0, 2)
+            .join("")
+            .toUpperCase()
+        : "CJ",
+    [user],
+  );
+
+  const handleLogout = async () => {
+    await logout();
     toast.success("Sessão encerrada.");
     navigate("/login", { replace: true });
   };
@@ -42,17 +105,74 @@ export default function Topbar() {
         <div className="flex flex-wrap items-center gap-4">
           <div className="text-right text-xs">
             <div className="text-secondary-foreground/60">Última atualização</div>
-            <div className="font-medium">{formatDateTime(last.finalizado_em)}</div>
-            <Badge className="mt-1 bg-success text-success-foreground hover:bg-success">
-              Atualizado
+            <div className="font-medium">
+              {last ? formatDateTime(last.finalizado_em ?? last.iniciado_em) : "Sem coletas"}
+            </div>
+            <Badge
+              className={
+                last
+                  ? statusBadge[last.status]
+                  : "mt-1 bg-secondary-foreground/10 text-secondary-foreground hover:bg-secondary-foreground/10"
+              }
+            >
+              {last?.status ?? "Pendente"}
             </Badge>
           </div>
-          <button className="relative inline-flex h-10 w-10 items-center justify-center rounded-full bg-secondary-foreground/10 hover:bg-secondary-foreground/15 transition">
-            <Bell className="h-5 w-5" />
-            <span className="absolute -top-0.5 -right-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
-              3
-            </span>
-          </button>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button className="relative inline-flex h-10 w-10 items-center justify-center rounded-full bg-secondary-foreground/10 transition hover:bg-secondary-foreground/15">
+                <Bell className="h-5 w-5" />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground">
+                    {unreadCount}
+                  </span>
+                )}
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-80">
+              <DropdownMenuLabel>Execuções do robô</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {execucoes.length === 0 ? (
+                <div className="px-2 py-6 text-center text-sm text-muted-foreground">
+                  Nenhuma execução registrada.
+                </div>
+              ) : (
+                execucoes.map((execucao) => (
+                  <DropdownMenuItem
+                    key={execucao.id}
+                    className="flex cursor-pointer items-start gap-3 py-3"
+                    onClick={() => navigate("/execucoes-robo")}
+                  >
+                    <Bot className="mt-0.5 h-4 w-4 text-primary" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate font-medium">
+                          {execucao.status === "pendente"
+                            ? "Coleta em andamento"
+                            : "Coleta finalizada"}
+                        </span>
+                        <Badge className={statusBadge[execucao.status]}>{execucao.status}</Badge>
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {formatDateTime(execucao.finalizado_em ?? execucao.iniciado_em)}
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {execucao.total_processados} processados · {execucao.total_sucesso} sucesso
+                        · {execucao.total_erro} erros
+                      </div>
+                      {execucao.mensagem && (
+                        <div className="mt-1 truncate text-xs text-muted-foreground">
+                          {execucao.mensagem}
+                        </div>
+                      )}
+                    </div>
+                  </DropdownMenuItem>
+                ))
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button className="flex items-center gap-2 rounded-lg bg-secondary-foreground/10 px-3 py-2 transition hover:bg-secondary-foreground/15">
@@ -76,7 +196,10 @@ export default function Topbar() {
                 Gerenciar usuários
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={handleLogout} className="text-destructive focus:text-destructive">
+              <DropdownMenuItem
+                onClick={handleLogout}
+                className="text-destructive focus:text-destructive"
+              >
                 <LogOut className="mr-2 h-4 w-4" />
                 Sair
               </DropdownMenuItem>

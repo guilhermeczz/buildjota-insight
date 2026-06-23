@@ -1,91 +1,307 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import PageHeader from "@/components/layout/PageHeader";
-import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Search, Pencil, Power } from "lucide-react";
-import { produtos as initial, familias, getFamiliaNome, formatBRL, type Produto } from "@/lib/mock-data";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { formatBRL } from "@/lib/format";
+import { supabase } from "@/lib/supabase";
+import { Pencil, Plus, Power, Search } from "lucide-react";
 import { toast } from "sonner";
 
+type FamiliaOption = {
+  id: string;
+  nome: string;
+  ativo: boolean;
+};
+
+type Produto = {
+  id: string;
+  sku_interno: string;
+  nome: string;
+  familia_id: string | null;
+  unidade: string;
+  preco_atual: number;
+  observacoes: string;
+  ativo: boolean;
+  familias?: { nome: string } | null;
+};
+
+type ProdutoForm = {
+  sku_interno: string;
+  nome: string;
+  familia_id: string;
+  unidade: string;
+  preco_atual: string;
+  observacoes: string;
+};
+
+const emptyForm: ProdutoForm = {
+  sku_interno: "",
+  nome: "",
+  familia_id: "sem-familia",
+  unidade: "",
+  preco_atual: "0",
+  observacoes: "",
+};
+
+function normalizeProduto(row: Produto): Produto {
+  return {
+    ...row,
+    preco_atual: Number(row.preco_atual ?? 0),
+  };
+}
+
 export default function Produtos() {
-  const [list, setList] = useState<Produto[]>(initial);
+  const [list, setList] = useState<Produto[]>([]);
+  const [familias, setFamilias] = useState<FamiliaOption[]>([]);
   const [q, setQ] = useState("");
   const [familiaFilter, setFamiliaFilter] = useState("todas");
   const [statusFilter, setStatusFilter] = useState("todos");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Produto | null>(null);
-  const [form, setForm] = useState<Partial<Produto>>({});
+  const [form, setForm] = useState<ProdutoForm>(emptyForm);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
-  const filtered = list.filter((p) => {
-    if (q && !p.nome.toLowerCase().includes(q.toLowerCase()) && !p.sku_interno.toLowerCase().includes(q.toLowerCase())) return false;
-    if (familiaFilter !== "todas" && p.familia_id !== familiaFilter) return false;
-    if (statusFilter === "ativos" && !p.ativo) return false;
-    if (statusFilter === "inativos" && p.ativo) return false;
-    return true;
-  });
+  async function refreshData() {
+    const [familiasResult, produtosResult] = await Promise.all([
+      supabase.from("familias").select("id,nome,ativo").order("nome", { ascending: true }),
+      supabase
+        .from("produtos")
+        .select(
+          "id,sku_interno,nome,familia_id,unidade,preco_atual,observacoes,ativo,familias(nome)",
+        )
+        .order("nome", { ascending: true }),
+    ]);
+
+    if (familiasResult.error || produtosResult.error) {
+      toast.error("Nao foi possivel carregar os produtos");
+      setLoading(false);
+      return;
+    }
+
+    setFamilias((familiasResult.data ?? []) as FamiliaOption[]);
+    setList(((produtosResult.data ?? []) as Produto[]).map(normalizeProduto));
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    void refreshData();
+  }, []);
+
+  const activeFamilias = useMemo(() => familias.filter((familia) => familia.ativo), [familias]);
+
+  const filtered = useMemo(
+    () =>
+      list.filter((produto) => {
+        const term = q.toLowerCase();
+        if (
+          term &&
+          !produto.nome.toLowerCase().includes(term) &&
+          !produto.sku_interno.toLowerCase().includes(term)
+        ) {
+          return false;
+        }
+        if (familiaFilter !== "todas" && produto.familia_id !== familiaFilter) return false;
+        if (statusFilter === "ativos" && !produto.ativo) return false;
+        if (statusFilter === "inativos" && produto.ativo) return false;
+        return true;
+      }),
+    [familiaFilter, list, q, statusFilter],
+  );
+
+  function getFamiliaNome(id: string | null) {
+    if (!id) return "Sem familia";
+    return familias.find((familia) => familia.id === id)?.nome ?? "Sem familia";
+  }
 
   function openNew() {
     setEditing(null);
-    setForm({ sku_interno: "", nome: "", familia_id: familias[0]?.id, unidade: "", preco_atual: 0, observacoes: "" });
+    setForm({
+      ...emptyForm,
+      familia_id: activeFamilias[0]?.id ?? "sem-familia",
+    });
     setOpen(true);
   }
-  function openEdit(p: Produto) {
-    setEditing(p);
-    setForm(p);
+
+  function openEdit(produto: Produto) {
+    setEditing(produto);
+    setForm({
+      sku_interno: produto.sku_interno,
+      nome: produto.nome,
+      familia_id: produto.familia_id ?? "sem-familia",
+      unidade: produto.unidade,
+      preco_atual: String(produto.preco_atual),
+      observacoes: produto.observacoes,
+    });
     setOpen(true);
   }
-  function save() {
-    if (!form.nome || !form.sku_interno) {
+
+  async function save() {
+    const sku = form.sku_interno.trim();
+    const nome = form.nome.trim();
+    const preco = Number(form.preco_atual.replace(",", "."));
+
+    if (!sku || !nome) {
       toast.error("Informe SKU e nome");
       return;
     }
-    if (editing) {
-      setList((l) => l.map((x) => (x.id === editing.id ? { ...x, ...(form as Produto) } : x)));
-      toast.success("Produto atualizado");
-    } else {
-      setList((l) => [...l, { ...(form as Produto), id: `p${Date.now()}`, ativo: true }]);
-      toast.success("Produto cadastrado");
+
+    if (Number.isNaN(preco) || preco < 0) {
+      toast.error("Informe um preco valido");
+      return;
     }
+
+    const payload = {
+      sku_interno: sku,
+      nome,
+      familia_id: form.familia_id === "sem-familia" ? null : form.familia_id,
+      unidade: form.unidade.trim(),
+      preco_atual: preco,
+      observacoes: form.observacoes.trim(),
+    };
+
+    setSaving(true);
+
+    if (editing) {
+      const { data, error } = await supabase
+        .from("produtos")
+        .update(payload)
+        .eq("id", editing.id)
+        .select(
+          "id,sku_interno,nome,familia_id,unidade,preco_atual,observacoes,ativo,familias(nome)",
+        )
+        .single();
+
+      setSaving(false);
+
+      if (error || !data) {
+        toast.error(
+          error?.code === "23505"
+            ? "Ja existe um produto com esse SKU"
+            : "Nao foi possivel atualizar o produto",
+        );
+        return;
+      }
+
+      const produto = normalizeProduto(data as Produto);
+      setList((current) =>
+        current
+          .map((item) => (item.id === produto.id ? produto : item))
+          .sort((a, b) => a.nome.localeCompare(b.nome)),
+      );
+      toast.success("Produto atualizado");
+      setOpen(false);
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("produtos")
+      .insert({ ...payload, ativo: true })
+      .select("id,sku_interno,nome,familia_id,unidade,preco_atual,observacoes,ativo,familias(nome)")
+      .single();
+
+    setSaving(false);
+
+    if (error || !data) {
+      toast.error(
+        error?.code === "23505"
+          ? "Ja existe um produto com esse SKU"
+          : "Nao foi possivel cadastrar o produto",
+      );
+      return;
+    }
+
+    setList((current) =>
+      [...current, normalizeProduto(data as Produto)].sort((a, b) => a.nome.localeCompare(b.nome)),
+    );
+    toast.success("Produto cadastrado");
     setOpen(false);
   }
-  function toggleAtivo(p: Produto) {
-    setList((l) => l.map((x) => (x.id === p.id ? { ...x, ativo: !x.ativo } : x)));
+
+  async function toggleAtivo(produto: Produto) {
+    const ativo = !produto.ativo;
+    const { error } = await supabase.from("produtos").update({ ativo }).eq("id", produto.id);
+
+    if (error) {
+      toast.error("Nao foi possivel alterar o status do produto");
+      return;
+    }
+
+    setList((current) =>
+      current.map((item) => (item.id === produto.id ? { ...item, ativo } : item)),
+    );
   }
 
   return (
     <>
       <PageHeader
         title="Produtos ConstruJota"
-        description="Catálogo interno de produtos que serão monitorados."
+        description="Catalogo interno de produtos que serao monitorados."
         actions={
-          <Button onClick={openNew} className="bg-primary text-primary-foreground hover:bg-primary/90">
-            <Plus className="h-4 w-4 mr-1" /> Novo produto
+          <Button
+            onClick={openNew}
+            className="bg-primary text-primary-foreground hover:bg-primary/90"
+          >
+            <Plus className="mr-1 h-4 w-4" /> Novo produto
           </Button>
         }
       />
 
       <Card className="shadow-sm">
-        <CardContent className="p-5 space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <CardContent className="space-y-4 p-5">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <div className="relative sm:col-span-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Pesquisar por SKU ou nome..." className="pl-9" />
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={q}
+                onChange={(event) => setQ(event.target.value)}
+                placeholder="Pesquisar por SKU ou nome..."
+                className="pl-9"
+              />
             </div>
             <Select value={familiaFilter} onValueChange={setFamiliaFilter}>
-              <SelectTrigger><SelectValue placeholder="Família" /></SelectTrigger>
+              <SelectTrigger>
+                <SelectValue placeholder="Familia" />
+              </SelectTrigger>
               <SelectContent>
-                <SelectItem value="todas">Todas as famílias</SelectItem>
-                {familias.map((f) => <SelectItem key={f.id} value={f.id}>{f.nome}</SelectItem>)}
+                <SelectItem value="todas">Todas as familias</SelectItem>
+                {familias.map((familia) => (
+                  <SelectItem key={familia.id} value={familia.id}>
+                    {familia.nome}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
             <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="todos">Todos os status</SelectItem>
                 <SelectItem value="ativos">Ativos</SelectItem>
@@ -100,30 +316,51 @@ export default function Produtos() {
                 <TableRow>
                   <TableHead>SKU</TableHead>
                   <TableHead>Nome</TableHead>
-                  <TableHead>Família</TableHead>
+                  <TableHead>Familia</TableHead>
                   <TableHead>Unidade</TableHead>
-                  <TableHead>Preço atual</TableHead>
+                  <TableHead>Preco atual</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Ações</TableHead>
+                  <TableHead className="text-right">Acoes</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.length === 0 && (
+                {loading && (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center py-10 text-muted-foreground">Nenhum produto encontrado</TableCell>
+                    <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                      Carregando produtos...
+                    </TableCell>
                   </TableRow>
                 )}
-                {filtered.map((p) => (
-                  <TableRow key={p.id}>
-                    <TableCell className="font-mono text-xs">{p.sku_interno}</TableCell>
-                    <TableCell className="font-medium">{p.nome}</TableCell>
-                    <TableCell>{getFamiliaNome(p.familia_id)}</TableCell>
-                    <TableCell className="text-muted-foreground">{p.unidade}</TableCell>
-                    <TableCell>{formatBRL(p.preco_atual)}</TableCell>
-                    <TableCell>{p.ativo ? <Badge className="bg-success text-success-foreground">Ativo</Badge> : <Badge variant="secondary">Inativo</Badge>}</TableCell>
+                {!loading && filtered.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                      Nenhum produto encontrado
+                    </TableCell>
+                  </TableRow>
+                )}
+                {filtered.map((produto) => (
+                  <TableRow key={produto.id}>
+                    <TableCell className="font-mono text-xs">{produto.sku_interno}</TableCell>
+                    <TableCell className="font-medium">{produto.nome}</TableCell>
+                    <TableCell>{getFamiliaNome(produto.familia_id)}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {produto.unidade || "-"}
+                    </TableCell>
+                    <TableCell>{formatBRL(produto.preco_atual)}</TableCell>
+                    <TableCell>
+                      {produto.ativo ? (
+                        <Badge className="bg-success text-success-foreground">Ativo</Badge>
+                      ) : (
+                        <Badge variant="secondary">Inativo</Badge>
+                      )}
+                    </TableCell>
                     <TableCell className="text-right">
-                      <Button size="sm" variant="ghost" onClick={() => openEdit(p)}><Pencil className="h-4 w-4" /></Button>
-                      <Button size="sm" variant="ghost" onClick={() => toggleAtivo(p)}><Power className="h-4 w-4" /></Button>
+                      <Button size="sm" variant="ghost" onClick={() => openEdit(produto)}>
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => toggleAtivo(produto)}>
+                        <Power className="h-4 w-4" />
+                      </Button>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -138,40 +375,72 @@ export default function Produtos() {
           <DialogHeader>
             <DialogTitle>{editing ? "Editar produto" : "Novo produto"}</DialogTitle>
           </DialogHeader>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label>SKU interno</Label>
-              <Input value={form.sku_interno ?? ""} onChange={(e) => setForm({ ...form, sku_interno: e.target.value })} />
+              <Input
+                value={form.sku_interno}
+                onChange={(event) => setForm({ ...form, sku_interno: event.target.value })}
+              />
             </div>
             <div className="space-y-1.5">
               <Label>Unidade</Label>
-              <Input value={form.unidade ?? ""} onChange={(e) => setForm({ ...form, unidade: e.target.value })} />
+              <Input
+                value={form.unidade}
+                onChange={(event) => setForm({ ...form, unidade: event.target.value })}
+              />
             </div>
-            <div className="space-y-1.5 col-span-2">
+            <div className="space-y-1.5 sm:col-span-2">
               <Label>Nome</Label>
-              <Input value={form.nome ?? ""} onChange={(e) => setForm({ ...form, nome: e.target.value })} />
+              <Input
+                value={form.nome}
+                onChange={(event) => setForm({ ...form, nome: event.target.value })}
+              />
             </div>
             <div className="space-y-1.5">
-              <Label>Família</Label>
-              <Select value={form.familia_id} onValueChange={(v) => setForm({ ...form, familia_id: v })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {familias.map((f) => <SelectItem key={f.id} value={f.id}>{f.nome}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              <Label>Familia</Label>
+              <select
+                value={form.familia_id}
+                onChange={(event) => setForm({ ...form, familia_id: event.target.value })}
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none transition-colors focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <option value="sem-familia">Sem familia</option>
+                {activeFamilias.map((familia) => (
+                  <option key={familia.id} value={familia.id}>
+                    {familia.nome}
+                  </option>
+                ))}
+              </select>
             </div>
             <div className="space-y-1.5">
-              <Label>Preço atual (R$)</Label>
-              <Input type="number" step="0.01" value={form.preco_atual ?? 0} onChange={(e) => setForm({ ...form, preco_atual: parseFloat(e.target.value) })} />
+              <Label>Preco atual (R$)</Label>
+              <Input
+                type="number"
+                step="0.001"
+                min="0"
+                value={form.preco_atual}
+                onChange={(event) => setForm({ ...form, preco_atual: event.target.value })}
+              />
             </div>
-            <div className="space-y-1.5 col-span-2">
-              <Label>Observações</Label>
-              <Textarea value={form.observacoes ?? ""} onChange={(e) => setForm({ ...form, observacoes: e.target.value })} />
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label>Observacoes</Label>
+              <Textarea
+                value={form.observacoes}
+                onChange={(event) => setForm({ ...form, observacoes: event.target.value })}
+              />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>Cancelar</Button>
-            <Button onClick={save} className="bg-primary text-primary-foreground hover:bg-primary/90">Salvar</Button>
+            <Button variant="outline" onClick={() => setOpen(false)} disabled={saving}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={save}
+              disabled={saving}
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              {saving ? "Salvando..." : "Salvar"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

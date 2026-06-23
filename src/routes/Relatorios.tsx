@@ -1,70 +1,200 @@
-import { useState } from "react";
-import PageHeader from "@/components/layout/PageHeader";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Download, FileSpreadsheet } from "lucide-react";
-import { mapeamentos, fornecedores, familias, historico, getProduto, getFornecedor, formatBRL, formatPct } from "@/lib/mock-data";
+import { useEffect, useMemo, useState } from "react";
+import {
+  AlertTriangle,
+  BarChart3,
+  Download,
+  FileSpreadsheet,
+  PackageSearch,
+  TrendingDown,
+  TrendingUp,
+} from "lucide-react";
 import { toast } from "sonner";
+import PageHeader from "@/components/layout/PageHeader";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { formatBRL, formatPct, formatDateTime } from "@/lib/format";
+import { supabase } from "@/lib/supabase";
 
-type Row = {
-  produto: string;
-  sku: string;
-  fornecedor: string;
-  skuFor: string;
-  familia: string;
-  precoCJ: number;
-  precoFor: number;
-  dif: number;
-  difPct: number;
+type Familia = {
+  id: string;
+  nome: string;
 };
 
-function buildComparacao(): Row[] {
+type Concorrente = {
+  id: string;
+  nome: string;
+};
+
+type Produto = {
+  id: string;
+  sku_interno: string;
+  nome: string;
+  familia_id: string | null;
+  preco_atual: number;
+  familias?: Familia | null;
+};
+
+type Mapeamento = {
+  id: string;
+  produto_id: string;
+  concorrente_id: string;
+  sku_concorrente: string;
+  ultimo_preco: number | null;
+  ultima_atualizacao: string | null;
+  status_coleta: "sucesso" | "erro" | "pendente";
+  produtos?: Produto | null;
+  concorrentes?: Concorrente | null;
+};
+
+type Historico = {
+  id: string;
+  mapeamento_id: string;
+  preco_construjota: number;
+  preco_concorrente: number;
+  diferenca_valor: number;
+  diferenca_percentual: number;
+  status: "sucesso" | "erro" | "pendente";
+  mensagem_erro: string | null;
+  coletado_em: string;
+  mapeamentos_sku?: Mapeamento | null;
+};
+
+type Row = {
+  id: string;
+  produto: string;
+  sku: string;
+  concorrente: string;
+  skuConcorrente: string;
+  familia: string;
+  familiaId: string | null;
+  concorrenteId: string;
+  precoCJ: number;
+  precoConcorrente: number;
+  dif: number;
+  difPct: number;
+  status: "sucesso" | "erro" | "pendente";
+  ultimaAtualizacao: string | null;
+};
+
+type Periodo = "7" | "30" | "90" | "0";
+
+const emptyLabel = "—";
+
+function buildRows(mapeamentos: Mapeamento[]): Row[] {
   return mapeamentos.map((m) => {
-    const p = getProduto(m.produto_id)!;
-    const f = getFornecedor(m.fornecedor_id)!;
-    const precoFor = m.ultimo_preco ?? 0;
-    const dif = precoFor - p.preco_atual;
-    const difPct = (dif / p.preco_atual) * 100;
+    const produto = m.produtos;
+    const concorrente = m.concorrentes;
+    const precoCJ = Number(produto?.preco_atual ?? 0);
+    const precoConcorrente = Number(m.ultimo_preco ?? 0);
+    const dif = precoConcorrente - precoCJ;
+    const difPct = precoCJ > 0 ? (dif / precoCJ) * 100 : 0;
+
     return {
-      produto: p.nome,
-      sku: p.sku_interno,
-      fornecedor: f.nome,
-      skuFor: m.sku_fornecedor,
-      familia: familias.find((fa) => fa.id === p.familia_id)?.nome ?? "—",
-      precoCJ: p.preco_atual,
-      precoFor,
+      id: m.id,
+      produto: produto?.nome ?? emptyLabel,
+      sku: produto?.sku_interno ?? emptyLabel,
+      concorrente: concorrente?.nome ?? emptyLabel,
+      skuConcorrente: m.sku_concorrente,
+      familia: produto?.familias?.nome ?? "Sem família",
+      familiaId: produto?.familia_id ?? null,
+      concorrenteId: m.concorrente_id,
+      precoCJ,
+      precoConcorrente,
       dif,
       difPct,
+      status: m.status_coleta,
+      ultimaAtualizacao: m.ultima_atualizacao,
     };
   });
 }
 
 function downloadCSV(rows: Row[], filename: string) {
-  const header = ["Produto", "SKU CJ", "Fornecedor", "SKU Forn.", "Família", "Preço CJ", "Preço Forn.", "Diferença R$", "Diferença %"];
-  const csv = [header.join(";"), ...rows.map((r) => [r.produto, r.sku, r.fornecedor, r.skuFor, r.familia, r.precoCJ.toFixed(2), r.precoFor.toFixed(2), r.dif.toFixed(2), r.difPct.toFixed(2)].join(";"))].join("\n");
+  const header = [
+    "Produto",
+    "SKU CJ",
+    "Concorrente",
+    "SKU Conc.",
+    "Família",
+    "Preço CJ",
+    "Preço Conc.",
+    "Diferença R$",
+    "Diferença %",
+    "Status",
+    "Última coleta",
+  ];
+  const csv = [
+    header.join(";"),
+    ...rows.map((r) =>
+      [
+        r.produto,
+        r.sku,
+        r.concorrente,
+        r.skuConcorrente,
+        r.familia,
+        r.precoCJ.toFixed(2),
+        r.precoConcorrente.toFixed(2),
+        r.dif.toFixed(2),
+        r.difPct.toFixed(2),
+        r.status,
+        r.ultimaAtualizacao ? formatDateTime(r.ultimaAtualizacao) : "",
+      ].join(";"),
+    ),
+  ].join("\n");
   const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = filename;
   a.click();
-  toast.success("Exportação concluída");
+  URL.revokeObjectURL(a.href);
+  toast.success("Exportação concluída.");
 }
 
-function RelatorioTable({ rows, title, filename }: { rows: Row[]; title: string; filename: string }) {
+function RelatorioTable({
+  rows,
+  title,
+  filename,
+}: {
+  rows: Row[];
+  title: string;
+  filename: string;
+}) {
   return (
     <Card className="shadow-sm">
-      <CardHeader className="flex flex-row items-center justify-between">
+      <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <CardTitle className="text-base">{title}</CardTitle>
         <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => downloadCSV(rows, filename + ".csv")}>
-            <Download className="h-4 w-4 mr-1" /> CSV
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={rows.length === 0}
+            onClick={() => downloadCSV(rows, `${filename}.csv`)}
+          >
+            <Download className="mr-1 h-4 w-4" /> CSV
           </Button>
-          <Button size="sm" variant="outline" onClick={() => downloadCSV(rows, filename + ".xls")}>
-            <FileSpreadsheet className="h-4 w-4 mr-1" /> Excel
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={rows.length === 0}
+            onClick={() => downloadCSV(rows, `${filename}.xls`)}
+          >
+            <FileSpreadsheet className="mr-1 h-4 w-4" /> Excel
           </Button>
         </div>
       </CardHeader>
@@ -75,31 +205,69 @@ function RelatorioTable({ rows, title, filename }: { rows: Row[]; title: string;
               <TableRow>
                 <TableHead>Produto</TableHead>
                 <TableHead>SKU CJ</TableHead>
-                <TableHead>Fornecedor</TableHead>
-                <TableHead>SKU Forn.</TableHead>
+                <TableHead>Concorrente</TableHead>
+                <TableHead>SKU Conc.</TableHead>
                 <TableHead>Família</TableHead>
                 <TableHead>Preço CJ</TableHead>
-                <TableHead>Preço Forn.</TableHead>
+                <TableHead>Preço Conc.</TableHead>
                 <TableHead>Diferença</TableHead>
                 <TableHead>%</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Última coleta</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.length === 0 && <TableRow><TableCell colSpan={9} className="text-center py-8 text-muted-foreground">Sem dados</TableCell></TableRow>}
-              {rows.map((r, i) => (
-                <TableRow key={i}>
+              {rows.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={11} className="py-10 text-center text-muted-foreground">
+                    Sem dados para os filtros selecionados.
+                  </TableCell>
+                </TableRow>
+              )}
+              {rows.map((r) => (
+                <TableRow key={r.id}>
                   <TableCell className="font-medium">{r.produto}</TableCell>
                   <TableCell className="font-mono text-xs">{r.sku}</TableCell>
-                  <TableCell>{r.fornecedor}</TableCell>
-                  <TableCell className="font-mono text-xs">{r.skuFor}</TableCell>
+                  <TableCell>{r.concorrente}</TableCell>
+                  <TableCell className="font-mono text-xs">{r.skuConcorrente}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{r.familia}</TableCell>
                   <TableCell>{formatBRL(r.precoCJ)}</TableCell>
-                  <TableCell>{formatBRL(r.precoFor)}</TableCell>
-                  <TableCell className={r.dif > 0 ? "text-destructive font-medium" : r.dif < 0 ? "text-success font-medium" : ""}>
-                    {r.dif > 0 ? "+" : ""}{formatBRL(r.dif)}
+                  <TableCell>
+                    {r.precoConcorrente > 0 ? formatBRL(r.precoConcorrente) : emptyLabel}
                   </TableCell>
-                  <TableCell className={r.difPct > 0 ? "text-destructive font-medium" : r.difPct < 0 ? "text-success font-medium" : ""}>
-                    {formatPct(r.difPct)}
+                  <TableCell
+                    className={
+                      r.dif > 0
+                        ? "font-medium text-destructive"
+                        : r.dif < 0
+                          ? "font-medium text-success"
+                          : ""
+                    }
+                  >
+                    {r.precoConcorrente > 0
+                      ? `${r.dif > 0 ? "+" : ""}${formatBRL(r.dif)}`
+                      : emptyLabel}
+                  </TableCell>
+                  <TableCell
+                    className={
+                      r.difPct > 0
+                        ? "font-medium text-destructive"
+                        : r.difPct < 0
+                          ? "font-medium text-success"
+                          : ""
+                    }
+                  >
+                    {r.precoConcorrente > 0 ? formatPct(r.difPct) : emptyLabel}
+                  </TableCell>
+                  <TableCell>
+                    {r.status === "sucesso" && (
+                      <Badge className="bg-success text-success-foreground">Sucesso</Badge>
+                    )}
+                    {r.status === "erro" && <Badge variant="destructive">Erro</Badge>}
+                    {r.status === "pendente" && <Badge variant="secondary">Pendente</Badge>}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                    {r.ultimaAtualizacao ? formatDateTime(r.ultimaAtualizacao) : emptyLabel}
                   </TableCell>
                 </TableRow>
               ))}
@@ -111,145 +279,355 @@ function RelatorioTable({ rows, title, filename }: { rows: Row[]; title: string;
   );
 }
 
+function KpiCard({
+  icon: Icon,
+  label,
+  value,
+  sub,
+  valueClass,
+}: {
+  icon: typeof BarChart3;
+  label: string;
+  value: string | number;
+  sub: string;
+  valueClass?: string;
+}) {
+  return (
+    <Card className="shadow-sm">
+      <CardContent className="p-5">
+        <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-primary/15 text-primary">
+          <Icon className="h-5 w-5" />
+        </div>
+        <div className="text-xs font-medium text-muted-foreground">{label}</div>
+        <div className={`mt-2 text-2xl font-bold ${valueClass ?? ""}`}>{value}</div>
+        <div className="mt-1 text-xs text-muted-foreground">{sub}</div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function Relatorios() {
   const [familiaFilter, setFamiliaFilter] = useState("todas");
-  const [fornecedorFilter, setFornecedorFilter] = useState("todos");
+  const [concorrenteFilter, setConcorrenteFilter] = useState("todos");
+  const [periodo, setPeriodo] = useState<Periodo>("30");
+  const [familias, setFamilias] = useState<Familia[]>([]);
+  const [concorrentes, setConcorrentes] = useState<Concorrente[]>([]);
+  const [mapeamentos, setMapeamentos] = useState<Mapeamento[]>([]);
+  const [historico, setHistorico] = useState<Historico[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const base = buildComparacao().filter((r) => {
-    if (familiaFilter !== "todas" && r.familia !== familias.find((f) => f.id === familiaFilter)?.nome) return false;
-    if (fornecedorFilter !== "todos" && r.fornecedor !== fornecedores.find((f) => f.id === fornecedorFilter)?.nome) return false;
-    return true;
-  });
+  useEffect(() => {
+    let mounted = true;
 
-  const acima = base.filter((r) => r.dif > 0);
-  const abaixo = base.filter((r) => r.dif < 0);
+    async function loadReports() {
+      setLoading(true);
+      const [familiasResult, concorrentesResult, mapeamentosResult, historicoResult] =
+        await Promise.all([
+          supabase.from("familias").select("id,nome").order("nome"),
+          supabase.from("concorrentes").select("id,nome").order("nome"),
+          supabase
+            .from("mapeamentos_sku")
+            .select(
+              "id,produto_id,concorrente_id,sku_concorrente,ultimo_preco,ultima_atualizacao,status_coleta,produtos(id,sku_interno,nome,familia_id,preco_atual,familias(id,nome)),concorrentes(id,nome)",
+            )
+            .order("ultima_atualizacao", { ascending: false, nullsFirst: false }),
+          supabase
+            .from("historico_precos")
+            .select(
+              "id,mapeamento_id,preco_construjota,preco_concorrente,diferenca_valor,diferenca_percentual,status,mensagem_erro,coletado_em,mapeamentos_sku(id,produto_id,concorrente_id,sku_concorrente,produtos(id,sku_interno,nome,familia_id,preco_atual,familias(id,nome)),concorrentes(id,nome))",
+            )
+            .order("coletado_em", { ascending: false })
+            .limit(1000),
+        ]);
+
+      if (!mounted) return;
+
+      const hasError =
+        familiasResult.error ||
+        concorrentesResult.error ||
+        mapeamentosResult.error ||
+        historicoResult.error;
+
+      if (hasError) {
+        toast.error("Não foi possível carregar os relatórios.");
+      }
+
+      setFamilias((familiasResult.data ?? []) as Familia[]);
+      setConcorrentes((concorrentesResult.data ?? []) as Concorrente[]);
+      setMapeamentos((mapeamentosResult.data ?? []) as Mapeamento[]);
+      setHistorico((historicoResult.data ?? []) as Historico[]);
+      setLoading(false);
+    }
+
+    loadReports();
+
+    const channel = supabase
+      .channel("relatorios-data")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "historico_precos" },
+        loadReports,
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "mapeamentos_sku" },
+        loadReports,
+      )
+      .subscribe();
+
+    return () => {
+      mounted = false;
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const baseRows = useMemo(() => buildRows(mapeamentos), [mapeamentos]);
+
+  const filteredRows = useMemo(() => {
+    return baseRows.filter((r) => {
+      if (familiaFilter !== "todas" && r.familiaId !== familiaFilter) return false;
+      if (concorrenteFilter !== "todos" && r.concorrenteId !== concorrenteFilter) return false;
+      if (periodo !== "0" && r.ultimaAtualizacao) {
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - Number(periodo));
+        if (new Date(r.ultimaAtualizacao) < cutoff) return false;
+      }
+      return true;
+    });
+  }, [baseRows, concorrenteFilter, familiaFilter, periodo]);
+
+  const acima = filteredRows.filter((r) => r.precoConcorrente > 0 && r.dif > 0);
+  const abaixo = filteredRows.filter((r) => r.precoConcorrente > 0 && r.dif < 0);
+  const erros = historico.filter((h) => h.status === "erro");
 
   const porFamilia = Object.entries(
-    base.reduce<Record<string, Row[]>>((acc, r) => ((acc[r.familia] ||= []).push(r), acc), {}),
+    filteredRows.reduce<Record<string, Row[]>>(
+      (acc, r) => ((acc[r.familia] ||= []).push(r), acc),
+      {},
+    ),
   );
-  const porFornecedor = Object.entries(
-    base.reduce<Record<string, Row[]>>((acc, r) => ((acc[r.fornecedor] ||= []).push(r), acc), {}),
+  const porConcorrente = Object.entries(
+    filteredRows.reduce<Record<string, Row[]>>(
+      (acc, r) => ((acc[r.concorrente] ||= []).push(r), acc),
+      {},
+    ),
   );
 
-  const erros = historico.filter((h) => h.status === "erro").map((h) => {
-    const m = mapeamentos.find((mm) => mm.id === h.mapeamento_id)!;
-    const p = getProduto(m.produto_id)!;
-    const f = getFornecedor(m.fornecedor_id)!;
-    return { ...h, p, f, m };
-  });
+  const withPrice = filteredRows.filter((r) => r.precoConcorrente > 0);
+  const mediaPct = withPrice.reduce((acc, r) => acc + r.difPct, 0) / Math.max(withPrice.length, 1);
 
   return (
     <>
-      <PageHeader title="Relatórios" description="Relatórios gerenciais. Exporte em CSV ou Excel." />
+      <PageHeader
+        title="Relatórios"
+        description="Análise gerencial de preços, concorrentes e coletas."
+      />
+
+      <div className="mb-4 grid grid-cols-1 gap-4 md:grid-cols-4">
+        <KpiCard
+          icon={PackageSearch}
+          label="Mapeamentos"
+          value={filteredRows.length}
+          sub="Itens analisados"
+        />
+        <KpiCard
+          icon={TrendingUp}
+          label="Acima do concorrente"
+          value={acima.length}
+          sub="Preço CJ maior"
+          valueClass="text-destructive"
+        />
+        <KpiCard
+          icon={TrendingDown}
+          label="Abaixo do concorrente"
+          value={abaixo.length}
+          sub="Preço CJ menor"
+          valueClass="text-success"
+        />
+        <KpiCard
+          icon={BarChart3}
+          label="Diferença média"
+          value={`${mediaPct.toFixed(2).replace(".", ",")}%`}
+          sub="Base filtrada"
+        />
+      </div>
 
       <Card className="mb-4 shadow-sm">
-        <CardContent className="p-5 grid grid-cols-1 md:grid-cols-3 gap-3">
+        <CardHeader>
+          <CardTitle className="text-base">Filtros</CardTitle>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 gap-3 md:grid-cols-3">
           <Select value={familiaFilter} onValueChange={setFamiliaFilter}>
-            <SelectTrigger><SelectValue placeholder="Família" /></SelectTrigger>
+            <SelectTrigger>
+              <SelectValue placeholder="Família" />
+            </SelectTrigger>
             <SelectContent>
               <SelectItem value="todas">Todas as famílias</SelectItem>
-              {familias.map((f) => <SelectItem key={f.id} value={f.id}>{f.nome}</SelectItem>)}
+              {familias.map((f) => (
+                <SelectItem key={f.id} value={f.id}>
+                  {f.nome}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
-          <Select value={fornecedorFilter} onValueChange={setFornecedorFilter}>
-            <SelectTrigger><SelectValue placeholder="Fornecedor" /></SelectTrigger>
+          <Select value={concorrenteFilter} onValueChange={setConcorrenteFilter}>
+            <SelectTrigger>
+              <SelectValue placeholder="Concorrente" />
+            </SelectTrigger>
             <SelectContent>
-              <SelectItem value="todos">Todos os fornecedores</SelectItem>
-              {fornecedores.map((f) => <SelectItem key={f.id} value={f.id}>{f.nome}</SelectItem>)}
+              <SelectItem value="todos">Todos os concorrentes</SelectItem>
+              {concorrentes.map((c) => (
+                <SelectItem key={c.id} value={c.id}>
+                  {c.nome}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
-          <Select defaultValue="7">
-            <SelectTrigger><SelectValue /></SelectTrigger>
+          <Select value={periodo} onValueChange={(value: Periodo) => setPeriodo(value)}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
             <SelectContent>
               <SelectItem value="7">Últimos 7 dias</SelectItem>
               <SelectItem value="30">Últimos 30 dias</SelectItem>
               <SelectItem value="90">Últimos 90 dias</SelectItem>
+              <SelectItem value="0">Todo o período</SelectItem>
             </SelectContent>
           </Select>
         </CardContent>
       </Card>
 
-      <Tabs defaultValue="atual" className="space-y-4">
-        <TabsList className="flex-wrap h-auto">
-          <TabsTrigger value="atual">Comparação atual</TabsTrigger>
-          <TabsTrigger value="acima">Acima do mercado</TabsTrigger>
-          <TabsTrigger value="abaixo">Abaixo do mercado</TabsTrigger>
-          <TabsTrigger value="familia">Por família</TabsTrigger>
-          <TabsTrigger value="fornecedor">Por fornecedor</TabsTrigger>
-          <TabsTrigger value="variacao">Variação de preços</TabsTrigger>
-          <TabsTrigger value="erros">Erros de coleta</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="atual"><RelatorioTable rows={base} title="Comparação atual ConstruJota × Fornecedores" filename="comparacao-atual" /></TabsContent>
-        <TabsContent value="acima"><RelatorioTable rows={acima} title="Produtos com preço acima do mercado" filename="acima-mercado" /></TabsContent>
-        <TabsContent value="abaixo"><RelatorioTable rows={abaixo} title="Produtos com preço abaixo do mercado" filename="abaixo-mercado" /></TabsContent>
-        <TabsContent value="familia" className="space-y-4">
-          {porFamilia.map(([nome, rows]) => <RelatorioTable key={nome} rows={rows} title={`Família: ${nome}`} filename={`familia-${nome}`} />)}
-        </TabsContent>
-        <TabsContent value="fornecedor" className="space-y-4">
-          {porFornecedor.map(([nome, rows]) => <RelatorioTable key={nome} rows={rows} title={`Fornecedor: ${nome}`} filename={`fornecedor-${nome}`} />)}
-        </TabsContent>
-        <TabsContent value="variacao">
-          <Card className="shadow-sm">
-            <CardHeader><CardTitle className="text-base">Variação de preços ao longo do tempo</CardTitle></CardHeader>
-            <CardContent>
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Produto</TableHead>
-                      <TableHead>Fornecedor</TableHead>
-                      <TableHead>Menor preço</TableHead>
-                      <TableHead>Maior preço</TableHead>
-                      <TableHead>Variação</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {mapeamentos.map((m) => {
-                      const hs = historico.filter((h) => h.mapeamento_id === m.id && h.status === "sucesso").map((h) => h.preco_fornecedor);
-                      const min = Math.min(...hs);
-                      const max = Math.max(...hs);
-                      const variacao = ((max - min) / min) * 100;
-                      const p = getProduto(m.produto_id)!;
-                      const f = getFornecedor(m.fornecedor_id)!;
-                      return (
-                        <TableRow key={m.id}>
-                          <TableCell className="font-medium">{p.nome}</TableCell>
-                          <TableCell>{f.nome}</TableCell>
-                          <TableCell>{formatBRL(min)}</TableCell>
-                          <TableCell>{formatBRL(max)}</TableCell>
-                          <TableCell className={variacao > 5 ? "text-primary font-medium" : ""}>{variacao.toFixed(2)}%</TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
+      {loading ? (
+        <Card className="shadow-sm">
+          <CardContent className="py-12 text-center text-muted-foreground">
+            Carregando relatórios...
+          </CardContent>
+        </Card>
+      ) : mapeamentos.length === 0 ? (
+        <Card className="border-primary/40 bg-primary/5 shadow-sm">
+          <CardContent className="flex gap-3 p-5 text-sm">
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+            <div>
+              <div className="font-medium">Ainda não há mapeamentos para gerar relatórios.</div>
+              <div className="mt-1 text-muted-foreground">
+                Os filtros já carregam famílias e concorrentes cadastrados. Cadastre produtos e
+                mapeamentos de SKU para ver comparações, variações e exportações.
               </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-        <TabsContent value="erros">
-          <Card className="shadow-sm">
-            <CardHeader><CardTitle className="text-base">Erros de coleta</CardTitle></CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader><TableRow><TableHead>Produto</TableHead><TableHead>Fornecedor</TableHead><TableHead>Mensagem</TableHead><TableHead>Data</TableHead></TableRow></TableHeader>
-                <TableBody>
-                  {erros.length === 0 && <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">Nenhum erro registrado</TableCell></TableRow>}
-                  {erros.map((e) => (
-                    <TableRow key={e.id}>
-                      <TableCell className="font-medium">{e.p.nome}</TableCell>
-                      <TableCell>{e.f.nome}</TableCell>
-                      <TableCell className="text-sm"><Badge variant="destructive" className="mr-2">Erro</Badge>{e.mensagem_erro}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{new Date(e.coletado_em).toLocaleString("pt-BR")}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
+            </div>
+          </CardContent>
+        </Card>
+      ) : (
+        <Tabs defaultValue="atual" className="space-y-4">
+          <TabsList className="h-auto flex-wrap">
+            <TabsTrigger value="atual">Comparação atual</TabsTrigger>
+            <TabsTrigger value="acima">Acima</TabsTrigger>
+            <TabsTrigger value="abaixo">Abaixo</TabsTrigger>
+            <TabsTrigger value="familia">Por família</TabsTrigger>
+            <TabsTrigger value="concorrente">Por concorrente</TabsTrigger>
+            <TabsTrigger value="erros">Erros</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="atual">
+            <RelatorioTable
+              rows={filteredRows}
+              title="Comparação atual ConstruJota x Concorrentes"
+              filename="comparacao-atual"
+            />
+          </TabsContent>
+          <TabsContent value="acima">
+            <RelatorioTable
+              rows={acima}
+              title="Produtos acima do concorrente"
+              filename="acima-concorrente"
+            />
+          </TabsContent>
+          <TabsContent value="abaixo">
+            <RelatorioTable
+              rows={abaixo}
+              title="Produtos abaixo do concorrente"
+              filename="abaixo-concorrente"
+            />
+          </TabsContent>
+          <TabsContent value="familia" className="space-y-4">
+            {porFamilia.length === 0 && (
+              <RelatorioTable rows={[]} title="Por família" filename="por-familia" />
+            )}
+            {porFamilia.map(([nome, rows]) => (
+              <RelatorioTable
+                key={nome}
+                rows={rows}
+                title={`Família: ${nome}`}
+                filename={`familia-${nome}`}
+              />
+            ))}
+          </TabsContent>
+          <TabsContent value="concorrente" className="space-y-4">
+            {porConcorrente.length === 0 && (
+              <RelatorioTable rows={[]} title="Por concorrente" filename="por-concorrente" />
+            )}
+            {porConcorrente.map(([nome, rows]) => (
+              <RelatorioTable
+                key={nome}
+                rows={rows}
+                title={`Concorrente: ${nome}`}
+                filename={`concorrente-${nome}`}
+              />
+            ))}
+          </TabsContent>
+          <TabsContent value="erros">
+            <Card className="shadow-sm">
+              <CardHeader>
+                <CardTitle className="text-base">Erros de coleta</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Data</TableHead>
+                        <TableHead>Produto</TableHead>
+                        <TableHead>Concorrente</TableHead>
+                        <TableHead>Mensagem</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {erros.length === 0 && (
+                        <TableRow>
+                          <TableCell
+                            colSpan={4}
+                            className="py-10 text-center text-muted-foreground"
+                          >
+                            Nenhum erro registrado.
+                          </TableCell>
+                        </TableRow>
+                      )}
+                      {erros.map((erro) => (
+                        <TableRow key={erro.id}>
+                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                            {formatDateTime(erro.coletado_em)}
+                          </TableCell>
+                          <TableCell className="font-medium">
+                            {erro.mapeamentos_sku?.produtos?.nome ?? emptyLabel}
+                          </TableCell>
+                          <TableCell>
+                            {erro.mapeamentos_sku?.concorrentes?.nome ?? emptyLabel}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="destructive" className="mr-2">
+                              Erro
+                            </Badge>
+                            {erro.mensagem_erro ?? "Sem mensagem"}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+      )}
     </>
   );
 }

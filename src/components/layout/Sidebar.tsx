@@ -1,27 +1,30 @@
-import { NavLink } from "react-router-dom";
+import { useState } from "react";
+import { NavLink, useNavigate } from "react-router-dom";
 import {
-  LayoutDashboard,
-  Boxes,
-  Package,
-  Store,
-  GitCompareArrows,
-  History,
   BarChart3,
   Bot,
-  Settings,
-  Menu,
-  X,
+  Boxes,
+  GitCompareArrows,
+  History,
   Home,
+  LayoutDashboard,
+  LogOut,
+  Menu,
+  Package,
+  Settings,
+  Store,
   Users,
+  X,
 } from "lucide-react";
-import { useState } from "react";
+import { toast } from "sonner";
+import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
 const NAV = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/familias", label: "Famílias", icon: Boxes },
   { to: "/produtos", label: "Produtos ConstruJota", icon: Package },
-  { to: "/fornecedores", label: "Fornecedores", icon: Store },
+  { to: "/concorrentes", label: "Concorrentes", icon: Store },
   { to: "/mapeamentos", label: "Mapeamento de SKUs", icon: GitCompareArrows },
   { to: "/historico", label: "Histórico de Preços", icon: History },
   { to: "/relatorios", label: "Relatórios", icon: BarChart3 },
@@ -31,11 +34,20 @@ const NAV = [
 ];
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
+  const { logout } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogout = async () => {
+    await logout();
+    toast.success("Sessão encerrada.");
+    onNavigate?.();
+    navigate("/login", { replace: true });
+  };
+
   return (
     <aside className="flex h-full w-72 flex-col bg-sidebar text-sidebar-foreground">
-      {/* Logo */}
-      <div className="flex items-center gap-3 px-6 py-6 border-b border-sidebar-border">
-        <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary text-primary-foreground font-black text-xl shadow-md">
+      <div className="flex items-center gap-3 border-b border-sidebar-border px-6 py-6">
+        <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary text-xl font-black text-primary-foreground shadow-md">
           CJ
         </div>
         <div className="leading-tight">
@@ -48,7 +60,6 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         </div>
       </div>
 
-      {/* Nav */}
       <nav className="flex-1 overflow-y-auto px-3 py-4">
         <ul className="space-y-1">
           {NAV.map((item) => {
@@ -76,13 +87,18 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         </ul>
       </nav>
 
-      {/* Footer card */}
-      <div className="m-4 rounded-lg border border-sidebar-border bg-sidebar-accent p-4 text-center">
-        <Home className="mx-auto mb-2 h-5 w-5 text-primary" />
-        <div className="text-sm font-semibold text-white">ConstruJota Atacadista</div>
-        <div className="mt-1 text-xs text-sidebar-foreground/60">
-          Inteligência para vender mais e comprar melhor.
+      <div className="m-4 rounded-lg border border-sidebar-border bg-sidebar-accent p-4">
+        <div className="flex items-center gap-2">
+          <Home className="h-5 w-5 text-primary" />
+          <div className="text-sm font-semibold text-white">ConstruJota Atacadista</div>
         </div>
+        <button
+          onClick={handleLogout}
+          className="mt-3 inline-flex w-full items-center justify-start gap-2 rounded-md px-2 py-2 text-sm font-medium text-sidebar-foreground/80 transition hover:bg-sidebar-border hover:text-white"
+        >
+          <LogOut className="h-4 w-4" />
+          Sair do sistema
+        </button>
       </div>
     </aside>
   );
@@ -90,33 +106,28 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 
 export default function Sidebar() {
   const [open, setOpen] = useState(false);
+
   return (
     <>
-      {/* Desktop */}
-      <div className="hidden lg:flex fixed inset-y-0 left-0 z-30">
+      <div className="fixed inset-y-0 left-0 z-30 hidden lg:flex">
         <SidebarContent />
       </div>
 
-      {/* Mobile toggle button */}
       <button
         onClick={() => setOpen(true)}
-        className="lg:hidden fixed top-4 left-4 z-40 inline-flex items-center justify-center rounded-md bg-secondary text-secondary-foreground p-2 shadow-md"
+        className="fixed left-4 top-4 z-40 inline-flex items-center justify-center rounded-md bg-secondary p-2 text-secondary-foreground shadow-md lg:hidden"
         aria-label="Abrir menu"
       >
         <Menu className="h-5 w-5" />
       </button>
 
-      {/* Mobile drawer */}
       {open && (
-        <div className="lg:hidden fixed inset-0 z-50 flex">
-          <div
-            className="absolute inset-0 bg-black/60"
-            onClick={() => setOpen(false)}
-          />
+        <div className="fixed inset-0 z-50 flex lg:hidden">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setOpen(false)} />
           <div className="relative">
             <button
               onClick={() => setOpen(false)}
-              className="absolute -right-12 top-4 inline-flex items-center justify-center rounded-md bg-secondary text-secondary-foreground p-2"
+              className="absolute -right-12 top-4 inline-flex items-center justify-center rounded-md bg-secondary p-2 text-secondary-foreground"
               aria-label="Fechar menu"
             >
               <X className="h-5 w-5" />
