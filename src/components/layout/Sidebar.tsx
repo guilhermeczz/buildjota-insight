@@ -12,6 +12,7 @@ import {
   Menu,
   X,
   Home,
+  Users,
 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
@@ -25,6 +26,7 @@ const NAV = [
   { to: "/historico", label: "Histórico de Preços", icon: History },
   { to: "/relatorios", label: "Relatórios", icon: BarChart3 },
   { to: "/execucoes-robo", label: "Execuções do Robô", icon: Bot },
+  { to: "/usuarios", label: "Usuários", icon: Users },
   { to: "/configuracoes", label: "Configurações", icon: Settings },
 ];
 
@@ -38,7 +40,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         </div>
         <div className="leading-tight">
           <div className="text-base font-extrabold tracking-tight text-white">
-            CONSTRU<span className="text-primary">JOTA</span>
+            RADAR <span className="text-primary">CONSTRUJOTA</span>
           </div>
           <div className="text-[10px] uppercase tracking-[0.2em] text-sidebar-foreground/60">
             Atacadista
