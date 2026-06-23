@@ -14,6 +14,22 @@ function absoluteUrl(value, fallbackBase) {
   }
 }
 
+function productUrlForMapping(mapping, concorrente) {
+  if (concorrente.nome === "MEGALESTE" && mapping.sku_concorrente) {
+    return absoluteUrl(`/c/produto/${mapping.sku_concorrente}`, concorrente.site_url);
+  }
+
+  return absoluteUrl(mapping.url_produto, concorrente.site_url);
+}
+
+function loginUrlForConcorrente(concorrente) {
+  if (concorrente.nome === "MAREST") {
+    return absoluteUrl("/login", concorrente.site_url);
+  }
+
+  return absoluteUrl(concorrente.login_url || concorrente.site_url, concorrente.site_url);
+}
+
 async function fillFirstVisible(page, selectors, value) {
   for (const selector of selectors) {
     const locator = page.locator(selector).first();
@@ -59,7 +75,7 @@ async function login(page, concorrente) {
     throw new Error(`Credenciais nao configuradas para ${concorrente.nome}`);
   }
 
-  const loginUrl = absoluteUrl(concorrente.login_url || concorrente.site_url, concorrente.site_url);
+  const loginUrl = loginUrlForConcorrente(concorrente);
   await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
   await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
   await dismissOverlays(page);
@@ -78,6 +94,11 @@ async function login(page, concorrente) {
       "input[id*='email' i]",
       "input[name*='login' i]",
       "input[id*='login' i]",
+      "input[name='user']",
+      "input[placeholder*='login' i]",
+      "input[placeholder*='Digite seu' i]",
+      "input[placeholder*='usuário' i]",
+      "input[placeholder*='usuario' i]",
       "input[name*='usuario' i]",
       "input[id*='usuario' i]",
       "input[name*='cnpj' i]",
@@ -92,6 +113,8 @@ async function login(page, concorrente) {
     page,
     [
       "input[type='password']",
+      "input[name='pass']",
+      "input[placeholder*='senha' i]",
       "input[name*='senha' i]",
       "input[id*='senha' i]",
       "input[name*='password' i]",
@@ -129,6 +152,8 @@ async function login(page, concorrente) {
 
 async function openLoginSurface(page) {
   await clickFirstVisible(page, [
+    "a[role='button'][data-toggle='dropdown'][aria-haspopup='true']",
+    "a[data-toggle='dropdown']:has(svg)",
     "#botao-login",
     "button:has-text('Entre ou cadastre-se')",
     "button:has-text('Faça login')",
@@ -186,7 +211,7 @@ export async function collectPricesByBrowser(groups, options = {}) {
               throw new Error("URL do produto nao cadastrada");
             }
 
-            const productUrl = absoluteUrl(mapping.url_produto, group.concorrente.site_url);
+            const productUrl = productUrlForMapping(mapping, group.concorrente);
             await page.goto(productUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
             await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
             await page.waitForTimeout(1500);

@@ -12,7 +12,7 @@ export default function AppLayout() {
           <Outlet />
         </main>
         <footer className="border-t bg-secondary text-secondary-foreground/70 py-3 text-center text-xs">
-          Radar ConstruJota © 2025 — Todos os direitos reservados
+          Radar ConstruJota © 2026 — Todos os direitos reservados
         </footer>
       </div>
     </div>

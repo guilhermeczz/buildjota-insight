@@ -7,6 +7,16 @@ loadWorkerEnv();
 const args = new Set(process.argv.slice(2));
 const dryRun = args.has("--dry-run");
 const headed = args.has("--headed");
+const failedOnly = args.has("--failed-only");
+const produtoId = argValue("--produto-id");
+const familiaId = argValue("--familia-id");
+const mapeamentoId = argValue("--mapeamento-id");
+
+function argValue(name) {
+  const prefix = `${name}=`;
+  const value = process.argv.find((arg) => arg.startsWith(prefix));
+  return value ? value.slice(prefix.length).trim() : "";
+}
 
 function groupByConcorrente(mapeamentos) {
   const groups = new Map();
@@ -40,7 +50,12 @@ function summarize(resultados) {
 async function main() {
   const startedAt = new Date();
   const supabase = createSupabaseAdmin();
-  const mapeamentos = await fetchActiveMappings(supabase);
+  const mapeamentos = await fetchActiveMappings(supabase, {
+    produtoId,
+    familiaId,
+    mapeamentoId,
+    failedOnly,
+  });
 
   if (mapeamentos.length === 0) {
     console.log("Nenhum mapeamento ativo encontrado.");
@@ -69,7 +84,17 @@ async function main() {
 
   const response = await registerResults(
     resultados,
-    `Worker finalizado: ${summary.totalSucesso} sucesso(s), ${summary.totalErro} erro(s).`,
+    `Worker finalizado: ${summary.totalSucesso} sucesso(s), ${summary.totalErro} erro(s).${
+      mapeamentoId
+        ? " Filtro: mapeamento."
+        : produtoId
+          ? " Filtro: produto."
+          : familiaId
+            ? " Filtro: familia."
+            : failedOnly
+              ? " Filtro: erros."
+              : ""
+    }`,
   );
 
   console.log(`Execucao registrada: ${response.id} (${response.status}).`);

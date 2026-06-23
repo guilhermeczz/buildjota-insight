@@ -144,7 +144,7 @@ export default function Dashboard() {
       historicoResult.error ||
       execucoesResult.error
     ) {
-      toast.error("Nao foi possivel carregar o dashboard");
+      toast.error("Não foi possível carregar o dashboard");
       setLoading(false);
       return;
     }
@@ -200,8 +200,8 @@ export default function Dashboard() {
           const produto = mapeamento.produtos;
           const precoCj = numeric(produto?.preco_atual);
           const precoConcorrente = numeric(mapeamento.ultimo_preco);
-          const dif = precoConcorrente - precoCj;
-          const difPct = precoCj > 0 ? (dif / precoCj) * 100 : 0;
+          const dif = precoCj - precoConcorrente;
+          const difPct = precoConcorrente > 0 ? (dif / precoConcorrente) * 100 : 0;
           return {
             mapeamento,
             produto,
@@ -228,6 +228,7 @@ export default function Dashboard() {
   }, [diffs]);
 
   const ultimaExec = execucoes[0];
+  const semPreco = mapeamentos.filter((mapeamento) => !numeric(mapeamento.ultimo_preco)).length;
 
   const chartData = useMemo(() => {
     const days = Array.from(new Set(historico.map((row) => row.coletado_em.slice(0, 10))))
@@ -291,9 +292,9 @@ export default function Dashboard() {
     },
     {
       icon: Percent,
-      label: "Diferenca media percentual",
+      label: "Diferença média percentual",
       value: `${stats.mediaPct.toFixed(2).replace(".", ",")}%`,
-      sub: "Media geral",
+      sub: "Média geral",
       valueClass: stats.mediaPct >= 0 ? "text-destructive" : "text-success",
     },
     {
@@ -336,13 +337,13 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
         <Card className="shadow-sm xl:col-span-2">
           <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-lg">Maiores diferencas de preco</CardTitle>
+            <CardTitle className="text-lg">Maiores diferenças de preço</CardTitle>
             <Button
               size="sm"
               onClick={() => navigate("/relatorios")}
               className="bg-primary text-primary-foreground hover:bg-primary/90"
             >
-              Ver relatorio completo
+              Ver relatório completo
             </Button>
           </CardHeader>
           <CardContent className="overflow-x-auto">
@@ -353,11 +354,11 @@ export default function Dashboard() {
                   <TableHead>SKU CJ</TableHead>
                   <TableHead>Concorrente</TableHead>
                   <TableHead>SKU Conc.</TableHead>
-                  <TableHead>Preco CJ</TableHead>
-                  <TableHead>Preco Conc.</TableHead>
-                  <TableHead>Diferenca</TableHead>
+                  <TableHead>Preço CJ</TableHead>
+                  <TableHead>Preço Conc.</TableHead>
+                  <TableHead>Diferença</TableHead>
                   <TableHead>%</TableHead>
-                  <TableHead>Ultima coleta</TableHead>
+                  <TableHead>Última coleta</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -371,7 +372,7 @@ export default function Dashboard() {
                 {!loading && diffs.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
-                      Nenhum preco coletado ainda
+                      Nenhum preço coletado ainda
                     </TableCell>
                   </TableRow>
                 )}
@@ -423,70 +424,36 @@ export default function Dashboard() {
         </Card>
 
         <div className="space-y-6">
-          <Card className="border-primary/50 shadow-sm">
+          <Card className="shadow-sm">
             <CardHeader>
-              <CardTitle className="text-lg">Resumo geral</CardTitle>
+              <CardTitle className="text-base">Leitura rápida</CardTitle>
             </CardHeader>
-            <CardContent>
-              <div className="relative h-48">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={pieData}
-                      dataKey="value"
-                      innerRadius={55}
-                      outerRadius={80}
-                      paddingAngle={2}
-                    >
-                      {pieData.map((entry) => (
-                        <Cell key={entry.name} fill={entry.color} />
-                      ))}
-                    </Pie>
-                  </PieChart>
-                </ResponsiveContainer>
-                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-                  <div className="text-2xl font-bold">{stats.total}</div>
-                  <div className="text-xs text-muted-foreground">Total</div>
-                </div>
-              </div>
-              <ul className="mt-4 space-y-1.5 text-sm">
-                {pieData.map((entry) => (
-                  <li key={entry.name} className="flex items-center gap-2">
-                    <span
-                      className="inline-block h-2.5 w-2.5 rounded-full"
-                      style={{ background: entry.color }}
-                    />
-                    <span className="font-semibold">{entry.value}</span>
-                    <span className="text-muted-foreground">- {entry.name}</span>
-                  </li>
-                ))}
-              </ul>
-              <div className="mt-4 border-t pt-3 text-xs text-muted-foreground">
-                <div>
-                  Ultima coleta:{" "}
-                  <span className="font-medium text-foreground">
-                    {ultimaExec?.finalizado_em
-                      ? formatDateTime(ultimaExec.finalizado_em)
-                      : "Sem coletas"}
-                  </span>
-                </div>
-                <div>
-                  Proxima coleta: <span className="font-medium text-foreground">Nao agendada</span>
-                </div>
+            <CardContent className="space-y-4 text-sm">
+              <Row label="Comparações com preço" value={`${stats.total}`} />
+              <Row label="Mapeamentos sem coleta" value={`${semPreco}`} />
+              <Row
+                label="ConstruJota acima"
+                value={`${stats.acima}`}
+                valueClass="text-destructive"
+              />
+              <Row label="ConstruJota abaixo" value={`${stats.abaixo}`} valueClass="text-success" />
+              <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+                Diferença positiva significa que a ConstruJota está acima do preço do concorrente.
+                Diferença negativa significa que está abaixo.
               </div>
             </CardContent>
           </Card>
 
           <Card className="shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle className="text-base">Ultima execucao do robo</CardTitle>
+              <CardTitle className="text-base">Última execução do robô</CardTitle>
               <Badge variant={ultimaExec?.status === "erro" ? "destructive" : "secondary"}>
-                {ultimaExec?.status ?? "sem execucao"}
+                {ultimaExec?.status ?? "sem execução"}
               </Badge>
             </CardHeader>
             <CardContent className="space-y-1.5 text-sm">
               <Row
-                label="Inicio"
+                label="Início"
                 value={ultimaExec ? formatDateTime(ultimaExec.iniciado_em) : "-"}
               />
               <Row
@@ -505,14 +472,14 @@ export default function Dashboard() {
                 valueClass="text-destructive"
               />
               <Row
-                label="Tempo de execucao"
+                label="Tempo de execução"
                 value={ultimaExec ? durationLabel(ultimaExec.tempo_execucao_segundos) : "-"}
               />
               <Button
                 onClick={() => navigate("/execucoes-robo")}
                 className="mt-3 w-full bg-primary text-primary-foreground hover:bg-primary/90"
               >
-                Ver todas as execucoes
+                Ver todas as execuções
               </Button>
             </CardContent>
           </Card>
@@ -527,7 +494,7 @@ export default function Dashboard() {
                 <div>
                   <div className="font-medium">{ultimaExec?.total_erro ?? 0} coletas com erro</div>
                   <div className="text-xs text-muted-foreground">
-                    Consulte os logs da ultima execucao
+                    Consulte os logs da última execução
                   </div>
                 </div>
               </div>
@@ -536,14 +503,14 @@ export default function Dashboard() {
                 <div>
                   <div className="font-medium">{mapeamentos.length} mapeamentos ativos</div>
                   <div className="text-xs text-muted-foreground">
-                    O robo usa esses mapeamentos para coletar precos
+                    O robô usa esses mapeamentos para coletar preços
                   </div>
                 </div>
               </div>
               <div className="flex gap-3">
                 <CheckCircle2 className="h-5 w-5 shrink-0 text-success" />
                 <div>
-                  <div className="font-medium">{stats.total} comparacoes com preco coletado</div>
+                  <div className="font-medium">{stats.total} comparações com preço coletado</div>
                   <div className="text-xs text-muted-foreground">
                     Dados reais salvos no Supabase
                   </div>
@@ -554,55 +521,108 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <Card className="shadow-sm">
-        <CardHeader>
-          <CardTitle className="text-lg">Evolucao de precos</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData}>
-                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
-                <XAxis dataKey="dia" stroke="var(--muted-foreground)" fontSize={12} />
-                <YAxis
-                  stroke="var(--muted-foreground)"
-                  fontSize={12}
-                  tickFormatter={(value) => `R$ ${value}`}
-                />
-                <ReTooltip
-                  formatter={(value: number) => formatBRL(value)}
-                  contentStyle={{
-                    background: "var(--card)",
-                    border: "1px solid var(--border)",
-                    borderRadius: 8,
-                  }}
-                />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                {mapeamentos.slice(0, 4).map((mapeamento, index) => {
-                  const produto = mapeamento.produtos;
-                  if (!produto) return null;
-                  const colors = [
-                    "var(--primary)",
-                    "var(--secondary)",
-                    "var(--success)",
-                    "#3b82f6",
-                  ];
-                  return (
-                    <Line
-                      key={mapeamento.id}
-                      type="monotone"
-                      dataKey={`${produto.nome} (${produto.sku_interno})`}
-                      stroke={colors[index]}
-                      strokeWidth={2}
-                      dot={{ r: 3 }}
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+        <Card className="border-primary/40 shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-lg">Resumo geral</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="relative h-56">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={pieData}
+                    dataKey="value"
+                    innerRadius={62}
+                    outerRadius={88}
+                    paddingAngle={2}
+                  >
+                    {pieData.map((entry) => (
+                      <Cell key={entry.name} fill={entry.color} />
+                    ))}
+                  </Pie>
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                <div className="text-2xl font-bold">{stats.total}</div>
+                <div className="text-xs text-muted-foreground">comparações</div>
+              </div>
+            </div>
+            <ul className="mt-4 space-y-2 text-sm">
+              {pieData.map((entry) => (
+                <li key={entry.name} className="flex items-center justify-between gap-3">
+                  <span className="flex items-center gap-2 text-muted-foreground">
+                    <span
+                      className="inline-block h-2.5 w-2.5 rounded-full"
+                      style={{ background: entry.color }}
                     />
-                  );
-                })}
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </CardContent>
-      </Card>
+                    {entry.name}
+                  </span>
+                  <span className="font-semibold">{entry.value}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="mt-4 border-t pt-3 text-xs text-muted-foreground">
+              Última coleta:{" "}
+              <span className="font-medium text-foreground">
+                {ultimaExec?.finalizado_em
+                  ? formatDateTime(ultimaExec.finalizado_em)
+                  : "Sem coletas"}
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="shadow-sm xl:col-span-2">
+          <CardHeader>
+            <CardTitle className="text-lg">Evolução de preços</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="h-72">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData}>
+                  <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
+                  <XAxis dataKey="dia" stroke="var(--muted-foreground)" fontSize={12} />
+                  <YAxis
+                    stroke="var(--muted-foreground)"
+                    fontSize={12}
+                    tickFormatter={(value) => `R$ ${value}`}
+                  />
+                  <ReTooltip
+                    formatter={(value: number) => formatBRL(value)}
+                    contentStyle={{
+                      background: "var(--card)",
+                      border: "1px solid var(--border)",
+                      borderRadius: 8,
+                    }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  {mapeamentos.slice(0, 4).map((mapeamento, index) => {
+                    const produto = mapeamento.produtos;
+                    if (!produto) return null;
+                    const colors = [
+                      "var(--primary)",
+                      "var(--secondary)",
+                      "var(--success)",
+                      "#3b82f6",
+                    ];
+                    return (
+                      <Line
+                        key={mapeamento.id}
+                        type="monotone"
+                        dataKey={`${produto.nome} (${produto.sku_interno})`}
+                        stroke={colors[index]}
+                        strokeWidth={2}
+                        dot={{ r: 3 }}
+                      />
+                    );
+                  })}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }

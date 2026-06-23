@@ -20,11 +20,11 @@ export function createSupabaseAdmin() {
   });
 }
 
-export async function fetchActiveMappings(supabase) {
+export async function fetchActiveMappings(supabase, filters = {}) {
   const { data, error } = await supabase
     .from("mapeamentos_sku")
     .select(
-      "id,sku_concorrente,url_produto,seletor_preco,produto_id,concorrente_id,produtos(id,nome,sku_interno,preco_atual,ativo),concorrentes(id,nome,site_url,login_url,ativo)",
+      "id,sku_concorrente,url_produto,seletor_preco,produto_id,concorrente_id,status_coleta,produtos(id,nome,sku_interno,familia_id,preco_atual,ativo),concorrentes(id,nome,site_url,login_url,ativo)",
     )
     .eq("ativo", true)
     .eq("produtos.ativo", true)
@@ -35,7 +35,15 @@ export async function fetchActiveMappings(supabase) {
     throw new Error(`Falha ao buscar mapeamentos: ${error.message}`);
   }
 
-  return (data ?? []).filter((item) => item.produtos && item.concorrentes);
+  return (data ?? [])
+    .filter((item) => item.produtos && item.concorrentes)
+    .filter((item) => {
+      if (filters.mapeamentoId && item.id !== filters.mapeamentoId) return false;
+      if (filters.produtoId && item.produto_id !== filters.produtoId) return false;
+      if (filters.familiaId && item.produtos?.familia_id !== filters.familiaId) return false;
+      if (filters.failedOnly && item.status_coleta !== "erro") return false;
+      return true;
+    });
 }
 
 export async function registerResults(resultados, mensagem) {

@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { formatBRL } from "@/lib/format";
+import { compareProductNames, sortByProductName } from "@/lib/product-sort";
 import { supabase } from "@/lib/supabase";
 import { Pencil, Plus, Power, Search } from "lucide-react";
 import { toast } from "sonner";
@@ -63,9 +64,9 @@ type ProdutoForm = {
 const emptyForm: ProdutoForm = {
   sku_interno: "",
   nome: "",
-  familia_id: "sem-familia",
+  familia_id: "",
   unidade: "",
-  preco_atual: "0",
+  preco_atual: "",
   observacoes: "",
 };
 
@@ -100,13 +101,18 @@ export default function Produtos() {
     ]);
 
     if (familiasResult.error || produtosResult.error) {
-      toast.error("Nao foi possivel carregar os produtos");
+      toast.error("Não foi possível carregar os produtos");
       setLoading(false);
       return;
     }
 
     setFamilias((familiasResult.data ?? []) as FamiliaOption[]);
-    setList(((produtosResult.data ?? []) as Produto[]).map(normalizeProduto));
+    setList(
+      sortByProductName(
+        ((produtosResult.data ?? []) as Produto[]).map(normalizeProduto),
+        (produto) => produto.nome,
+      ),
+    );
     setLoading(false);
   }
 
@@ -136,16 +142,13 @@ export default function Produtos() {
   );
 
   function getFamiliaNome(id: string | null) {
-    if (!id) return "Sem familia";
-    return familias.find((familia) => familia.id === id)?.nome ?? "Sem familia";
+    if (!id) return "Sem família";
+    return familias.find((familia) => familia.id === id)?.nome ?? "Sem família";
   }
 
   function openNew() {
     setEditing(null);
-    setForm({
-      ...emptyForm,
-      familia_id: activeFamilias[0]?.id ?? "sem-familia",
-    });
+    setForm(emptyForm);
     setOpen(true);
   }
 
@@ -154,7 +157,7 @@ export default function Produtos() {
     setForm({
       sku_interno: produto.sku_interno,
       nome: produto.nome,
-      familia_id: produto.familia_id ?? "sem-familia",
+      familia_id: produto.familia_id ?? "",
       unidade: produto.unidade,
       preco_atual: String(produto.preco_atual),
       observacoes: produto.observacoes,
@@ -165,22 +168,23 @@ export default function Produtos() {
   async function save() {
     const sku = form.sku_interno.trim();
     const nome = form.nome.trim();
-    const preco = Number(form.preco_atual.replace(",", "."));
+    const precoText = form.preco_atual.trim();
+    const preco = Number(precoText.replace(",", "."));
 
-    if (!sku || !nome) {
-      toast.error("Informe SKU e nome");
+    if (!sku || !nome || !form.familia_id) {
+      toast.error("Informe SKU, nome e família");
       return;
     }
 
-    if (Number.isNaN(preco) || preco < 0) {
-      toast.error("Informe um preco valido");
+    if (!precoText || Number.isNaN(preco) || preco < 0) {
+      toast.error("Informe um preço válido");
       return;
     }
 
     const payload = {
       sku_interno: sku,
       nome,
-      familia_id: form.familia_id === "sem-familia" ? null : form.familia_id,
+      familia_id: form.familia_id,
       unidade: form.unidade.trim(),
       preco_atual: preco,
       observacoes: form.observacoes.trim(),
@@ -203,8 +207,8 @@ export default function Produtos() {
       if (error || !data) {
         toast.error(
           error?.code === "23505"
-            ? "Ja existe um produto com esse SKU"
-            : "Nao foi possivel atualizar o produto",
+            ? "Já existe um produto com esse SKU"
+            : "Não foi possível atualizar o produto",
         );
         return;
       }
@@ -213,7 +217,7 @@ export default function Produtos() {
       setList((current) =>
         current
           .map((item) => (item.id === produto.id ? produto : item))
-          .sort((a, b) => a.nome.localeCompare(b.nome)),
+          .sort((a, b) => compareProductNames(a.nome, b.nome)),
       );
       toast.success("Produto atualizado");
       setOpen(false);
@@ -231,14 +235,16 @@ export default function Produtos() {
     if (error || !data) {
       toast.error(
         error?.code === "23505"
-          ? "Ja existe um produto com esse SKU"
-          : "Nao foi possivel cadastrar o produto",
+          ? "Já existe um produto com esse SKU"
+          : "Não foi possível cadastrar o produto",
       );
       return;
     }
 
     setList((current) =>
-      [...current, normalizeProduto(data as Produto)].sort((a, b) => a.nome.localeCompare(b.nome)),
+      [...current, normalizeProduto(data as Produto)].sort((a, b) =>
+        compareProductNames(a.nome, b.nome),
+      ),
     );
     toast.success("Produto cadastrado");
     setOpen(false);
@@ -249,7 +255,7 @@ export default function Produtos() {
     const { error } = await supabase.from("produtos").update({ ativo }).eq("id", produto.id);
 
     if (error) {
-      toast.error("Nao foi possivel alterar o status do produto");
+      toast.error("Não foi possível alterar o status do produto");
       return;
     }
 
@@ -262,7 +268,7 @@ export default function Produtos() {
     <>
       <PageHeader
         title="Produtos ConstruJota"
-        description="Catalogo interno de produtos que serao monitorados."
+        description="Catálogo interno de produtos que serão monitorados."
         actions={
           <Button
             onClick={openNew}
@@ -287,10 +293,10 @@ export default function Produtos() {
             </div>
             <Select value={familiaFilter} onValueChange={setFamiliaFilter}>
               <SelectTrigger>
-                <SelectValue placeholder="Familia" />
+                <SelectValue placeholder="Família" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="todas">Todas as familias</SelectItem>
+                <SelectItem value="todas">Todas as famílias</SelectItem>
                 {familias.map((familia) => (
                   <SelectItem key={familia.id} value={familia.id}>
                     {familia.nome}
@@ -316,11 +322,11 @@ export default function Produtos() {
                 <TableRow>
                   <TableHead>SKU</TableHead>
                   <TableHead>Nome</TableHead>
-                  <TableHead>Familia</TableHead>
+                  <TableHead>Família</TableHead>
                   <TableHead>Unidade</TableHead>
-                  <TableHead>Preco atual</TableHead>
+                  <TableHead>Preço atual</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Acoes</TableHead>
+                  <TableHead className="text-right">Ações</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -398,13 +404,15 @@ export default function Produtos() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label>Familia</Label>
+              <Label>Família</Label>
               <select
                 value={form.familia_id}
                 onChange={(event) => setForm({ ...form, familia_id: event.target.value })}
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none transition-colors focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <option value="sem-familia">Sem familia</option>
+                <option value="" disabled>
+                  Selecione uma família
+                </option>
                 {activeFamilias.map((familia) => (
                   <option key={familia.id} value={familia.id}>
                     {familia.nome}
@@ -413,7 +421,7 @@ export default function Produtos() {
               </select>
             </div>
             <div className="space-y-1.5">
-              <Label>Preco atual (R$)</Label>
+              <Label>Preço atual (R$)</Label>
               <Input
                 type="number"
                 step="0.001"
@@ -423,7 +431,7 @@ export default function Produtos() {
               />
             </div>
             <div className="space-y-1.5 sm:col-span-2">
-              <Label>Observacoes</Label>
+              <Label>Observações</Label>
               <Textarea
                 value={form.observacoes}
                 onChange={(event) => setForm({ ...form, observacoes: event.target.value })}

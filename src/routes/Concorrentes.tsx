@@ -69,7 +69,7 @@ export default function Concorrentes() {
 
   function openNew() {
     setEditing(null);
-    setForm({ nome: "", site_url: "", login_url: "", tipo_consulta: "SKU", observacoes: "" });
+    setForm({ nome: "", site_url: "", login_url: "", observacoes: "" });
     setOpen(true);
   }
 
@@ -80,8 +80,8 @@ export default function Concorrentes() {
   }
 
   function save() {
-    if (!form.nome) {
-      toast.error("Informe o nome");
+    if (!form.nome || !form.tipo_consulta) {
+      toast.error("Informe o nome e o tipo de consulta");
       return;
     }
 
@@ -152,8 +152,8 @@ export default function Concorrentes() {
           <Lock className="h-5 w-5 text-primary shrink-0 mt-0.5" />
           <div>
             <strong>Credenciais de concorrentes não são armazenadas neste painel.</strong> Login e
-            senha serão configurados como variáveis de ambiente / GitHub Secrets, usadas
-            exclusivamente pelo robô externo.
+            senha serão configurados como variáveis de ambiente, usadas exclusivamente pelo robô
+            externo.
           </div>
         </CardContent>
       </Card>
@@ -252,13 +252,13 @@ export default function Concorrentes() {
             <div className="space-y-1.5">
               <Label>Tipo de consulta</Label>
               <Select
-                value={form.tipo_consulta}
+                value={form.tipo_consulta || undefined}
                 onValueChange={(v) =>
                   setForm({ ...form, tipo_consulta: v as Concorrente["tipo_consulta"] })
                 }
               >
                 <SelectTrigger>
-                  <SelectValue />
+                  <SelectValue placeholder="Selecione" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="SKU">SKU</SelectItem>

@@ -90,7 +90,7 @@ export default function HistoricoPrecos() {
     ]);
 
     if (familiasResult.error || concorrentesResult.error || historicoResult.error) {
-      toast.error("Nao foi possivel carregar o historico");
+      toast.error("Não foi possível carregar o histórico");
       setLoading(false);
       return;
     }
@@ -140,8 +140,8 @@ export default function HistoricoPrecos() {
   return (
     <>
       <PageHeader
-        title="Historico de Precos"
-        description="Todas as coletas registradas pelo robo externo."
+        title="Histórico de Preços"
+        description="Todas as coletas registradas pelo robô externo."
       />
 
       <Card className="mb-4 shadow-sm">
@@ -156,18 +156,18 @@ export default function HistoricoPrecos() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="7">Ultimos 7 dias</SelectItem>
-              <SelectItem value="30">Ultimos 30 dias</SelectItem>
-              <SelectItem value="90">Ultimos 90 dias</SelectItem>
-              <SelectItem value="0">Todo o periodo</SelectItem>
+              <SelectItem value="7">Últimos 7 dias</SelectItem>
+              <SelectItem value="30">Últimos 30 dias</SelectItem>
+              <SelectItem value="90">Últimos 90 dias</SelectItem>
+              <SelectItem value="0">Todo o período</SelectItem>
             </SelectContent>
           </Select>
           <Select value={familiaFilter} onValueChange={setFamiliaFilter}>
             <SelectTrigger>
-              <SelectValue placeholder="Familia" />
+              <SelectValue placeholder="Família" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="todas">Todas as familias</SelectItem>
+              <SelectItem value="todas">Todas as famílias</SelectItem>
               {familias.map((familia) => (
                 <SelectItem key={familia.id} value={familia.id}>
                   {familia.nome}
@@ -214,9 +214,9 @@ export default function HistoricoPrecos() {
                   <TableHead>SKU CJ</TableHead>
                   <TableHead>Concorrente</TableHead>
                   <TableHead>SKU Conc.</TableHead>
-                  <TableHead>Preco CJ</TableHead>
-                  <TableHead>Preco Conc.</TableHead>
-                  <TableHead>Diferenca</TableHead>
+                  <TableHead>Preço CJ</TableHead>
+                  <TableHead>Preço Conc.</TableHead>
+                  <TableHead>Diferença</TableHead>
                   <TableHead>%</TableHead>
                   <TableHead>Status</TableHead>
                 </TableRow>
@@ -225,7 +225,7 @@ export default function HistoricoPrecos() {
                 {loading && (
                   <TableRow>
                     <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
-                      Carregando historico...
+                      Carregando histórico...
                     </TableCell>
                   </TableRow>
                 )}

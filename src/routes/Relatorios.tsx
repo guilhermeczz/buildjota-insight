@@ -2,17 +2,22 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   BarChart3,
+  CalendarDays,
   Download,
   FileSpreadsheet,
   PackageSearch,
+  X,
   TrendingDown,
   TrendingUp,
 } from "lucide-react";
+import type { DateRange } from "react-day-picker";
 import { toast } from "sonner";
 import PageHeader from "@/components/layout/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -93,9 +98,54 @@ type Row = {
   ultimaAtualizacao: string | null;
 };
 
-type Periodo = "7" | "30" | "90" | "0";
+type Periodo = "7" | "30" | "90" | "0" | "custom";
 
 const emptyLabel = "—";
+
+function startOfDay(date: Date) {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+
+function endOfDay(date: Date) {
+  const next = new Date(date);
+  next.setHours(23, 59, 59, 999);
+  return next;
+}
+
+function formatDateLabel(date: Date) {
+  return date.toLocaleDateString("pt-BR");
+}
+
+function isInsideDateFilter(value: string | null, periodo: Periodo, range: DateRange | undefined) {
+  if (!value) return periodo === "0";
+
+  const date = new Date(value);
+
+  if (periodo === "custom") {
+    if (range?.from && date < startOfDay(range.from)) return false;
+    if (range?.to && date > endOfDay(range.to)) return false;
+    return true;
+  }
+
+  if (periodo !== "0") {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - Number(periodo));
+    return date >= cutoff;
+  }
+
+  return true;
+}
+
+function dateRangeLabel(range: DateRange | undefined) {
+  if (!range?.from && !range?.to) return "Selecionar intervalo";
+  if (range.from && range.to) {
+    return `${formatDateLabel(range.from)} até ${formatDateLabel(range.to)}`;
+  }
+  if (range.from) return `A partir de ${formatDateLabel(range.from)}`;
+  return `Até ${formatDateLabel(range.to as Date)}`;
+}
 
 function buildRows(mapeamentos: Mapeamento[]): Row[] {
   return mapeamentos.map((m) => {
@@ -103,8 +153,8 @@ function buildRows(mapeamentos: Mapeamento[]): Row[] {
     const concorrente = m.concorrentes;
     const precoCJ = Number(produto?.preco_atual ?? 0);
     const precoConcorrente = Number(m.ultimo_preco ?? 0);
-    const dif = precoConcorrente - precoCJ;
-    const difPct = precoCJ > 0 ? (dif / precoCJ) * 100 : 0;
+    const dif = precoCJ - precoConcorrente;
+    const difPct = precoConcorrente > 0 ? (dif / precoConcorrente) * 100 : 0;
 
     return {
       id: m.id,
@@ -310,6 +360,7 @@ export default function Relatorios() {
   const [familiaFilter, setFamiliaFilter] = useState("todas");
   const [concorrenteFilter, setConcorrenteFilter] = useState("todos");
   const [periodo, setPeriodo] = useState<Periodo>("30");
+  const [dateRange, setDateRange] = useState<DateRange | undefined>();
   const [familias, setFamilias] = useState<Familia[]>([]);
   const [concorrentes, setConcorrentes] = useState<Concorrente[]>([]);
   const [mapeamentos, setMapeamentos] = useState<Mapeamento[]>([]);
@@ -387,18 +438,23 @@ export default function Relatorios() {
     return baseRows.filter((r) => {
       if (familiaFilter !== "todas" && r.familiaId !== familiaFilter) return false;
       if (concorrenteFilter !== "todos" && r.concorrenteId !== concorrenteFilter) return false;
-      if (periodo !== "0" && r.ultimaAtualizacao) {
-        const cutoff = new Date();
-        cutoff.setDate(cutoff.getDate() - Number(periodo));
-        if (new Date(r.ultimaAtualizacao) < cutoff) return false;
-      }
-      return true;
+      return isInsideDateFilter(r.ultimaAtualizacao, periodo, dateRange);
     });
-  }, [baseRows, concorrenteFilter, familiaFilter, periodo]);
+  }, [baseRows, concorrenteFilter, dateRange, familiaFilter, periodo]);
 
   const acima = filteredRows.filter((r) => r.precoConcorrente > 0 && r.dif > 0);
   const abaixo = filteredRows.filter((r) => r.precoConcorrente > 0 && r.dif < 0);
-  const erros = historico.filter((h) => h.status === "erro");
+  const erros = historico.filter((h) => {
+    const mapeamento = h.mapeamentos_sku;
+    if (h.status !== "erro") return false;
+    if (familiaFilter !== "todas" && mapeamento?.produtos?.familia_id !== familiaFilter) {
+      return false;
+    }
+    if (concorrenteFilter !== "todos" && mapeamento?.concorrente_id !== concorrenteFilter) {
+      return false;
+    }
+    return isInsideDateFilter(h.coletado_em, periodo, dateRange);
+  });
 
   const porFamilia = Object.entries(
     filteredRows.reduce<Record<string, Row[]>>(
@@ -456,7 +512,7 @@ export default function Relatorios() {
         <CardHeader>
           <CardTitle className="text-base">Filtros</CardTitle>
         </CardHeader>
-        <CardContent className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <CardContent className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
           <Select value={familiaFilter} onValueChange={setFamiliaFilter}>
             <SelectTrigger>
               <SelectValue placeholder="Família" />
@@ -483,7 +539,13 @@ export default function Relatorios() {
               ))}
             </SelectContent>
           </Select>
-          <Select value={periodo} onValueChange={(value: Periodo) => setPeriodo(value)}>
+          <Select
+            value={periodo}
+            onValueChange={(value: Periodo) => {
+              setPeriodo(value);
+              if (value !== "custom") setDateRange(undefined);
+            }}
+          >
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
@@ -491,9 +553,48 @@ export default function Relatorios() {
               <SelectItem value="7">Últimos 7 dias</SelectItem>
               <SelectItem value="30">Últimos 30 dias</SelectItem>
               <SelectItem value="90">Últimos 90 dias</SelectItem>
+              <SelectItem value="custom">Escolher datas</SelectItem>
               <SelectItem value="0">Todo o período</SelectItem>
             </SelectContent>
           </Select>
+          <div className="flex gap-2">
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full justify-start gap-2 font-normal"
+                  onClick={() => setPeriodo("custom")}
+                >
+                  <CalendarDays className="h-4 w-4" />
+                  <span className="truncate">{dateRangeLabel(dateRange)}</span>
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-auto p-0">
+                <Calendar
+                  mode="range"
+                  selected={dateRange}
+                  onSelect={(range) => {
+                    setDateRange(range);
+                    setPeriodo("custom");
+                  }}
+                  numberOfMonths={2}
+                  captionLayout="dropdown"
+                />
+              </PopoverContent>
+            </Popover>
+            {(dateRange?.from || dateRange?.to) && (
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={() => setDateRange(undefined)}
+                aria-label="Limpar intervalo de datas"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
         </CardContent>
       </Card>
 

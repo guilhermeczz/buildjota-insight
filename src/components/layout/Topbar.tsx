@@ -34,13 +34,18 @@ const statusBadge: Record<ExecucaoNotification["status"], string> = {
   pendente: "bg-secondary-foreground/10 text-secondary-foreground hover:bg-secondary-foreground/10",
 };
 
+const seenExecutionKey = "radar:last-seen-execution";
+
 export default function Topbar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [execucoes, setExecucoes] = useState<ExecucaoNotification[]>([]);
+  const [lastSeenExecutionId, setLastSeenExecutionId] = useState(() =>
+    localStorage.getItem(seenExecutionKey),
+  );
 
   const last = execucoes[0];
-  const unreadCount = execucoes.length;
+  const unreadCount = last && last.id !== lastSeenExecutionId ? 1 : 0;
 
   useEffect(() => {
     let mounted = true;
@@ -91,6 +96,12 @@ export default function Topbar() {
     navigate("/login", { replace: true });
   };
 
+  const markNotificationsAsRead = () => {
+    if (!last) return;
+    localStorage.setItem(seenExecutionKey, last.id);
+    setLastSeenExecutionId(last.id);
+  };
+
   return (
     <header className="sticky top-0 z-20 border-b bg-secondary text-secondary-foreground">
       <div className="flex flex-col gap-3 px-6 py-4 lg:flex-row lg:items-center lg:justify-between">
@@ -119,7 +130,7 @@ export default function Topbar() {
             </Badge>
           </div>
 
-          <DropdownMenu>
+          <DropdownMenu onOpenChange={(open) => open && markNotificationsAsRead()}>
             <DropdownMenuTrigger asChild>
               <button className="relative inline-flex h-10 w-10 items-center justify-center rounded-full bg-secondary-foreground/10 transition hover:bg-secondary-foreground/15">
                 <Bell className="h-5 w-5" />
@@ -142,7 +153,10 @@ export default function Topbar() {
                   <DropdownMenuItem
                     key={execucao.id}
                     className="flex cursor-pointer items-start gap-3 py-3"
-                    onClick={() => navigate("/execucoes-robo")}
+                    onClick={() => {
+                      markNotificationsAsRead();
+                      navigate("/execucoes-robo");
+                    }}
                   >
                     <Bot className="mt-0.5 h-4 w-4 text-primary" />
                     <div className="min-w-0 flex-1">

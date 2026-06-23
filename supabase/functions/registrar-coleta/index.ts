@@ -48,11 +48,11 @@ Deno.serve(async (req) => {
   for (const item of resultados) {
     const diferencaValor =
       item.status === "sucesso"
-        ? Number((item.preco_concorrente - item.preco_construjota).toFixed(3))
+        ? Number((item.preco_construjota - item.preco_concorrente).toFixed(3))
         : 0;
     const diferencaPercentual =
-      item.status === "sucesso" && item.preco_construjota > 0
-        ? Number(((diferencaValor / item.preco_construjota) * 100).toFixed(4))
+      item.status === "sucesso" && item.preco_concorrente > 0
+        ? Number(((diferencaValor / item.preco_concorrente) * 100).toFixed(4))
         : 0;
 
     if (item.status === "sucesso") totalSucesso += 1;

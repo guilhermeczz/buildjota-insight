@@ -43,6 +43,16 @@ Para rodar visivel no navegador:
 npm run worker:prices:headed
 ```
 
+## Acionamento manual pelo painel
+
+Deixe este processo rodando no servidor/local:
+
+```bash
+npm run worker:server
+```
+
+O painel chama `VITE_WORKER_TRIGGER_URL`, por padrao `http://localhost:8787/run`.
+
 ## Como o worker decide o preco
 
 1. Se o mapeamento tiver `seletor_preco`, ele tenta ler esse seletor primeiro.

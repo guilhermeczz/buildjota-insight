@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import PageHeader from "@/components/layout/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,8 +41,9 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { formatBRL, formatDateTime } from "@/lib/format";
+import { compareProductNames, sortByProductName } from "@/lib/product-sort";
 import { supabase } from "@/lib/supabase";
-import { ExternalLink, History, Pencil, Plus, Power, Search } from "lucide-react";
+import { ExternalLink, History, Pencil, Plus, Power, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 type ProdutoOption = {
@@ -101,6 +112,7 @@ export default function MapeamentosSku() {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Mapeamento | null>(null);
+  const [deleting, setDeleting] = useState<Mapeamento | null>(null);
   const [form, setForm] = useState<MapeamentoForm>(emptyForm);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -122,14 +134,22 @@ export default function MapeamentosSku() {
     ]);
 
     if (produtosResult.error || concorrentesResult.error || mapeamentosResult.error) {
-      toast.error("Nao foi possivel carregar os mapeamentos");
+      toast.error("Não foi possível carregar os mapeamentos");
       setLoading(false);
       return;
     }
 
-    setProdutos((produtosResult.data ?? []) as ProdutoOption[]);
+    setProdutos(
+      sortByProductName((produtosResult.data ?? []) as ProdutoOption[], (produto) => produto.nome),
+    );
     setConcorrentes((concorrentesResult.data ?? []) as ConcorrenteOption[]);
-    setList(((mapeamentosResult.data ?? []) as Mapeamento[]).map(normalizeMapeamento));
+    setList(
+      ((mapeamentosResult.data ?? []) as Mapeamento[]).map(normalizeMapeamento).sort((a, b) => {
+        const productCompare = compareProductNames(a.produtos?.nome ?? "", b.produtos?.nome ?? "");
+        if (productCompare !== 0) return productCompare;
+        return (a.concorrentes?.nome ?? "").localeCompare(b.concorrentes?.nome ?? "", "pt-BR");
+      }),
+    );
     setLoading(false);
   }
 
@@ -156,11 +176,7 @@ export default function MapeamentosSku() {
 
   function openNew() {
     setEditing(null);
-    setForm({
-      ...emptyForm,
-      produto_id: produtos[0]?.id ?? "",
-      concorrente_id: concorrentes[0]?.id ?? "",
-    });
+    setForm(emptyForm);
     setOpen(true);
   }
 
@@ -204,8 +220,8 @@ export default function MapeamentosSku() {
       if (error) {
         toast.error(
           error.code === "23505"
-            ? "Esse mapeamento ja existe"
-            : "Nao foi possivel atualizar o mapeamento",
+            ? "Esse mapeamento já existe"
+            : "Não foi possível atualizar o mapeamento",
         );
         return;
       }
@@ -227,8 +243,8 @@ export default function MapeamentosSku() {
     if (error) {
       toast.error(
         error.code === "23505"
-          ? "Esse mapeamento ja existe"
-          : "Nao foi possivel criar o mapeamento",
+          ? "Esse mapeamento já existe"
+          : "Não foi possível criar o mapeamento",
       );
       return;
     }
@@ -246,13 +262,28 @@ export default function MapeamentosSku() {
       .eq("id", mapeamento.id);
 
     if (error) {
-      toast.error("Nao foi possivel alterar o status do mapeamento");
+      toast.error("Não foi possível alterar o status do mapeamento");
       return;
     }
 
     setList((current) =>
       current.map((item) => (item.id === mapeamento.id ? { ...item, ativo } : item)),
     );
+  }
+
+  async function deleteMapeamento() {
+    if (!deleting) return;
+
+    const { error } = await supabase.from("mapeamentos_sku").delete().eq("id", deleting.id);
+
+    if (error) {
+      toast.error("Não foi possível excluir o mapeamento");
+      return;
+    }
+
+    setList((current) => current.filter((item) => item.id !== deleting.id));
+    setDeleting(null);
+    toast.success("Mapeamento excluído");
   }
 
   return (
@@ -272,7 +303,7 @@ export default function MapeamentosSku() {
 
       <Card className="mb-4 bg-secondary text-secondary-foreground">
         <CardContent className="p-4 text-sm">
-          A comparacao depende deste mapeamento manual. Cada linha conecta um produto interno a um
+          A comparação depende deste mapeamento manual. Cada linha conecta um produto interno a um
           produto equivalente de um concorrente.
         </CardContent>
       </Card>
@@ -297,12 +328,12 @@ export default function MapeamentosSku() {
                   <TableHead>SKU CJ</TableHead>
                   <TableHead>Concorrente</TableHead>
                   <TableHead>SKU Conc.</TableHead>
-                  <TableHead>Familia</TableHead>
+                  <TableHead>Família</TableHead>
                   <TableHead>URL</TableHead>
-                  <TableHead>Ultimo preco</TableHead>
-                  <TableHead>Ultima atualizacao</TableHead>
+                  <TableHead>Último preço</TableHead>
+                  <TableHead>Última atualização</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Acoes</TableHead>
+                  <TableHead className="text-right">Ações</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -334,7 +365,7 @@ export default function MapeamentosSku() {
                         {mapeamento.sku_concorrente}
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
-                        {produto?.familias?.nome ?? "Sem familia"}
+                        {produto?.familias?.nome ?? "Sem família"}
                       </TableCell>
                       <TableCell>
                         {mapeamento.url_produto ? (
@@ -372,7 +403,7 @@ export default function MapeamentosSku() {
                       </TableCell>
                       <TableCell className="text-right">
                         <Button asChild size="sm" variant="ghost">
-                          <Link to="/historico" title="Historico">
+                          <Link to="/historico" title="Histórico">
                             <History className="h-4 w-4" />
                           </Link>
                         </Button>
@@ -381,6 +412,14 @@ export default function MapeamentosSku() {
                         </Button>
                         <Button size="sm" variant="ghost" onClick={() => toggleAtivo(mapeamento)}>
                           <Power className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setDeleting(mapeamento)}
+                          className="text-destructive hover:text-destructive"
+                        >
+                          <Trash2 className="h-4 w-4" />
                         </Button>
                       </TableCell>
                     </TableRow>
@@ -397,14 +436,14 @@ export default function MapeamentosSku() {
           <DialogHeader>
             <DialogTitle>{editing ? "Editar mapeamento" : "Novo mapeamento de SKU"}</DialogTitle>
             <DialogDescription>
-              Defina a equivalencia entre o produto interno e o produto do concorrente.
+              Defina a equivalência entre o produto interno e o produto do concorrente.
             </DialogDescription>
           </DialogHeader>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label>Produto ConstruJota</Label>
               <Select
-                value={form.produto_id}
+                value={form.produto_id || undefined}
                 onValueChange={(value) => setForm({ ...form, produto_id: value })}
               >
                 <SelectTrigger>
@@ -422,7 +461,7 @@ export default function MapeamentosSku() {
             <div className="space-y-1.5">
               <Label>Concorrente</Label>
               <Select
-                value={form.concorrente_id}
+                value={form.concorrente_id || undefined}
                 onValueChange={(value) => setForm({ ...form, concorrente_id: value })}
               >
                 <SelectTrigger>
@@ -459,7 +498,7 @@ export default function MapeamentosSku() {
               />
             </div>
             <div className="space-y-1.5 sm:col-span-2">
-              <Label>Seletor de preco</Label>
+              <Label>Seletor de preço</Label>
               <Input
                 value={form.seletor_preco}
                 onChange={(event) => setForm({ ...form, seletor_preco: event.target.value })}
@@ -467,7 +506,7 @@ export default function MapeamentosSku() {
               />
             </div>
             <div className="space-y-1.5 sm:col-span-2">
-              <Label>Observacoes</Label>
+              <Label>Observações</Label>
               <Textarea
                 value={form.observacoes}
                 onChange={(event) => setForm({ ...form, observacoes: event.target.value })}
@@ -488,6 +527,27 @@ export default function MapeamentosSku() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={!!deleting} onOpenChange={(open) => !open && setDeleting(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir mapeamento?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Essa ação remove o mapeamento de SKU e também apaga o histórico de preços vinculado a
+              ele.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={deleteMapeamento}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Excluir
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

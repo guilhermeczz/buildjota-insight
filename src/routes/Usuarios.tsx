@@ -48,7 +48,7 @@ type FormState = {
   id?: string;
   nome: string;
   email: string;
-  role: UserRole;
+  role: UserRole | "";
   password: string;
   ativo: boolean;
 };
@@ -56,7 +56,7 @@ type FormState = {
 const empty: FormState = {
   nome: "",
   email: "",
-  role: "operador",
+  role: "",
   password: "",
   ativo: true,
 };
@@ -143,8 +143,8 @@ export default function Usuarios() {
       return;
     }
 
-    if (!form.nome.trim() || !/^\S+@\S+\.\S+$/.test(form.email)) {
-      toast.error("Informe nome e e-mail válido.");
+    if (!form.nome.trim() || !/^\S+@\S+\.\S+$/.test(form.email) || !form.role) {
+      toast.error("Informe nome, e-mail válido e função.");
       return;
     }
 
@@ -161,7 +161,7 @@ export default function Usuarios() {
             id: form.id,
             nome: form.nome,
             email: form.email,
-            role: form.role,
+            role: form.role as UserRole,
             ativo: form.ativo,
             ...(form.password ? { password: form.password } : {}),
           }
@@ -170,7 +170,7 @@ export default function Usuarios() {
             nome: form.nome,
             email: form.email,
             password: form.password,
-            role: form.role,
+            role: form.role as UserRole,
             ativo: form.ativo,
           };
 
@@ -362,11 +362,11 @@ export default function Usuarios() {
               <div className="grid gap-2">
                 <Label>Função</Label>
                 <Select
-                  value={form.role}
+                  value={form.role || undefined}
                   onValueChange={(value: UserRole) => setForm({ ...form, role: value })}
                 >
                   <SelectTrigger>
-                    <SelectValue />
+                    <SelectValue placeholder="Selecione" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="admin">Administrador</SelectItem>

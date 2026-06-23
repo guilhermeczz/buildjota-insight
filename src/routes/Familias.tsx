@@ -67,7 +67,7 @@ export default function Familias() {
       .order("nome", { ascending: true });
 
     if (error) {
-      toast.error("Nao foi possivel carregar as familias");
+      toast.error("Não foi possível carregar as famílias");
       setLoading(false);
       return;
     }
@@ -108,7 +108,7 @@ export default function Familias() {
     const descricao = form.descricao.trim();
 
     if (!nome) {
-      toast.error("Informe o nome da familia");
+      toast.error("Informe o nome da família");
       return;
     }
 
@@ -125,8 +125,8 @@ export default function Familias() {
       if (error) {
         toast.error(
           error.code === "23505"
-            ? "Ja existe uma familia com esse nome"
-            : "Nao foi possivel atualizar a familia",
+            ? "Já existe uma família com esse nome"
+            : "Não foi possível atualizar a família",
         );
         return;
       }
@@ -152,8 +152,8 @@ export default function Familias() {
     if (error || !data) {
       toast.error(
         error?.code === "23505"
-          ? "Ja existe uma familia com esse nome"
-          : "Nao foi possivel cadastrar a familia",
+          ? "Já existe uma família com esse nome"
+          : "Não foi possível cadastrar a família",
       );
       return;
     }
@@ -170,27 +170,27 @@ export default function Familias() {
     const { error } = await supabase.from("familias").update({ ativo }).eq("id", familia.id);
 
     if (error) {
-      toast.error("Nao foi possivel alterar o status da familia");
+      toast.error("Não foi possível alterar o status da família");
       return;
     }
 
     setList((current) =>
       current.map((item) => (item.id === familia.id ? { ...item, ativo } : item)),
     );
-    toast.success(`Familia ${ativo ? "ativada" : "inativada"}`);
+    toast.success(`Família ${ativo ? "ativada" : "inativada"}`);
   }
 
   return (
     <>
       <PageHeader
-        title="Familias"
-        description="Organize os produtos monitorados por familia."
+        title="Famílias"
+        description="Organize os produtos monitorados por família."
         actions={
           <Button
             onClick={openNew}
             className="bg-primary text-primary-foreground hover:bg-primary/90"
           >
-            <Plus className="mr-1 h-4 w-4" /> Nova familia
+            <Plus className="mr-1 h-4 w-4" /> Nova família
           </Button>
         }
       />
@@ -203,7 +203,7 @@ export default function Familias() {
               <Input
                 value={q}
                 onChange={(event) => setQ(event.target.value)}
-                placeholder="Pesquisar familia..."
+                placeholder="Pesquisar família..."
                 className="pl-9"
               />
             </div>
@@ -223,23 +223,23 @@ export default function Familias() {
             <TableHeader>
               <TableRow>
                 <TableHead>Nome</TableHead>
-                <TableHead>Descricao</TableHead>
+                <TableHead>Descrição</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead className="text-right">Acoes</TableHead>
+                <TableHead className="text-right">Ações</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading && (
                 <TableRow>
                   <TableCell colSpan={4} className="py-10 text-center text-muted-foreground">
-                    Carregando familias...
+                    Carregando famílias...
                   </TableCell>
                 </TableRow>
               )}
               {!loading && filtered.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={4} className="py-10 text-center text-muted-foreground">
-                    Nenhuma familia encontrada
+                    Nenhuma família encontrada
                   </TableCell>
                 </TableRow>
               )}
@@ -274,7 +274,7 @@ export default function Familias() {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editing ? "Editar familia" : "Nova familia"}</DialogTitle>
+            <DialogTitle>{editing ? "Editar família" : "Nova família"}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-1.5">
@@ -285,7 +285,7 @@ export default function Familias() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label>Descricao</Label>
+              <Label>Descrição</Label>
               <Textarea
                 value={form.descricao}
                 onChange={(event) => setForm({ ...form, descricao: event.target.value })}
