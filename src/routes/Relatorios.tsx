@@ -180,7 +180,7 @@ function downloadCSV(rows: Row[], filename: string) {
     "Produto",
     "SKU CJ",
     "Concorrente",
-    "SKU Conc.",
+    "Cód. Conc.",
     "Família",
     "Preço CJ",
     "Preço Conc.",
@@ -256,7 +256,7 @@ function RelatorioTable({
                 <TableHead>Produto</TableHead>
                 <TableHead>SKU CJ</TableHead>
                 <TableHead>Concorrente</TableHead>
-                <TableHead>SKU Conc.</TableHead>
+                <TableHead>Cód. Conc.</TableHead>
                 <TableHead>Família</TableHead>
                 <TableHead>Preço CJ</TableHead>
                 <TableHead>Preço Conc.</TableHead>

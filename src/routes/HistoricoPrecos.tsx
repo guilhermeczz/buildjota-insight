@@ -213,7 +213,7 @@ export default function HistoricoPrecos() {
                   <TableHead>Produto</TableHead>
                   <TableHead>SKU CJ</TableHead>
                   <TableHead>Concorrente</TableHead>
-                  <TableHead>SKU Conc.</TableHead>
+                  <TableHead>Cód. Conc.</TableHead>
                   <TableHead>Preço CJ</TableHead>
                   <TableHead>Preço Conc.</TableHead>
                   <TableHead>Diferença</TableHead>

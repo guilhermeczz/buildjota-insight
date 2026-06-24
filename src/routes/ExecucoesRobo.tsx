@@ -62,7 +62,17 @@ type Mapeamento = {
   } | null;
 };
 
+type HistoricoExecucao = {
+  coletado_em: string;
+  mapeamentos_sku?: {
+    produtos?: {
+      familia_id: string | null;
+    } | null;
+  } | null;
+};
+
 type Scope = "" | "todos" | "familia" | "produto" | "mapeamento";
+type StatusFilter = "todos" | Execucao["status"];
 
 function durationLabel(seconds: number) {
   const minutes = Math.floor(seconds / 60);
@@ -87,8 +97,11 @@ export default function ExecucoesRobo() {
   const [familias, setFamilias] = useState<Familia[]>([]);
   const [produtos, setProdutos] = useState<Produto[]>([]);
   const [mapeamentos, setMapeamentos] = useState<Mapeamento[]>([]);
+  const [historicosExecucao, setHistoricosExecucao] = useState<HistoricoExecucao[]>([]);
   const [pendingExecucao, setPendingExecucao] = useState<Execucao | null>(null);
   const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("todos");
+  const [familiaFilter, setFamiliaFilter] = useState("todos");
   const [manualOpen, setManualOpen] = useState(false);
   const [scope, setScope] = useState<Scope>("");
   const [familiaId, setFamiliaId] = useState("");
@@ -98,18 +111,30 @@ export default function ExecucoesRobo() {
   const [running, setRunning] = useState(false);
 
   async function refreshExecucoes() {
-    const { data, error } = await supabase
-      .from("execucoes_robo")
-      .select(
-        "id,status,origem,iniciado_em,finalizado_em,total_processados,total_sucesso,total_erro,mensagem,tempo_execucao_segundos",
-      )
-      .order("iniciado_em", { ascending: false })
-      .limit(100);
+    const [execucoesResult, historicosResult] = await Promise.all([
+      supabase
+        .from("execucoes_robo")
+        .select(
+          "id,status,origem,iniciado_em,finalizado_em,total_processados,total_sucesso,total_erro,mensagem,tempo_execucao_segundos",
+        )
+        .order("iniciado_em", { ascending: false })
+        .limit(100),
+      supabase
+        .from("historico_precos")
+        .select("coletado_em,mapeamentos_sku(produtos(familia_id))")
+        .order("coletado_em", { ascending: false })
+        .limit(1000),
+    ]);
+    const { data, error } = execucoesResult;
 
     if (error) {
       toast.error("Não foi possível carregar as execuções");
       setLoading(false);
       return;
+    }
+
+    if (!historicosResult.error) {
+      setHistoricosExecucao((historicosResult.data ?? []) as HistoricoExecucao[]);
     }
 
     const nextExecucoes = (data ?? []) as Execucao[];
@@ -308,7 +333,44 @@ export default function ExecucoesRobo() {
     }
   }
 
-  const visibleExecucoes = pendingExecucao ? [pendingExecucao, ...execucoes] : execucoes;
+  function familiasDaExecucao(execucao: Execucao) {
+    const startedAt = new Date(execucao.iniciado_em).getTime() - 1000;
+    const finishedAt = new Date(execucao.finalizado_em ?? execucao.iniciado_em).getTime() + 5000;
+
+    return new Set(
+      historicosExecucao
+        .filter((historico) => {
+          const collectedAt = new Date(historico.coletado_em).getTime();
+          return collectedAt >= startedAt && collectedAt <= finishedAt;
+        })
+        .map((historico) => historico.mapeamentos_sku?.produtos?.familia_id)
+        .filter(Boolean) as string[],
+    );
+  }
+
+  function isRetryExecution(execucao: Execucao) {
+    return /filtro:\s*erros|refazendo coletas com erro/i.test(execucao.mensagem);
+  }
+
+  const latestRetryAt = execucoes.filter(isRetryExecution).reduce((latest, execucao) => {
+    const startedAt = new Date(execucao.iniciado_em).getTime();
+    return Math.max(latest, startedAt);
+  }, 0);
+
+  function retryAlreadyRequested(execucao: Execucao) {
+    if (!latestRetryAt) return false;
+    return new Date(execucao.iniciado_em).getTime() <= latestRetryAt;
+  }
+
+  const visibleExecucoes = (pendingExecucao ? [pendingExecucao, ...execucoes] : execucoes).filter(
+    (execucao) => {
+      if (statusFilter !== "todos" && execucao.status !== statusFilter) return false;
+      if (familiaFilter !== "todos" && !familiasDaExecucao(execucao).has(familiaFilter)) {
+        return false;
+      }
+      return true;
+    },
+  );
 
   return (
     <>
@@ -326,7 +388,40 @@ export default function ExecucoesRobo() {
       />
 
       <Card className="shadow-sm">
-        <CardContent className="p-5">
+        <CardContent className="space-y-4 p-5">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>Status</Label>
+              <select
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none transition-colors focus:ring-1 focus:ring-ring"
+              >
+                <option value="todos">Todos os status</option>
+                <option value="sucesso">Sucesso</option>
+                <option value="parcial">Parcial</option>
+                <option value="erro">Erro</option>
+                <option value="pendente">Buscando</option>
+              </select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>Família</Label>
+              <select
+                value={familiaFilter}
+                onChange={(event) => setFamiliaFilter(event.target.value)}
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none transition-colors focus:ring-1 focus:ring-ring"
+              >
+                <option value="todos">Todas as famílias</option>
+                {familias.map((familia) => (
+                  <option key={familia.id} value={familia.id}>
+                    {familia.nome}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
@@ -354,7 +449,7 @@ export default function ExecucoesRobo() {
                 {!loading && visibleExecucoes.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
-                      Nenhuma execução registrada.
+                      Nenhuma execução encontrada.
                     </TableCell>
                   </TableRow>
                 )}
@@ -385,10 +480,10 @@ export default function ExecucoesRobo() {
                           size="sm"
                           variant="outline"
                           onClick={retryFailedMappings}
-                          disabled={retryingErrors}
+                          disabled={retryingErrors || retryAlreadyRequested(execucao)}
                         >
                           <RotateCcw className="mr-1 h-4 w-4" />
-                          Refazer erros
+                          {retryAlreadyRequested(execucao) ? "Já refeito" : "Refazer erros"}
                         </Button>
                       )}
                     </TableCell>

@@ -1,9 +1,23 @@
 import { chromium } from "playwright";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { credentialsFor } from "./config.mjs";
 import { extractPrice } from "./extract-price.mjs";
 
 const userAgent =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36";
+const authStateDir = join(process.cwd(), ".worker-auth");
+
+function storageStatePath(concorrenteNome) {
+  const fileName = concorrenteNome
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/gi, "-")
+    .replace(/^-|-$/g, "")
+    .toLowerCase();
+
+  return join(authStateDir, `${fileName}.json`);
+}
 
 function absoluteUrl(value, fallbackBase) {
   if (!value) return fallbackBase;
@@ -135,9 +149,11 @@ async function login(page, concorrente) {
     "button[type='submit']",
     "input[type='submit']",
     "button:has-text('Entrar')",
+    "button:has-text('Entre')",
     "button:has-text('Login')",
     "button:has-text('Acessar')",
     "a:has-text('Entrar')",
+    "a:has-text('Entre')",
     "a:has-text('Login')",
     "a:has-text('Acessar')",
   ]);
@@ -148,10 +164,15 @@ async function login(page, concorrente) {
   }
 
   await page.waitForTimeout(3000);
+
+  if (await hasInvalidCredentialsMessage(page)) {
+    throw new Error(`Credenciais invalidas em ${concorrente.nome}`);
+  }
 }
 
 async function openLoginSurface(page) {
   await clickFirstVisible(page, [
+    ".menu-user > a",
     "a[role='button'][data-toggle='dropdown'][aria-haspopup='true']",
     "a[data-toggle='dropdown']:has(svg)",
     "#botao-login",
@@ -162,7 +183,9 @@ async function openLoginSurface(page) {
     "a:has-text('Faça login')",
     "a:has-text('Faca login')",
     "button:has-text('Entrar')",
+    "button:has-text('Entre')",
     "a:has-text('Entrar')",
+    "a:has-text('Entre')",
   ]);
 
   await page.waitForTimeout(1000);
@@ -187,6 +210,8 @@ async function dismissOverlays(page) {
 }
 
 export async function collectPricesByBrowser(groups, options = {}) {
+  mkdirSync(authStateDir, { recursive: true });
+
   const browser = await chromium.launch({
     headless: !options.headed,
   });
@@ -195,15 +220,20 @@ export async function collectPricesByBrowser(groups, options = {}) {
 
   try {
     for (const group of groups) {
+      const statePath = storageStatePath(group.concorrente.nome);
       const context = await browser.newContext({
         userAgent,
         locale: "pt-BR",
         timezoneId: "America/Sao_Paulo",
+        storageState: existsSync(statePath) ? statePath : undefined,
       });
       const page = await context.newPage();
 
       try {
-        await login(page, group.concorrente);
+        if (!existsSync(statePath)) {
+          await login(page, group.concorrente);
+          await context.storageState({ path: statePath });
+        }
 
         for (const mapping of group.mapeamentos) {
           try {
@@ -215,6 +245,14 @@ export async function collectPricesByBrowser(groups, options = {}) {
             await page.goto(productUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
             await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
             await page.waitForTimeout(1500);
+
+            if (await shouldRetryLogin(page, mapping, group.concorrente)) {
+              await login(page, group.concorrente);
+              await context.storageState({ path: statePath });
+              await page.goto(productUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+              await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+              await page.waitForTimeout(1500);
+            }
 
             if (await isLoginRequired(page)) {
               throw new Error("Login nao confirmado; pagina ainda solicita autenticacao");
@@ -233,6 +271,14 @@ export async function collectPricesByBrowser(groups, options = {}) {
               status: "sucesso",
             });
           } catch (error) {
+            if (
+              error instanceof Error &&
+              /Credenciais invalidas/i.test(error.message) &&
+              existsSync(statePath)
+            ) {
+              rmSync(statePath, { force: true });
+            }
+
             resultados.push({
               mapeamento_id: mapping.id,
               preco_construjota: Number(mapping.produtos.preco_atual ?? 0),
@@ -243,6 +289,10 @@ export async function collectPricesByBrowser(groups, options = {}) {
           }
         }
       } catch (error) {
+        if (existsSync(statePath)) {
+          rmSync(statePath, { force: true });
+        }
+
         for (const mapping of group.mapeamentos) {
           resultados.push({
             mapeamento_id: mapping.id,
@@ -270,4 +320,32 @@ async function isLoginRequired(page) {
     .catch(() => "");
 
   return /fa[cç]a login|cadastre-se para ver os pre[cç]os/i.test(text);
+}
+
+async function hasInvalidCredentialsMessage(page) {
+  const text = await page
+    .locator("body")
+    .innerText({ timeout: 5000 })
+    .catch(() => "");
+
+  return /n[aã]o foi poss[ií]vel localizar seu cadastro|login e\/ou senha|senha inv[aá]lida|login inv[aá]lido/i.test(
+    text,
+  );
+}
+
+async function shouldRetryLogin(page, mapping, concorrente) {
+  if (await isLoginRequired(page)) return true;
+
+  if (concorrente.nome === "MEGALESTE") {
+    const path = new URL(page.url()).pathname.replace(/\/+$/, "");
+    if (path === "/sp" || path === "") return true;
+
+    const text = await page
+      .locator("body")
+      .innerText({ timeout: 5000 })
+      .catch(() => "");
+    if (mapping.sku_concorrente && !text.includes(mapping.sku_concorrente)) return true;
+  }
+
+  return false;
 }

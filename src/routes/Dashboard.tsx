@@ -12,12 +12,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatBRL, formatDateTime, formatPct } from "@/lib/format";
+import { sortByProductName } from "@/lib/product-sort";
 import { supabase } from "@/lib/supabase";
 import {
   AlertTriangle,
   Boxes,
   CheckCircle2,
-  Percent,
   Store,
   TrendingDown,
   TrendingUp,
@@ -42,13 +42,21 @@ type Produto = {
   id: string;
   nome: string;
   sku_interno: string;
+  familia_id: string | null;
   preco_atual: number;
   ativo: boolean;
+  familias?: { id: string; nome: string } | null;
 };
 
 type Concorrente = {
   id: string;
+  nome: string;
   ativo: boolean;
+};
+
+type Familia = {
+  id: string;
+  nome: string;
 };
 
 type Mapeamento = {
@@ -58,7 +66,7 @@ type Mapeamento = {
   ultima_atualizacao: string | null;
   status_coleta: "sucesso" | "erro" | "pendente";
   produtos?: Produto | null;
-  concorrentes?: { nome: string } | null;
+  concorrentes?: { id: string; nome: string } | null;
 };
 
 type Historico = {
@@ -69,7 +77,8 @@ type Historico = {
   coletado_em: string;
   mapeamentos_sku?: {
     id: string;
-    produtos?: { nome: string; sku_interno: string } | null;
+    concorrente_id: string;
+    produtos?: { id: string; nome: string; sku_interno: string; familia_id: string | null } | null;
   } | null;
 };
 
@@ -97,33 +106,42 @@ function durationLabel(seconds: number) {
 export default function Dashboard() {
   const navigate = useNavigate();
   const [produtos, setProdutos] = useState<Produto[]>([]);
+  const [familias, setFamilias] = useState<Familia[]>([]);
   const [concorrentes, setConcorrentes] = useState<Concorrente[]>([]);
   const [mapeamentos, setMapeamentos] = useState<Mapeamento[]>([]);
   const [historico, setHistorico] = useState<Historico[]>([]);
   const [execucoes, setExecucoes] = useState<Execucao[]>([]);
+  const [concorrenteFilter, setConcorrenteFilter] = useState("todos");
+  const [familiaFilter, setFamiliaFilter] = useState("todos");
+  const [produtoFilter, setProdutoFilter] = useState("todos");
   const [loading, setLoading] = useState(true);
 
   async function refreshDashboard() {
     const [
       produtosResult,
+      familiasResult,
       concorrentesResult,
       mapeamentosResult,
       historicoResult,
       execucoesResult,
     ] = await Promise.all([
-      supabase.from("produtos").select("id,nome,sku_interno,preco_atual,ativo").order("nome"),
-      supabase.from("concorrentes").select("id,ativo"),
+      supabase
+        .from("produtos")
+        .select("id,nome,sku_interno,familia_id,preco_atual,ativo,familias(id,nome)")
+        .order("nome"),
+      supabase.from("familias").select("id,nome").eq("ativo", true).order("nome"),
+      supabase.from("concorrentes").select("id,nome,ativo").order("nome"),
       supabase
         .from("mapeamentos_sku")
         .select(
-          "id,sku_concorrente,ultimo_preco,ultima_atualizacao,status_coleta,produtos(id,nome,sku_interno,preco_atual,ativo),concorrentes(nome)",
+          "id,sku_concorrente,ultimo_preco,ultima_atualizacao,status_coleta,produtos(id,nome,sku_interno,familia_id,preco_atual,ativo,familias(id,nome)),concorrentes(id,nome)",
         )
         .eq("ativo", true)
         .order("updated_at", { ascending: false }),
       supabase
         .from("historico_precos")
         .select(
-          "id,mapeamento_id,preco_concorrente,status,coletado_em,mapeamentos_sku(id,produtos(nome,sku_interno))",
+          "id,mapeamento_id,preco_concorrente,status,coletado_em,mapeamentos_sku(id,concorrente_id,produtos(id,nome,sku_interno,familia_id))",
         )
         .eq("status", "sucesso")
         .order("coletado_em", { ascending: false })
@@ -139,6 +157,7 @@ export default function Dashboard() {
 
     if (
       produtosResult.error ||
+      familiasResult.error ||
       concorrentesResult.error ||
       mapeamentosResult.error ||
       historicoResult.error ||
@@ -155,6 +174,7 @@ export default function Dashboard() {
         preco_atual: numeric(produto.preco_atual),
       })),
     );
+    setFamilias((familiasResult.data ?? []) as Familia[]);
     setConcorrentes((concorrentesResult.data ?? []) as Concorrente[]);
     setMapeamentos(
       ((mapeamentosResult.data ?? []) as Mapeamento[]).map((mapeamento) => ({
@@ -193,9 +213,59 @@ export default function Dashboard() {
     };
   }, []);
 
+  const produtosDoFiltro = useMemo(() => {
+    const next =
+      familiaFilter === "todos"
+        ? produtos
+        : produtos.filter((produto) => produto.familia_id === familiaFilter);
+    return sortByProductName(next, (produto) => produto.nome);
+  }, [familiaFilter, produtos]);
+
+  function changeFamiliaFilter(value: string) {
+    setFamiliaFilter(value);
+    setProdutoFilter("todos");
+  }
+
+  const filteredMapeamentos = useMemo(
+    () =>
+      mapeamentos.filter((mapeamento) => {
+        const produto = mapeamento.produtos;
+        const concorrente = mapeamento.concorrentes;
+
+        if (concorrenteFilter !== "todos" && concorrente?.id !== concorrenteFilter) return false;
+        if (familiaFilter !== "todos" && produto?.familia_id !== familiaFilter) return false;
+        if (produtoFilter !== "todos" && produto?.id !== produtoFilter) return false;
+
+        return true;
+      }),
+    [concorrenteFilter, familiaFilter, mapeamentos, produtoFilter],
+  );
+
+  const filteredHistorico = useMemo(
+    () =>
+      historico.filter((row) => {
+        const mapeamento = row.mapeamentos_sku;
+        const produto = mapeamento?.produtos;
+
+        if (concorrenteFilter !== "todos" && mapeamento?.concorrente_id !== concorrenteFilter) {
+          return false;
+        }
+        if (familiaFilter !== "todos" && produto?.familia_id !== familiaFilter) return false;
+        if (produtoFilter !== "todos" && produto?.id !== produtoFilter) return false;
+
+        return true;
+      }),
+    [concorrenteFilter, familiaFilter, historico, produtoFilter],
+  );
+
+  const filteredProdutos = useMemo(() => {
+    const produtoIds = new Set(filteredMapeamentos.map((mapeamento) => mapeamento.produtos?.id));
+    return produtos.filter((produto) => produtoIds.has(produto.id));
+  }, [filteredMapeamentos, produtos]);
+
   const diffs = useMemo(
     () =>
-      mapeamentos
+      filteredMapeamentos
         .map((mapeamento) => {
           const produto = mapeamento.produtos;
           const precoCj = numeric(produto?.preco_atual);
@@ -213,7 +283,7 @@ export default function Dashboard() {
           };
         })
         .sort((a, b) => Math.abs(b.difPct) - Math.abs(a.difPct)),
-    [mapeamentos],
+    [filteredMapeamentos],
   );
 
   const stats = useMemo(() => {
@@ -228,14 +298,16 @@ export default function Dashboard() {
   }, [diffs]);
 
   const ultimaExec = execucoes[0];
-  const semPreco = mapeamentos.filter((mapeamento) => !numeric(mapeamento.ultimo_preco)).length;
+  const semPreco = filteredMapeamentos.filter(
+    (mapeamento) => !numeric(mapeamento.ultimo_preco),
+  ).length;
 
   const chartData = useMemo(() => {
-    const days = Array.from(new Set(historico.map((row) => row.coletado_em.slice(0, 10))))
+    const days = Array.from(new Set(filteredHistorico.map((row) => row.coletado_em.slice(0, 10))))
       .sort()
       .slice(-7);
 
-    const firstMapeamentos = mapeamentos.slice(0, 4);
+    const firstMapeamentos = filteredMapeamentos.slice(0, 4);
 
     return days.map((day) => {
       const row: Record<string, number | string> = {
@@ -245,7 +317,7 @@ export default function Dashboard() {
       firstMapeamentos.forEach((mapeamento) => {
         const produto = mapeamento.produtos;
         if (!produto) return;
-        const historicoRow = historico.find(
+        const historicoRow = filteredHistorico.find(
           (item) => item.mapeamento_id === mapeamento.id && item.coletado_em.startsWith(day),
         );
         row[`${produto.nome} (${produto.sku_interno})`] = historicoRow?.preco_concorrente ?? 0;
@@ -253,7 +325,7 @@ export default function Dashboard() {
 
       return row;
     });
-  }, [historico, mapeamentos]);
+  }, [filteredHistorico, filteredMapeamentos]);
 
   const pieData = [
     { name: "Mais baratos", value: stats.abaixo, color: "var(--success)" },
@@ -265,8 +337,8 @@ export default function Dashboard() {
     {
       icon: Boxes,
       label: "Produtos monitorados",
-      value: produtos.filter((produto) => produto.ativo).length,
-      sub: "Ativos",
+      value: filteredProdutos.filter((produto) => produto.ativo).length,
+      sub: "No filtro",
       iconBg: "bg-primary/15 text-primary",
     },
     {
@@ -291,13 +363,6 @@ export default function Dashboard() {
       valueClass: "text-success",
     },
     {
-      icon: Percent,
-      label: "Diferença média percentual",
-      value: `${stats.mediaPct.toFixed(2).replace(".", ",")}%`,
-      sub: "Média geral",
-      valueClass: stats.mediaPct >= 0 ? "text-destructive" : "text-success",
-    },
-    {
       icon: AlertTriangle,
       label: "Coletas com erro",
       value: ultimaExec?.total_erro ?? 0,
@@ -308,7 +373,52 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
+      <Card className="shadow-sm">
+        <CardContent className="grid grid-cols-1 gap-3 p-4 md:grid-cols-3">
+          <select
+            value={concorrenteFilter}
+            onChange={(event) => setConcorrenteFilter(event.target.value)}
+            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none transition-colors focus:ring-1 focus:ring-ring"
+          >
+            <option value="todos">Todos os concorrentes</option>
+            {concorrentes
+              .filter((concorrente) => concorrente.ativo)
+              .map((concorrente) => (
+                <option key={concorrente.id} value={concorrente.id}>
+                  {concorrente.nome}
+                </option>
+              ))}
+          </select>
+
+          <select
+            value={familiaFilter}
+            onChange={(event) => changeFamiliaFilter(event.target.value)}
+            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none transition-colors focus:ring-1 focus:ring-ring"
+          >
+            <option value="todos">Todas as famílias</option>
+            {familias.map((familia) => (
+              <option key={familia.id} value={familia.id}>
+                {familia.nome}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={produtoFilter}
+            onChange={(event) => setProdutoFilter(event.target.value)}
+            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none transition-colors focus:ring-1 focus:ring-ring"
+          >
+            <option value="todos">Todos os produtos</option>
+            {produtosDoFiltro.map((produto) => (
+              <option key={produto.id} value={produto.id}>
+                {produto.sku_interno} - {produto.nome}
+              </option>
+            ))}
+          </select>
+        </CardContent>
+      </Card>
+
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
         {cards.map((card) => {
           const Icon = card.icon;
           return (
@@ -353,7 +463,7 @@ export default function Dashboard() {
                   <TableHead>Produto</TableHead>
                   <TableHead>SKU CJ</TableHead>
                   <TableHead>Concorrente</TableHead>
-                  <TableHead>SKU Conc.</TableHead>
+                  <TableHead>Cód. Conc.</TableHead>
                   <TableHead>Preço CJ</TableHead>
                   <TableHead>Preço Conc.</TableHead>
                   <TableHead>Diferença</TableHead>
@@ -501,7 +611,7 @@ export default function Dashboard() {
               <div className="flex gap-3">
                 <AlertTriangle className="h-5 w-5 shrink-0 text-primary" />
                 <div>
-                  <div className="font-medium">{mapeamentos.length} mapeamentos ativos</div>
+                  <div className="font-medium">{filteredMapeamentos.length} mapeamentos ativos</div>
                   <div className="text-xs text-muted-foreground">
                     O robô usa esses mapeamentos para coletar preços
                   </div>
@@ -597,7 +707,7 @@ export default function Dashboard() {
                     }}
                   />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
-                  {mapeamentos.slice(0, 4).map((mapeamento, index) => {
+                  {filteredMapeamentos.slice(0, 4).map((mapeamento, index) => {
                     const produto = mapeamento.produtos;
                     if (!produto) return null;
                     const colors = [

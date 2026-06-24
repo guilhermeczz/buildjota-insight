@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
+  Activity,
   BarChart3,
   Bot,
   Boxes,
@@ -26,6 +27,7 @@ const NAV = [
   { to: "/produtos", label: "Produtos ConstruJota", icon: Package },
   { to: "/concorrentes", label: "Concorrentes", icon: Store },
   { to: "/mapeamentos", label: "Mapeamento de SKUs", icon: GitCompareArrows },
+  { to: "/monitoramento-precos", label: "Monitoramento", icon: Activity },
   { to: "/historico", label: "Histórico de Preços", icon: History },
   { to: "/relatorios", label: "Relatórios", icon: BarChart3 },
   { to: "/execucoes-robo", label: "Execuções do Robô", icon: Bot },

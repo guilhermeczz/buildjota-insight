@@ -3,8 +3,6 @@
 As credenciais dos concorrentes não devem ser salvas no front-end nem em migrations.
 Configure-as como secrets no ambiente que executa o robô, por exemplo:
 
-- `FERA_ATACADO_LOGIN`
-- `FERA_ATACADO_PASSWORD`
 - `COFEMA_LOGIN`
 - `COFEMA_PASSWORD`
 - `CONSTRUJA_LOGIN`

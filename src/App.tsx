@@ -10,6 +10,7 @@ import Produtos from "@/routes/Produtos";
 import Concorrentes from "@/routes/Concorrentes";
 import MapeamentosSku from "@/routes/MapeamentosSku";
 import HistoricoPrecos from "@/routes/HistoricoPrecos";
+import MonitoramentoPrecos from "@/routes/MonitoramentoPrecos";
 import Relatorios from "@/routes/Relatorios";
 import ExecucoesRobo from "@/routes/ExecucoesRobo";
 import Configuracoes from "@/routes/Configuracoes";
@@ -34,6 +35,7 @@ export default function App() {
           <Route path="/produtos" element={<Produtos />} />
           <Route path="/concorrentes" element={<Concorrentes />} />
           <Route path="/mapeamentos" element={<MapeamentosSku />} />
+          <Route path="/monitoramento-precos" element={<MonitoramentoPrecos />} />
           <Route path="/historico" element={<HistoricoPrecos />} />
           <Route path="/relatorios" element={<Relatorios />} />
           <Route path="/execucoes-robo" element={<ExecucoesRobo />} />

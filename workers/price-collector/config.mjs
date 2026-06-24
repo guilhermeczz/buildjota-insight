@@ -1,8 +1,4 @@
 export const concorrenteEnv = {
-  "FERA ATACADO": {
-    login: "FERA_ATACADO_LOGIN",
-    password: "FERA_ATACADO_PASSWORD",
-  },
   COFEMA: {
     login: "COFEMA_LOGIN",
     password: "COFEMA_PASSWORD",

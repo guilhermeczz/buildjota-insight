@@ -11,8 +11,6 @@ SUPABASE_URL=https://esnybqbtytfuitqctghs.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=
 SUPABASE_FUNCTION_JWT=
 
-FERA_ATACADO_LOGIN=
-FERA_ATACADO_PASSWORD=
 COFEMA_LOGIN=
 COFEMA_PASSWORD=
 CONSTRUJA_LOGIN=
@@ -60,3 +58,12 @@ O painel chama `VITE_WORKER_TRIGGER_URL`, por padrao `http://localhost:8787/run`
 3. Ele salva sucesso/erro em `historico_precos`, atualiza `mapeamentos_sku` e registra a execucao em `execucoes_robo` via Edge Function.
 
 Para a validacao da OTTO, cadastre URLs diretas nos mapeamentos. Se uma pagina exigir seletor especifico, preencha `Seletor de preco` no mapeamento.
+
+## Regras por concorrente
+
+- `CONSTRUJA`: usa a URL cadastrada no mapeamento e reaproveita a sessao salva em `.worker-auth/construja.json`.
+- `COFEMA`: abre o botao `Entre`, faz login com as credenciais do ambiente, usa a URL cadastrada no mapeamento e reaproveita `.worker-auth/cofema.json`.
+- `MAREST`: entra por `/login`, faz login com as credenciais do ambiente, usa a URL cadastrada no mapeamento e reaproveita `.worker-auth/marest.json`.
+- `MEGALESTE`: abre o menu de usuario, faz login com `user/pass`, transforma o codigo do concorrente em `/c/produto/{codigo}` e prioriza o preco `A vista`. Se o site redirecionar para `/sp`, o worker trata como sessao invalida e refaz o login.
+
+Se o site retornar mensagem de login/senha invalida, o worker apaga a sessao local daquele concorrente e registra erro de credencial em vez de tentar ler preco da pagina errada.

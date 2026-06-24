@@ -17,6 +17,7 @@ dist-ssr
 *.local
 .env.worker
 .env.worker.local
+.worker-auth/
 
 # Wrangler / Cloudflare
 .wrangler/

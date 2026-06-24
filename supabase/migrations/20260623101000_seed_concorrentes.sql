@@ -1,6 +1,5 @@
 insert into public.concorrentes (nome, site_url, login_url, tipo_consulta, observacoes, ativo)
 values
-  ('FERA ATACADO', 'https://www.feraatacado.com', 'https://www.feraatacado.com', 'SKU', '', true),
   ('COFEMA', 'https://www.cofema.com.br', 'https://www.cofema.com.br', 'SKU', '', true),
   ('CONSTRUJA', 'https://www.construja.com.br', 'https://www.construja.com.br', 'SKU', '', true),
   ('MAREST', 'https://www.marest.com.br', 'https://www.marest.com.br', 'SKU', '', true),
