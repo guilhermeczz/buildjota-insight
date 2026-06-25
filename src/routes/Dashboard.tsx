@@ -12,7 +12,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatBRL, formatDateTime, formatPct } from "@/lib/format";
-import { sortByProductName } from "@/lib/product-sort";
+import { compareProductNames, sortByProductName } from "@/lib/product-sort";
 import { supabase } from "@/lib/supabase";
 import {
   AlertTriangle,
@@ -102,6 +102,11 @@ function durationLabel(seconds: number) {
   const minutes = Math.floor(seconds / 60);
   return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
 }
+
+const collator = new Intl.Collator("pt-BR", {
+  numeric: true,
+  sensitivity: "base",
+});
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -282,7 +287,21 @@ export default function Dashboard() {
             difPct,
           };
         })
-        .sort((a, b) => Math.abs(b.difPct) - Math.abs(a.difPct)),
+        .sort((a, b) => {
+          const concorrenteCompare = collator.compare(
+            a.concorrente?.nome ?? "",
+            b.concorrente?.nome ?? "",
+          );
+          if (concorrenteCompare !== 0) return concorrenteCompare;
+
+          const produtoCompare = compareProductNames(a.produto?.nome ?? "", b.produto?.nome ?? "");
+          if (produtoCompare !== 0) return produtoCompare;
+
+          return collator.compare(
+            a.mapeamento.sku_concorrente ?? "",
+            b.mapeamento.sku_concorrente ?? "",
+          );
+        }),
     [filteredMapeamentos],
   );
 

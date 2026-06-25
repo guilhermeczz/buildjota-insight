@@ -258,6 +258,10 @@ export async function collectPricesByBrowser(groups, options = {}) {
               throw new Error("Login nao confirmado; pagina ainda solicita autenticacao");
             }
 
+            if (await isProductUnavailable(page)) {
+              throw new Error("Produto indisponivel no concorrente");
+            }
+
             const price = await extractPrice(page, mapping.seletor_preco);
 
             if (!price) {
@@ -320,6 +324,49 @@ async function isLoginRequired(page) {
     .catch(() => "");
 
   return /fa[cç]a login|cadastre-se para ver os pre[cç]os/i.test(text);
+}
+
+async function isProductUnavailable(page) {
+  const text = await page
+    .locator("body")
+    .innerText({ timeout: 5000 })
+    .catch(() => "");
+  const normalized = normalizeText(text);
+
+  if (
+    /produto\s+indisponivel|item\s+indisponivel|indisponivel\s+no\s+momento|sem\s+estoque|produto\s+esgotado|avise-?me\s+quando\s+chegar/.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+
+  const unavailableControls = await page
+    .locator(
+      [
+        "button:disabled:has-text('Comprar')",
+        "button:disabled:has-text('Adicionar')",
+        "button:disabled:has-text('Carrinho')",
+        "[aria-disabled='true']:has-text('Comprar')",
+        "[aria-disabled='true']:has-text('Adicionar')",
+        "[class*='indisponivel' i]",
+        "[class*='unavailable' i]",
+        "[class*='out-of-stock' i]",
+      ].join(", "),
+    )
+    .count()
+    .catch(() => 0);
+
+  return unavailableControls > 0;
+}
+
+function normalizeText(value) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 async function hasInvalidCredentialsMessage(page) {

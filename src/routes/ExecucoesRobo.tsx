@@ -22,8 +22,10 @@ import {
 import { formatDateTime } from "@/lib/format";
 import { compareProductNames, sortByProductName } from "@/lib/product-sort";
 import { supabase } from "@/lib/supabase";
-import { Play, RotateCcw } from "lucide-react";
+import { Loader2, Play, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
+
+const WORKER_REQUEST_TIMEOUT_MS = 12000;
 
 type Execucao = {
   id: string;
@@ -90,6 +92,38 @@ function statusBadge(status: Execucao["status"]) {
     return <Badge variant="destructive">Erro</Badge>;
   }
   return <Badge variant="secondary">Buscando</Badge>;
+}
+
+async function requestWorkerRun(triggerUrl: string, body: Record<string, unknown>) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), WORKER_REQUEST_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(triggerUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    const result = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(result.error ?? "Falha ao executar a coleta");
+    }
+
+    return result;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(
+        "O servidor do worker nao respondeu. Verifique se npm run worker:server esta rodando.",
+      );
+    }
+
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 export default function ExecucoesRobo() {
@@ -167,14 +201,19 @@ export default function ExecucoesRobo() {
   }, []);
 
   useEffect(() => {
-    if (!pendingExecucao) return;
+    const hasPendingExecution =
+      pendingExecucao !== null ||
+      execucoes.some((execucao) => execucao.status === "pendente" || !execucao.finalizado_em);
 
-    const interval = window.setInterval(() => {
-      void refreshExecucoes();
-    }, 3000);
+    const interval = window.setInterval(
+      () => {
+        void refreshExecucoes();
+      },
+      hasPendingExecution ? 3000 : 15000,
+    );
 
     return () => window.clearInterval(interval);
-  }, [pendingExecucao]);
+  }, [execucoes, pendingExecucao]);
 
   async function loadManualOptions() {
     const [familiasResult, produtosResult, mapeamentosResult] = await Promise.all([
@@ -251,17 +290,7 @@ export default function ExecucoesRobo() {
     setRunning(true);
 
     try {
-      const response = await fetch(triggerUrl, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-
-      const result = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        throw new Error(result.error ?? "Falha ao executar a coleta manual");
-      }
+      await requestWorkerRun(triggerUrl, body);
 
       const startedAt = new Date().toISOString();
       setPendingExecucao({
@@ -296,17 +325,7 @@ export default function ExecucoesRobo() {
     setRetryingErrors(true);
 
     try {
-      const response = await fetch(triggerUrl, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ failedOnly: true }),
-      });
-
-      const result = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        throw new Error(result.error ?? "Falha ao refazer coletas com erro");
-      }
+      await requestWorkerRun(triggerUrl, { failedOnly: true });
 
       setPendingExecucao({
         id: `retry-${Date.now()}`,
@@ -593,7 +612,8 @@ export default function ExecucoesRobo() {
               Cancelar
             </Button>
             <Button onClick={runManualCollection} disabled={running}>
-              {running ? "Executando..." : "Executar"}
+              {running && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
+              {running ? "Iniciando..." : "Executar"}
             </Button>
           </DialogFooter>
         </DialogContent>
