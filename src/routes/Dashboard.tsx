@@ -203,18 +203,12 @@ export default function Dashboard() {
   useEffect(() => {
     void refreshDashboard();
 
-    const channel = supabase
-      .channel("dashboard-live")
-      .on("postgres_changes", { event: "*", schema: "public", table: "historico_precos" }, () => {
-        void refreshDashboard();
-      })
-      .on("postgres_changes", { event: "*", schema: "public", table: "execucoes_robo" }, () => {
-        void refreshDashboard();
-      })
-      .subscribe();
+    const interval = window.setInterval(() => {
+      void refreshDashboard();
+    }, 30000);
 
     return () => {
-      void supabase.removeChannel(channel);
+      window.clearInterval(interval);
     };
   }, []);
 
@@ -640,9 +634,7 @@ export default function Dashboard() {
                 <CheckCircle2 className="h-5 w-5 shrink-0 text-success" />
                 <div>
                   <div className="font-medium">{stats.total} comparações com preço coletado</div>
-                  <div className="text-xs text-muted-foreground">
-                    Dados reais salvos no Supabase
-                  </div>
+                  <div className="text-xs text-muted-foreground">Dados reais salvos no banco</div>
                 </div>
               </div>
             </CardContent>

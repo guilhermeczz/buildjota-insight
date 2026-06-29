@@ -1,7 +1,0 @@
-project_id = "esnybqbtytfuitqctghs"
-
-[functions.registrar-coleta]
-verify_jwt = true
-
-[functions.admin-users]
-verify_jwt = true

@@ -1,76 +1,152 @@
-import { createClient } from "@supabase/supabase-js";
+import { query, transaction } from "../../server/db.mjs";
 
-export function createSupabaseAdmin() {
-  const url = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!url) {
-    throw new Error("SUPABASE_URL nao configurada");
+export function createDatabaseClient() {
+  if (!process.env.DATABASE_URL) {
+    throw new Error("DATABASE_URL nao configurada");
   }
-
-  if (!serviceRoleKey) {
-    throw new Error("SUPABASE_SERVICE_ROLE_KEY nao configurada");
-  }
-
-  return createClient(url, serviceRoleKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    },
-  });
+  return { localPostgres: true };
 }
 
-export async function fetchActiveMappings(supabase, filters = {}) {
-  const { data, error } = await supabase
-    .from("mapeamentos_sku")
-    .select(
-      "id,sku_concorrente,url_produto,seletor_preco,produto_id,concorrente_id,status_coleta,produtos(id,nome,sku_interno,familia_id,preco_atual,ativo),concorrentes(id,nome,site_url,login_url,ativo)",
-    )
-    .eq("ativo", true)
-    .eq("produtos.ativo", true)
-    .eq("concorrentes.ativo", true)
-    .order("created_at", { ascending: true });
+function normalize(row) {
+  return {
+    ...row,
+    ultimo_preco: row.ultimo_preco == null ? null : Number(row.ultimo_preco),
+    produtos: {
+      id: row.produto_id,
+      nome: row.produto_nome,
+      sku_interno: row.sku_interno,
+      familia_id: row.familia_id,
+      preco_atual: Number(row.preco_atual),
+      ativo: row.produto_ativo,
+    },
+    concorrentes: {
+      id: row.concorrente_id,
+      nome: row.concorrente_nome,
+      site_url: row.site_url,
+      login_url: row.login_url,
+      ativo: row.concorrente_ativo,
+    },
+  };
+}
 
-  if (error) {
-    throw new Error(`Falha ao buscar mapeamentos: ${error.message}`);
+export async function fetchActiveMappings(_client, filters = {}) {
+  const values = [];
+  const clauses = ["m.ativo = true", "p.ativo = true", "c.ativo = true"];
+
+  if (filters.mapeamentoId) {
+    values.push(filters.mapeamentoId);
+    clauses.push(`m.id = $${values.length}`);
+  }
+  if (filters.produtoId) {
+    values.push(filters.produtoId);
+    clauses.push(`m.produto_id = $${values.length}`);
+  }
+  if (filters.familiaId) {
+    values.push(filters.familiaId);
+    clauses.push(`p.familia_id = $${values.length}`);
+  }
+  if (filters.failedOnly) {
+    clauses.push("m.status_coleta = 'erro'");
   }
 
-  return (data ?? [])
-    .filter((item) => item.produtos && item.concorrentes)
-    .filter((item) => {
-      if (filters.mapeamentoId && item.id !== filters.mapeamentoId) return false;
-      if (filters.produtoId && item.produto_id !== filters.produtoId) return false;
-      if (filters.familiaId && item.produtos?.familia_id !== filters.familiaId) return false;
-      if (filters.failedOnly && item.status_coleta !== "erro") return false;
-      return true;
-    });
+  const { rows } = await query(
+    `
+      select
+        m.id,
+        m.sku_concorrente,
+        m.url_produto,
+        m.seletor_preco,
+        m.produto_id,
+        m.concorrente_id,
+        m.status_coleta,
+        m.ultimo_preco,
+        p.nome as produto_nome,
+        p.sku_interno,
+        p.familia_id,
+        p.preco_atual,
+        p.ativo as produto_ativo,
+        c.nome as concorrente_nome,
+        c.site_url,
+        c.login_url,
+        c.ativo as concorrente_ativo
+      from mapeamentos_sku m
+      join produtos p on p.id = m.produto_id
+      join concorrentes c on c.id = m.concorrente_id
+      where ${clauses.join(" and ")}
+      order by m.created_at asc
+    `,
+    values,
+  );
+
+  return rows.map(normalize);
 }
 
 export async function registerResults(resultados, mensagem) {
-  const url = process.env.SUPABASE_URL;
-  const token = process.env.SUPABASE_FUNCTION_JWT ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const startedAt = new Date();
 
-  if (!url) throw new Error("SUPABASE_URL nao configurada");
-  if (!token) throw new Error("SUPABASE_FUNCTION_JWT ou SUPABASE_SERVICE_ROLE_KEY nao configurada");
+  return transaction(async (client) => {
+    const execucao = await client.query(
+      "insert into execucoes_robo (status,origem,iniciado_em,total_processados) values ('pendente','worker',$1,$2) returning id",
+      [startedAt.toISOString(), resultados.length],
+    );
 
-  const response = await fetch(`${url}/functions/v1/registrar-coleta`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      origem: "worker",
-      mensagem,
-      resultados,
-    }),
+    let totalSucesso = 0;
+    let totalErro = 0;
+
+    for (const item of resultados) {
+      const sucesso = item.status === "sucesso";
+      if (sucesso) totalSucesso += 1;
+      if (item.status === "erro") totalErro += 1;
+
+      const diferencaValor = sucesso
+        ? Number((Number(item.preco_construjota) - Number(item.preco_concorrente)).toFixed(3))
+        : 0;
+      const diferencaPercentual =
+        sucesso && Number(item.preco_concorrente) > 0
+          ? Number(((diferencaValor / Number(item.preco_concorrente)) * 100).toFixed(4))
+          : 0;
+
+      await client.query(
+        `insert into historico_precos
+          (mapeamento_id,preco_construjota,preco_concorrente,diferenca_valor,diferenca_percentual,status,mensagem_erro,coletado_em)
+         values ($1,$2,$3,$4,$5,$6,$7,now())`,
+        [
+          item.mapeamento_id,
+          item.preco_construjota ?? 0,
+          item.preco_concorrente ?? 0,
+          diferencaValor,
+          diferencaPercentual,
+          item.status,
+          item.mensagem_erro ?? null,
+        ],
+      );
+
+      await client.query(
+        `update mapeamentos_sku
+         set ultimo_preco = $1, ultima_atualizacao = now(), status_coleta = $2
+         where id = $3`,
+        [sucesso ? item.preco_concorrente : null, item.status, item.mapeamento_id],
+      );
+    }
+
+    const finishedAt = new Date();
+    const status = totalErro === 0 ? "sucesso" : totalSucesso === 0 ? "erro" : "parcial";
+    await client.query(
+      `update execucoes_robo
+       set status = $1, finalizado_em = $2, total_sucesso = $3, total_erro = $4,
+           mensagem = $5, tempo_execucao_segundos = $6
+       where id = $7`,
+      [
+        status,
+        finishedAt.toISOString(),
+        totalSucesso,
+        totalErro,
+        mensagem,
+        Math.round((finishedAt.getTime() - startedAt.getTime()) / 1000),
+        execucao.rows[0].id,
+      ],
+    );
+
+    return { id: execucao.rows[0].id, status, total_sucesso: totalSucesso, total_erro: totalErro };
   });
-
-  const body = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    throw new Error(`Falha ao registrar coleta: ${response.status} ${JSON.stringify(body)}`);
-  }
-
-  return body;
 }

@@ -64,16 +64,13 @@ export default function Topbar() {
 
     loadExecucoes();
 
-    const channel = supabase
-      .channel("topbar-execucoes-robo")
-      .on("postgres_changes", { event: "*", schema: "public", table: "execucoes_robo" }, () => {
-        loadExecucoes();
-      })
-      .subscribe();
+    const interval = window.setInterval(() => {
+      loadExecucoes();
+    }, 30000);
 
     return () => {
       mounted = false;
-      supabase.removeChannel(channel);
+      window.clearInterval(interval);
     };
   }, []);
 

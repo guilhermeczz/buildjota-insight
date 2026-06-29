@@ -10,8 +10,7 @@ export function loadWorkerEnv() {
     loadEnvFile(envPath);
   }
 
-  process.env.SUPABASE_URL ??= process.env.VITE_SUPABASE_URL;
-  process.env.SUPABASE_FUNCTION_JWT ??= process.env.VITE_SUPABASE_ANON_KEY;
+  process.env.DATABASE_URL ??= process.env.POSTGRES_URL;
 }
 
 function loadEnvFile(envPath) {

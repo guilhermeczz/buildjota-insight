@@ -1,6 +1,6 @@
 import { loadWorkerEnv } from "./env.mjs";
 import { collectPricesByBrowser } from "./browser.mjs";
-import { createSupabaseAdmin, fetchActiveMappings, registerResults } from "./supabase.mjs";
+import { createDatabaseClient, fetchActiveMappings, registerResults } from "./supabase.mjs";
 
 loadWorkerEnv();
 
@@ -49,8 +49,8 @@ function summarize(resultados) {
 
 async function main() {
   const startedAt = new Date();
-  const supabase = createSupabaseAdmin();
-  const mapeamentos = await fetchActiveMappings(supabase, {
+  const database = createDatabaseClient();
+  const mapeamentos = await fetchActiveMappings(database, {
     produtoId,
     familiaId,
     mapeamentoId,
@@ -78,7 +78,7 @@ async function main() {
 
   if (dryRun) {
     console.log(JSON.stringify(resultados, null, 2));
-    console.log("Dry run: nenhum dado foi gravado no Supabase.");
+    console.log("Dry run: nenhum dado foi gravado no banco.");
     return;
   }
 

@@ -188,15 +188,12 @@ export default function ExecucoesRobo() {
     void refreshExecucoes();
     void loadManualOptions();
 
-    const channel = supabase
-      .channel("execucoes-robo-page")
-      .on("postgres_changes", { event: "*", schema: "public", table: "execucoes_robo" }, () => {
-        void refreshExecucoes();
-      })
-      .subscribe();
+    const interval = window.setInterval(() => {
+      void refreshExecucoes();
+    }, 30000);
 
     return () => {
-      void supabase.removeChannel(channel);
+      window.clearInterval(interval);
     };
   }, []);
 

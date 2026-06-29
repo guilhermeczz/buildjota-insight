@@ -412,23 +412,13 @@ export default function Relatorios() {
 
     loadReports();
 
-    const channel = supabase
-      .channel("relatorios-data")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "historico_precos" },
-        loadReports,
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "mapeamentos_sku" },
-        loadReports,
-      )
-      .subscribe();
+    const interval = window.setInterval(() => {
+      void loadReports();
+    }, 30000);
 
     return () => {
       mounted = false;
-      supabase.removeChannel(channel);
+      window.clearInterval(interval);
     };
   }, []);
 
