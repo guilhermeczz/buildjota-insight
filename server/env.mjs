@@ -21,7 +21,7 @@ export function loadServerEnv() {
       const rawValue = trimmed.slice(separator + 1).trim();
       const value = rawValue.replace(/^["']|["']$/g, "");
 
-      if (key && process.env[key] === undefined) {
+      if (key) {
         process.env[key] = value;
       }
     }
