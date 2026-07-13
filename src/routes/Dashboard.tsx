@@ -72,7 +72,7 @@ type Mapeamento = {
 type Historico = {
   id: string;
   mapeamento_id: string;
-  preco_concorrente: number;
+  preco_concorrente: number | null;
   status: "sucesso" | "erro" | "pendente";
   coletado_em: string;
   mapeamentos_sku?: {
@@ -150,7 +150,7 @@ export default function Dashboard() {
         )
         .eq("status", "sucesso")
         .order("coletado_em", { ascending: false })
-        .limit(300),
+        .limit(180),
       supabase
         .from("execucoes_robo")
         .select(
@@ -193,7 +193,7 @@ export default function Dashboard() {
     setHistorico(
       ((historicoResult.data ?? []) as Historico[]).map((row) => ({
         ...row,
-        preco_concorrente: numeric(row.preco_concorrente),
+        preco_concorrente: row.preco_concorrente === null ? null : numeric(row.preco_concorrente),
       })),
     );
     setExecucoes((execucoesResult.data ?? []) as Execucao[]);
@@ -204,8 +204,8 @@ export default function Dashboard() {
     void refreshDashboard();
 
     const interval = window.setInterval(() => {
-      void refreshDashboard();
-    }, 30000);
+      if (document.visibilityState === "visible") void refreshDashboard();
+    }, 120000);
 
     return () => {
       window.clearInterval(interval);
@@ -268,9 +268,11 @@ export default function Dashboard() {
         .map((mapeamento) => {
           const produto = mapeamento.produtos;
           const precoCj = numeric(produto?.preco_atual);
-          const precoConcorrente = numeric(mapeamento.ultimo_preco);
-          const dif = precoCj - precoConcorrente;
-          const difPct = precoConcorrente > 0 ? (dif / precoConcorrente) * 100 : 0;
+          const precoConcorrente =
+            mapeamento.ultimo_preco === null ? null : numeric(mapeamento.ultimo_preco);
+          const hasPrice = precoConcorrente !== null && precoConcorrente > 0;
+          const dif = hasPrice ? precoCj - precoConcorrente : null;
+          const difPct = hasPrice ? (Number(dif) / precoConcorrente) * 100 : null;
           return {
             mapeamento,
             produto,
@@ -300,12 +302,14 @@ export default function Dashboard() {
   );
 
   const stats = useMemo(() => {
-    const comPreco = diffs.filter((item) => item.precoConcorrente > 0 && item.precoCj > 0);
-    const acima = comPreco.filter((item) => item.dif > 0).length;
-    const abaixo = comPreco.filter((item) => item.dif < 0).length;
+    const comPreco = diffs.filter(
+      (item) => item.precoConcorrente !== null && item.precoConcorrente > 0 && item.precoCj > 0,
+    );
+    const acima = comPreco.filter((item) => Number(item.dif) > 0).length;
+    const abaixo = comPreco.filter((item) => Number(item.dif) < 0).length;
     const iguais = comPreco.filter((item) => item.dif === 0).length;
     const mediaPct =
-      comPreco.reduce((acc, item) => acc + item.difPct, 0) / Math.max(comPreco.length, 1);
+      comPreco.reduce((acc, item) => acc + Number(item.difPct), 0) / Math.max(comPreco.length, 1);
 
     return { total: comPreco.length, acima, abaixo, iguais, mediaPct };
   }, [diffs]);
@@ -323,7 +327,7 @@ export default function Dashboard() {
     const firstMapeamentos = filteredMapeamentos.slice(0, 4);
 
     return days.map((day) => {
-      const row: Record<string, number | string> = {
+      const row: Record<string, number | string | null> = {
         dia: `${day.slice(8, 10)}/${day.slice(5, 7)}`,
       };
 
@@ -333,7 +337,7 @@ export default function Dashboard() {
         const historicoRow = filteredHistorico.find(
           (item) => item.mapeamento_id === mapeamento.id && item.coletado_em.startsWith(day),
         );
-        row[`${produto.nome} (${produto.sku_interno})`] = historicoRow?.preco_concorrente ?? 0;
+        row[`${produto.nome} (${produto.sku_interno})`] = historicoRow?.preco_concorrente ?? null;
       });
 
       return row;
@@ -510,29 +514,32 @@ export default function Dashboard() {
                       {item.mapeamento.sku_concorrente}
                     </TableCell>
                     <TableCell>{formatBRL(item.precoCj)}</TableCell>
-                    <TableCell>{formatBRL(item.precoConcorrente)}</TableCell>
-                    <TableCell
-                      className={
-                        item.dif > 0
-                          ? "font-medium text-destructive"
-                          : item.dif < 0
-                            ? "font-medium text-success"
-                            : ""
-                      }
-                    >
-                      {item.dif > 0 ? "+" : ""}
-                      {formatBRL(item.dif)}
+                    <TableCell>
+                      {item.precoConcorrente !== null ? formatBRL(item.precoConcorrente) : "-"}
                     </TableCell>
                     <TableCell
                       className={
-                        item.difPct > 0
+                        Number(item.dif) > 0
                           ? "font-medium text-destructive"
-                          : item.difPct < 0
+                          : Number(item.dif) < 0
                             ? "font-medium text-success"
                             : ""
                       }
                     >
-                      {formatPct(item.difPct)}
+                      {item.dif === null
+                        ? "-"
+                        : `${Number(item.dif) > 0 ? "+" : ""}${formatBRL(item.dif)}`}
+                    </TableCell>
+                    <TableCell
+                      className={
+                        Number(item.difPct) > 0
+                          ? "font-medium text-destructive"
+                          : Number(item.difPct) < 0
+                            ? "font-medium text-success"
+                            : ""
+                      }
+                    >
+                      {item.difPct === null ? "-" : formatPct(item.difPct)}
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                       {item.mapeamento.ultima_atualizacao

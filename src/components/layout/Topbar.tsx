@@ -57,7 +57,7 @@ export default function Topbar() {
           "id,status,origem,iniciado_em,finalizado_em,total_processados,total_sucesso,total_erro,mensagem",
         )
         .order("iniciado_em", { ascending: false })
-        .limit(5);
+        .limit(3);
 
       if (mounted) setExecucoes((data ?? []) as ExecucaoNotification[]);
     };
@@ -65,8 +65,8 @@ export default function Topbar() {
     loadExecucoes();
 
     const interval = window.setInterval(() => {
-      loadExecucoes();
-    }, 30000);
+      if (document.visibilityState === "visible") loadExecucoes();
+    }, 120000);
 
     return () => {
       mounted = false;

@@ -60,7 +60,7 @@ type Mapeamento = {
 type Historico = {
   id: string;
   mapeamento_id: string;
-  preco_concorrente: number;
+  preco_concorrente: number | null;
   status: "sucesso" | "erro" | "pendente";
   coletado_em: string;
   mapeamentos_sku?: Mapeamento | null;
@@ -137,7 +137,7 @@ export default function MonitoramentoPrecos() {
         )
         .eq("status", "sucesso")
         .order("coletado_em", { ascending: false })
-        .limit(2000),
+        .limit(800),
     ]);
 
     if (familiasResult.error || concorrentesResult.error || historicoResult.error) {
@@ -151,7 +151,7 @@ export default function MonitoramentoPrecos() {
     setHistorico(
       ((historicoResult.data ?? []) as Historico[]).map((row) => ({
         ...row,
-        preco_concorrente: numeric(row.preco_concorrente),
+        preco_concorrente: row.preco_concorrente === null ? null : numeric(row.preco_concorrente),
       })),
     );
     setLoading(false);
@@ -177,8 +177,10 @@ export default function MonitoramentoPrecos() {
           (a, b) => new Date(b.coletado_em).getTime() - new Date(a.coletado_em).getTime(),
         );
         const current = sorted[0];
-        const previous = sorted[1];
+        const previous = sorted.slice(1).find((item) => item.preco_concorrente !== null);
         const mapeamento = current.mapeamentos_sku;
+        if (current.preco_concorrente === null) return null;
+
         const precoAtual = numeric(current.preco_concorrente);
         const precoAnterior = previous ? numeric(previous.preco_concorrente) : null;
         const variacao = precoAnterior === null ? 0 : precoAtual - precoAnterior;
@@ -207,6 +209,7 @@ export default function MonitoramentoPrecos() {
           historico: sorted.slice(0, 5),
         };
       })
+      .filter((row): row is MonitorRow => row !== null)
       .sort((a, b) => {
         const trendPriority = { subiu: 0, caiu: 1, estavel: 2, "sem-comparacao": 3 };
         const trendCompare = trendPriority[a.trend] - trendPriority[b.trend];
@@ -417,7 +420,9 @@ export default function MonitoramentoPrecos() {
                             className="rounded border bg-muted/30 px-1.5 py-0.5 text-xs"
                             title={formatDateTime(item.coletado_em)}
                           >
-                            {formatBRL(item.preco_concorrente)}
+                            {item.preco_concorrente === null
+                              ? "-"
+                              : formatBRL(item.preco_concorrente)}
                           </span>
                         ))}
                       </div>

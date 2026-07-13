@@ -152,12 +152,12 @@ export default function ExecucoesRobo() {
           "id,status,origem,iniciado_em,finalizado_em,total_processados,total_sucesso,total_erro,mensagem,tempo_execucao_segundos",
         )
         .order("iniciado_em", { ascending: false })
-        .limit(100),
+        .limit(60),
       supabase
         .from("historico_precos")
         .select("coletado_em,mapeamentos_sku(produtos(familia_id))")
         .order("coletado_em", { ascending: false })
-        .limit(1000),
+        .limit(300),
     ]);
     const { data, error } = execucoesResult;
 
@@ -187,14 +187,6 @@ export default function ExecucoesRobo() {
   useEffect(() => {
     void refreshExecucoes();
     void loadManualOptions();
-
-    const interval = window.setInterval(() => {
-      void refreshExecucoes();
-    }, 30000);
-
-    return () => {
-      window.clearInterval(interval);
-    };
   }, []);
 
   useEffect(() => {
@@ -206,7 +198,7 @@ export default function ExecucoesRobo() {
       () => {
         void refreshExecucoes();
       },
-      hasPendingExecution ? 3000 : 15000,
+      hasPendingExecution ? 10000 : 60000,
     );
 
     return () => window.clearInterval(interval);

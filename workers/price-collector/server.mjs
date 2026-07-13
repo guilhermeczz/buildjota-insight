@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { resolve } from "node:path";
 import { loadWorkerEnv } from "./env.mjs";
+import { query } from "../../server/db.mjs";
 
 loadWorkerEnv();
 
@@ -12,6 +13,7 @@ let running = false;
 const workerDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(workerDir, "../..");
 const workerEntry = resolve(workerDir, "index.mjs");
+const scheduleTimezone = process.env.SCHEDULE_TIMEZONE ?? "America/Sao_Paulo";
 
 function sendJson(res, statusCode, body) {
   res.writeHead(statusCode, {
@@ -60,6 +62,102 @@ function runWorkerWithArgs(extraArgs) {
       reject(new Error(stderr || stdout || `Worker finalizou com codigo ${code}`));
     });
   });
+}
+
+function localParts(date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: scheduleTimezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    weekday: "short",
+    hour12: false,
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const weekdayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+
+  return {
+    date: `${value.year}-${value.month}-${value.day}`,
+    time: `${value.hour}:${value.minute}`,
+    weekday: weekdayMap[value.weekday] ?? 0,
+  };
+}
+
+function localDateKey(value) {
+  if (!value) return "";
+  return localParts(new Date(value)).date;
+}
+
+async function fetchDueSchedule() {
+  const now = new Date();
+  const current = localParts(now);
+  const { rows } = await query(
+    `
+      select
+        a.id,
+        a.familia_id,
+        a.horario,
+        a.dias_semana,
+        a.ultima_execucao,
+        a.concorrencia_maxima,
+        f.nome as familia_nome
+      from agenda_coletas a
+      join familias f on f.id = a.familia_id
+      where a.ativo = true and a.horario is not null and f.ativo = true
+      order by a.horario asc nulls last, f.nome asc
+    `,
+  );
+
+  return rows.find((row) => {
+    const horario = String(row.horario).slice(0, 5);
+    const dias = Array.isArray(row.dias_semana) ? row.dias_semana.map(Number) : [];
+    if (!dias.includes(current.weekday)) return false;
+    if (horario > current.time) return false;
+    return localDateKey(row.ultima_execucao) !== current.date;
+  });
+}
+
+async function markScheduleResult(agendaId, status, error = "") {
+  await query(
+    `update agenda_coletas
+     set ultima_execucao = now(), ultimo_status = $1, ultimo_erro = $2
+     where id = $3`,
+    [status, error ? String(error).slice(0, 500) : null, agendaId],
+  );
+}
+
+async function runDueSchedule() {
+  if (running) return;
+
+  const schedule = await fetchDueSchedule();
+  if (!schedule) return;
+
+  running = true;
+  const args = [
+    `--familia-id=${schedule.familia_id}`,
+    `--agenda-id=${schedule.id}`,
+    `--concurrency=${Math.max(1, Math.min(4, Number(schedule.concorrencia_maxima || 1)))}`,
+    "--scheduled",
+  ];
+
+  console.log(
+    `Coleta agendada iniciada: ${schedule.familia_nome} (${String(schedule.horario).slice(0, 5)}).`,
+  );
+
+  try {
+    const result = await runWorkerWithArgs(args);
+    if (/Nenhum mapeamento ativo encontrado/i.test(result.stdout)) {
+      await markScheduleResult(schedule.id, "sucesso");
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Falha na coleta agendada.";
+    await markScheduleResult(schedule.id, "erro", message);
+    console.error(message);
+  } finally {
+    running = false;
+  }
 }
 
 async function readJsonBody(req) {
@@ -137,4 +235,13 @@ const server = createServer(async (req, res) => {
 
 server.listen(port, () => {
   console.log(`Worker trigger ouvindo em http://localhost:${port}`);
+  console.log(`Agenda de coleta ativa no fuso ${scheduleTimezone}.`);
+  setInterval(() => {
+    runDueSchedule().catch((error) => {
+      console.error(error instanceof Error ? error.message : error);
+    });
+  }, 60000);
+  runDueSchedule().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+  });
 });

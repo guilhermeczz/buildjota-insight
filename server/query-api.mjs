@@ -9,6 +9,7 @@ const tableMap = {
   mapeamentos_sku: "mapeamentos_sku",
   historico_precos: "historico_precos",
   execucoes_robo: "execucoes_robo",
+  agenda_coletas: "agenda_coletas",
   app_config: "app_config",
 };
 
@@ -51,6 +52,17 @@ const allowedColumns = {
     "mensagem",
     "tempo_execucao_segundos",
   ],
+  agenda_coletas: [
+    "familia_id",
+    "ativo",
+    "horario",
+    "dias_semana",
+    "concorrencia_maxima",
+    "observacoes",
+    "ultima_execucao",
+    "ultimo_status",
+    "ultimo_erro",
+  ],
 };
 
 const numericFields = new Set([
@@ -60,6 +72,7 @@ const numericFields = new Set([
   "preco_concorrente",
   "diferenca_valor",
   "diferenca_percentual",
+  "concorrencia_maxima",
 ]);
 
 function normalize(value) {
@@ -150,6 +163,15 @@ function baseSelect(table) {
     `;
   }
 
+  if (table === "agenda_coletas") {
+    return `
+      select a.*,
+        case when f.id is null then null else json_build_object('id', f.id, 'nome', f.nome, 'ativo', f.ativo) end as familias
+      from agenda_coletas a
+      join familias f on f.id = a.familia_id
+    `;
+  }
+
   return `select * from ${table}`;
 }
 
@@ -162,6 +184,7 @@ function columnRef(table, field) {
     mapeamentos_sku: "m",
     historico_precos: "h",
     execucoes_robo: "execucoes_robo",
+    agenda_coletas: "a",
     app_config: "app_config",
   };
 

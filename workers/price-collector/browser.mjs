@@ -7,6 +7,7 @@ import { extractPrice } from "./extract-price.mjs";
 const userAgent =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36";
 const authStateDir = join(process.cwd(), ".worker-auth");
+const blockHeavyAssets = process.env.WORKER_BLOCK_HEAVY_ASSETS !== "false";
 
 function storageStatePath(concorrenteNome) {
   const fileName = concorrenteNome
@@ -211,6 +212,7 @@ async function dismissOverlays(page) {
 
 export async function collectPricesByBrowser(groups, options = {}) {
   mkdirSync(authStateDir, { recursive: true });
+  const concurrency = Math.max(1, Math.min(4, Number(options.concurrency ?? 1)));
 
   const browser = await chromium.launch({
     headless: !options.headed,
@@ -219,99 +221,127 @@ export async function collectPricesByBrowser(groups, options = {}) {
   const resultados = [];
 
   try {
-    for (const group of groups) {
-      const statePath = storageStatePath(group.concorrente.nome);
-      const context = await browser.newContext({
-        userAgent,
-        locale: "pt-BR",
-        timezoneId: "America/Sao_Paulo",
-        storageState: existsSync(statePath) ? statePath : undefined,
-      });
-      const page = await context.newPage();
+    let nextIndex = 0;
+    const workers = Array.from({ length: Math.min(concurrency, groups.length) }, async () => {
+      while (nextIndex < groups.length) {
+        const group = groups[nextIndex];
+        nextIndex += 1;
+        resultados.push(...(await collectGroup(browser, group)));
+      }
+    });
 
+    await Promise.all(workers);
+  } finally {
+    await browser.close();
+  }
+
+  return resultados;
+}
+
+async function collectGroup(browser, group) {
+  const statePath = storageStatePath(group.concorrente.nome);
+  const context = await browser.newContext({
+    userAgent,
+    locale: "pt-BR",
+    timezoneId: "America/Sao_Paulo",
+    storageState: existsSync(statePath) ? statePath : undefined,
+  });
+  const page = await context.newPage();
+  const resultados = [];
+
+  try {
+    if (blockHeavyAssets) {
+      await page.route("**/*", (route) => {
+        const resourceType = route.request().resourceType();
+        if (["image", "font", "media"].includes(resourceType)) {
+          void route.abort();
+          return;
+        }
+        void route.continue();
+      });
+    }
+
+    if (!existsSync(statePath)) {
+      await login(page, group.concorrente);
+      await context.storageState({ path: statePath });
+    }
+
+    for (const mapping of group.mapeamentos) {
       try {
-        if (!existsSync(statePath)) {
+        if (!mapping.url_produto) {
+          throw new Error("URL do produto nao cadastrada");
+        }
+
+        const productUrl = productUrlForMapping(mapping, group.concorrente);
+        await page.goto(productUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+        await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+        await page.waitForTimeout(1500);
+
+        if (await shouldRetryLogin(page, mapping, group.concorrente)) {
           await login(page, group.concorrente);
           await context.storageState({ path: statePath });
+          await page.goto(productUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+          await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+          await page.waitForTimeout(1500);
         }
 
-        for (const mapping of group.mapeamentos) {
-          try {
-            if (!mapping.url_produto) {
-              throw new Error("URL do produto nao cadastrada");
-            }
+        if (await isLoginRequired(page)) {
+          throw new Error("Login nao confirmado; pagina ainda solicita autenticacao");
+        }
 
-            const productUrl = productUrlForMapping(mapping, group.concorrente);
-            await page.goto(productUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
-            await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
-            await page.waitForTimeout(1500);
+        if (await isProductUnavailable(page)) {
+          throw new Error("Produto indisponivel no concorrente");
+        }
 
-            if (await shouldRetryLogin(page, mapping, group.concorrente)) {
-              await login(page, group.concorrente);
-              await context.storageState({ path: statePath });
-              await page.goto(productUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
-              await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
-              await page.waitForTimeout(1500);
-            }
+        const price = await extractPrice(page, mapping.seletor_preco);
 
-            if (await isLoginRequired(page)) {
-              throw new Error("Login nao confirmado; pagina ainda solicita autenticacao");
-            }
-
-            if (await isProductUnavailable(page)) {
-              throw new Error("Produto indisponivel no concorrente");
-            }
-
-            const price = await extractPrice(page, mapping.seletor_preco);
-
-            if (!price) {
-              throw new Error("Preco nao encontrado na pagina");
-            }
-
-            resultados.push({
-              mapeamento_id: mapping.id,
-              preco_construjota: Number(mapping.produtos.preco_atual ?? 0),
-              preco_concorrente: price,
-              status: "sucesso",
-            });
-          } catch (error) {
-            if (
-              error instanceof Error &&
-              /Credenciais invalidas/i.test(error.message) &&
-              existsSync(statePath)
-            ) {
-              rmSync(statePath, { force: true });
-            }
-
-            resultados.push({
-              mapeamento_id: mapping.id,
-              preco_construjota: Number(mapping.produtos.preco_atual ?? 0),
-              preco_concorrente: 0,
-              status: "erro",
-              mensagem_erro: error instanceof Error ? error.message : "Erro desconhecido",
-            });
+        if (!price) {
+          if (await isProductUnavailable(page)) {
+            throw new Error("Produto indisponivel no concorrente");
           }
+          throw new Error("Preco nao encontrado na pagina");
         }
+
+        resultados.push({
+          mapeamento_id: mapping.id,
+          preco_construjota: Number(mapping.produtos.preco_atual ?? 0),
+          preco_concorrente: price,
+          status: "sucesso",
+        });
       } catch (error) {
-        if (existsSync(statePath)) {
+        if (
+          error instanceof Error &&
+          /Credenciais invalidas/i.test(error.message) &&
+          existsSync(statePath)
+        ) {
           rmSync(statePath, { force: true });
         }
 
-        for (const mapping of group.mapeamentos) {
-          resultados.push({
-            mapeamento_id: mapping.id,
-            preco_construjota: Number(mapping.produtos.preco_atual ?? 0),
-            preco_concorrente: 0,
-            status: "erro",
-            mensagem_erro: error instanceof Error ? error.message : "Erro desconhecido",
-          });
-        }
-      } finally {
-        await context.close();
+        resultados.push({
+          mapeamento_id: mapping.id,
+          preco_construjota: Number(mapping.produtos.preco_atual ?? 0),
+          preco_concorrente: null,
+          status: "erro",
+          mensagem_erro: error instanceof Error ? error.message : "Erro desconhecido",
+        });
       }
     }
+  } catch (error) {
+    if (existsSync(statePath)) {
+      rmSync(statePath, { force: true });
+    }
+
+    for (const mapping of group.mapeamentos) {
+      resultados.push({
+        mapeamento_id: mapping.id,
+        preco_construjota: Number(mapping.produtos.preco_atual ?? 0),
+        preco_concorrente: null,
+        status: "erro",
+        mensagem_erro: error instanceof Error ? error.message : "Erro desconhecido",
+      });
+    }
   } finally {
-    await browser.close();
+    await context.close();
   }
 
   return resultados;

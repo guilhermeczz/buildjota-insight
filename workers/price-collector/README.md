@@ -19,6 +19,9 @@ MAREST_LOGIN=
 MAREST_PASSWORD=
 MEGALESTE_LOGIN=
 MEGALESTE_PASSWORD=
+
+# Opcional. Por padrao o worker bloqueia imagens, fontes e midias para economizar rede.
+WORKER_BLOCK_HEAVY_ASSETS=true
 ```
 
 ## Como rodar
@@ -49,9 +52,20 @@ npm run worker:server
 
 O painel chama `VITE_WORKER_TRIGGER_URL`, por padrao `http://localhost:8787/run`.
 
+## Agenda automatica
+
+O mesmo processo `npm run worker:server` tambem consulta a tabela `agenda_coletas` a cada minuto.
+Quando uma familia estiver ativa, no dia correto e com horario vencido, ele executa:
+
+```bash
+node workers/price-collector/index.mjs --familia-id=<id> --scheduled
+```
+
+Configure os horarios pela tela **Agenda de Coleta**. O limite "Paralelo" controla quantos
+concorrentes podem ser lidos ao mesmo tempo, de 1 a 4. Em VPS de 8 GB, comece com 1.
+
 ## Como o worker decide o preco
 
 1. Se o mapeamento tiver `seletor_preco`, ele tenta ler esse seletor primeiro.
 2. Se nao tiver seletor, ele procura textos com padrao de moeda brasileira na pagina.
 3. Ele salva sucesso/erro em `historico_precos`, atualiza `mapeamentos_sku` e registra a execucao em `execucoes_robo`.
-

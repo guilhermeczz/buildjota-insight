@@ -181,17 +181,22 @@ async function handleRegisterCollection(req, res) {
     let totalErro = 0;
 
     for (const item of resultados) {
-      const sucesso = item.status === "sucesso";
+      const precoInformado = Number(item.preco_concorrente);
+      const sucesso =
+        item.status === "sucesso" && Number.isFinite(precoInformado) && precoInformado > 0;
+      const statusItem = sucesso ? "sucesso" : "erro";
       if (sucesso) totalSucesso += 1;
-      if (item.status === "erro") totalErro += 1;
+      if (!sucesso) totalErro += 1;
 
-      const diferencaValor = sucesso
-        ? Number((Number(item.preco_construjota) - Number(item.preco_concorrente)).toFixed(3))
-        : 0;
+      const precoConcorrente = sucesso ? precoInformado : null;
+      const diferencaValor =
+        sucesso && precoConcorrente !== null
+          ? Number((Number(item.preco_construjota) - Number(item.preco_concorrente)).toFixed(3))
+          : null;
       const diferencaPercentual =
-        sucesso && Number(item.preco_concorrente) > 0
-          ? Number(((diferencaValor / Number(item.preco_concorrente)) * 100).toFixed(4))
-          : 0;
+        sucesso && precoConcorrente !== null && precoConcorrente > 0
+          ? Number(((Number(diferencaValor) / precoConcorrente) * 100).toFixed(4))
+          : null;
 
       await client.query(
         `insert into historico_precos
@@ -200,11 +205,11 @@ async function handleRegisterCollection(req, res) {
         [
           item.mapeamento_id,
           item.preco_construjota ?? 0,
-          item.preco_concorrente ?? 0,
+          precoConcorrente,
           diferencaValor,
           diferencaPercentual,
-          item.status,
-          item.mensagem_erro ?? null,
+          statusItem,
+          item.mensagem_erro ?? (sucesso ? null : "Preco valido nao encontrado"),
         ],
       );
 
@@ -212,7 +217,7 @@ async function handleRegisterCollection(req, res) {
         `update mapeamentos_sku
          set ultimo_preco = $1, ultima_atualizacao = now(), status_coleta = $2
          where id = $3`,
-        [sucesso ? item.preco_concorrente : null, item.status, item.mapeamento_id],
+        [precoConcorrente, statusItem, item.mapeamento_id],
       );
     }
 

@@ -81,30 +81,36 @@ export async function fetchActiveMappings(_client, filters = {}) {
   return rows.map(normalize);
 }
 
-export async function registerResults(resultados, mensagem) {
+export async function registerResults(resultados, mensagem, options = {}) {
   const startedAt = new Date();
+  const origem = options.origem ?? "worker";
 
   return transaction(async (client) => {
     const execucao = await client.query(
-      "insert into execucoes_robo (status,origem,iniciado_em,total_processados) values ('pendente','worker',$1,$2) returning id",
-      [startedAt.toISOString(), resultados.length],
+      "insert into execucoes_robo (status,origem,iniciado_em,total_processados) values ('pendente',$1,$2,$3) returning id",
+      [origem, startedAt.toISOString(), resultados.length],
     );
 
     let totalSucesso = 0;
     let totalErro = 0;
 
     for (const item of resultados) {
-      const sucesso = item.status === "sucesso";
+      const precoInformado = Number(item.preco_concorrente);
+      const sucesso =
+        item.status === "sucesso" && Number.isFinite(precoInformado) && precoInformado > 0;
+      const statusItem = sucesso ? "sucesso" : "erro";
       if (sucesso) totalSucesso += 1;
-      if (item.status === "erro") totalErro += 1;
+      if (!sucesso) totalErro += 1;
 
-      const diferencaValor = sucesso
-        ? Number((Number(item.preco_construjota) - Number(item.preco_concorrente)).toFixed(3))
-        : 0;
+      const precoConcorrente = sucesso ? precoInformado : null;
+      const diferencaValor =
+        sucesso && precoConcorrente !== null
+          ? Number((Number(item.preco_construjota) - Number(item.preco_concorrente)).toFixed(3))
+          : null;
       const diferencaPercentual =
-        sucesso && Number(item.preco_concorrente) > 0
-          ? Number(((diferencaValor / Number(item.preco_concorrente)) * 100).toFixed(4))
-          : 0;
+        sucesso && precoConcorrente !== null && precoConcorrente > 0
+          ? Number(((Number(diferencaValor) / precoConcorrente) * 100).toFixed(4))
+          : null;
 
       await client.query(
         `insert into historico_precos
@@ -113,11 +119,11 @@ export async function registerResults(resultados, mensagem) {
         [
           item.mapeamento_id,
           item.preco_construjota ?? 0,
-          item.preco_concorrente ?? 0,
+          precoConcorrente,
           diferencaValor,
           diferencaPercentual,
-          item.status,
-          item.mensagem_erro ?? null,
+          statusItem,
+          item.mensagem_erro ?? (sucesso ? null : "Preco valido nao encontrado"),
         ],
       );
 
@@ -125,7 +131,7 @@ export async function registerResults(resultados, mensagem) {
         `update mapeamentos_sku
          set ultimo_preco = $1, ultima_atualizacao = now(), status_coleta = $2
          where id = $3`,
-        [sucesso ? item.preco_concorrente : null, item.status, item.mapeamento_id],
+        [precoConcorrente, statusItem, item.mapeamento_id],
       );
     }
 
@@ -146,6 +152,15 @@ export async function registerResults(resultados, mensagem) {
         execucao.rows[0].id,
       ],
     );
+
+    if (options.agendaId) {
+      await client.query(
+        `update agenda_coletas
+         set ultima_execucao = $1, ultimo_status = $2, ultimo_erro = null
+         where id = $3`,
+        [finishedAt.toISOString(), status, options.agendaId],
+      );
+    }
 
     return { id: execucao.rows[0].id, status, total_sucesso: totalSucesso, total_erro: totalErro };
   });

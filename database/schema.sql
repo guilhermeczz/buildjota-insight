@@ -92,9 +92,9 @@ create table if not exists historico_precos (
   id uuid primary key default gen_random_uuid(),
   mapeamento_id uuid not null references mapeamentos_sku(id) on delete cascade,
   preco_construjota numeric(12,3) not null default 0,
-  preco_concorrente numeric(12,3) not null default 0,
-  diferenca_valor numeric(12,3) not null default 0,
-  diferenca_percentual numeric(10,4) not null default 0,
+  preco_concorrente numeric(12,3),
+  diferenca_valor numeric(12,3),
+  diferenca_percentual numeric(10,4),
   status status_coleta not null,
   mensagem_erro text,
   coletado_em timestamptz not null default now(),
@@ -113,6 +113,21 @@ create table if not exists execucoes_robo (
   mensagem text not null default '',
   tempo_execucao_segundos integer not null default 0 check (tempo_execucao_segundos >= 0),
   created_at timestamptz not null default now()
+);
+
+create table if not exists agenda_coletas (
+  id uuid primary key default gen_random_uuid(),
+  familia_id uuid not null unique references familias(id) on delete cascade,
+  ativo boolean not null default false,
+  horario time,
+  dias_semana smallint[] not null default array[1,2,3,4,5,6],
+  concorrencia_maxima integer not null default 1 check (concorrencia_maxima between 1 and 4),
+  observacoes text not null default '',
+  ultima_execucao timestamptz,
+  ultimo_status status_execucao,
+  ultimo_erro text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
 create table if not exists app_config (
@@ -146,12 +161,16 @@ create trigger set_produtos_updated_at before update on produtos for each row ex
 drop trigger if exists set_mapeamentos_sku_updated_at on mapeamentos_sku;
 create trigger set_mapeamentos_sku_updated_at before update on mapeamentos_sku for each row execute function set_updated_at();
 
+drop trigger if exists set_agenda_coletas_updated_at on agenda_coletas;
+create trigger set_agenda_coletas_updated_at before update on agenda_coletas for each row execute function set_updated_at();
+
 create index if not exists idx_produtos_familia_id on produtos(familia_id);
 create index if not exists idx_mapeamentos_sku_produto_id on mapeamentos_sku(produto_id);
 create index if not exists idx_mapeamentos_sku_concorrente_id on mapeamentos_sku(concorrente_id);
 create index if not exists idx_historico_precos_mapeamento_id on historico_precos(mapeamento_id);
 create index if not exists idx_historico_precos_coletado_em on historico_precos(coletado_em desc);
 create index if not exists idx_execucoes_robo_iniciado_em on execucoes_robo(iniciado_em desc);
+create index if not exists idx_agenda_coletas_ativo_horario on agenda_coletas(ativo, horario);
 
 insert into concorrentes (nome, site_url, login_url, tipo_consulta, observacoes, ativo)
 values

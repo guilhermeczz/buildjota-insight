@@ -9,6 +9,7 @@ import Familias from "@/routes/Familias";
 import Produtos from "@/routes/Produtos";
 import Concorrentes from "@/routes/Concorrentes";
 import MapeamentosSku from "@/routes/MapeamentosSku";
+import AgendaColetas from "@/routes/AgendaColetas";
 import HistoricoPrecos from "@/routes/HistoricoPrecos";
 import MonitoramentoPrecos from "@/routes/MonitoramentoPrecos";
 import Relatorios from "@/routes/Relatorios";
@@ -35,6 +36,7 @@ export default function App() {
           <Route path="/produtos" element={<Produtos />} />
           <Route path="/concorrentes" element={<Concorrentes />} />
           <Route path="/mapeamentos" element={<MapeamentosSku />} />
+          <Route path="/agenda-coletas" element={<AgendaColetas />} />
           <Route path="/monitoramento-precos" element={<MonitoramentoPrecos />} />
           <Route path="/historico" element={<HistoricoPrecos />} />
           <Route path="/relatorios" element={<Relatorios />} />

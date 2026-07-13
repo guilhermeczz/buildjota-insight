@@ -72,9 +72,9 @@ type Historico = {
   id: string;
   mapeamento_id: string;
   preco_construjota: number;
-  preco_concorrente: number;
-  diferenca_valor: number;
-  diferenca_percentual: number;
+  preco_concorrente: number | null;
+  diferenca_valor: number | null;
+  diferenca_percentual: number | null;
   status: "sucesso" | "erro" | "pendente";
   mensagem_erro: string | null;
   coletado_em: string;
@@ -91,9 +91,9 @@ type Row = {
   familiaId: string | null;
   concorrenteId: string;
   precoCJ: number;
-  precoConcorrente: number;
-  dif: number;
-  difPct: number;
+  precoConcorrente: number | null;
+  dif: number | null;
+  difPct: number | null;
   status: "sucesso" | "erro" | "pendente";
   ultimaAtualizacao: string | null;
 };
@@ -152,9 +152,10 @@ function buildRows(mapeamentos: Mapeamento[]): Row[] {
     const produto = m.produtos;
     const concorrente = m.concorrentes;
     const precoCJ = Number(produto?.preco_atual ?? 0);
-    const precoConcorrente = Number(m.ultimo_preco ?? 0);
-    const dif = precoCJ - precoConcorrente;
-    const difPct = precoConcorrente > 0 ? (dif / precoConcorrente) * 100 : 0;
+    const precoConcorrente = m.ultimo_preco === null ? null : Number(m.ultimo_preco);
+    const hasPrice = precoConcorrente !== null && precoConcorrente > 0;
+    const dif = hasPrice ? precoCJ - precoConcorrente : null;
+    const difPct = hasPrice ? (Number(dif) / precoConcorrente) * 100 : null;
 
     return {
       id: m.id,
@@ -199,9 +200,9 @@ function downloadCSV(rows: Row[], filename: string) {
         r.skuConcorrente,
         r.familia,
         r.precoCJ.toFixed(2),
-        r.precoConcorrente.toFixed(2),
-        r.dif.toFixed(2),
-        r.difPct.toFixed(2),
+        r.precoConcorrente === null ? "" : r.precoConcorrente.toFixed(2),
+        r.dif === null ? "" : r.dif.toFixed(2),
+        r.difPct === null ? "" : r.difPct.toFixed(2),
         r.status,
         r.ultimaAtualizacao ? formatDateTime(r.ultimaAtualizacao) : "",
       ].join(";"),
@@ -283,31 +284,35 @@ function RelatorioTable({
                   <TableCell className="text-xs text-muted-foreground">{r.familia}</TableCell>
                   <TableCell>{formatBRL(r.precoCJ)}</TableCell>
                   <TableCell>
-                    {r.precoConcorrente > 0 ? formatBRL(r.precoConcorrente) : emptyLabel}
+                    {r.precoConcorrente !== null && r.precoConcorrente > 0
+                      ? formatBRL(r.precoConcorrente)
+                      : emptyLabel}
                   </TableCell>
                   <TableCell
                     className={
-                      r.dif > 0
+                      Number(r.dif) > 0
                         ? "font-medium text-destructive"
-                        : r.dif < 0
+                        : Number(r.dif) < 0
                           ? "font-medium text-success"
                           : ""
                     }
                   >
-                    {r.precoConcorrente > 0
+                    {r.precoConcorrente !== null && r.precoConcorrente > 0 && r.dif !== null
                       ? `${r.dif > 0 ? "+" : ""}${formatBRL(r.dif)}`
                       : emptyLabel}
                   </TableCell>
                   <TableCell
                     className={
-                      r.difPct > 0
+                      Number(r.difPct) > 0
                         ? "font-medium text-destructive"
-                        : r.difPct < 0
+                        : Number(r.difPct) < 0
                           ? "font-medium text-success"
                           : ""
                     }
                   >
-                    {r.precoConcorrente > 0 ? formatPct(r.difPct) : emptyLabel}
+                    {r.precoConcorrente !== null && r.precoConcorrente > 0 && r.difPct !== null
+                      ? formatPct(r.difPct)
+                      : emptyLabel}
                   </TableCell>
                   <TableCell>
                     {r.status === "sucesso" && (
@@ -388,7 +393,7 @@ export default function Relatorios() {
               "id,mapeamento_id,preco_construjota,preco_concorrente,diferenca_valor,diferenca_percentual,status,mensagem_erro,coletado_em,mapeamentos_sku(id,produto_id,concorrente_id,sku_concorrente,produtos(id,sku_interno,nome,familia_id,preco_atual,familias(id,nome)),concorrentes(id,nome))",
             )
             .order("coletado_em", { ascending: false })
-            .limit(1000),
+            .limit(500),
         ]);
 
       if (!mounted) return;
@@ -412,13 +417,8 @@ export default function Relatorios() {
 
     loadReports();
 
-    const interval = window.setInterval(() => {
-      void loadReports();
-    }, 30000);
-
     return () => {
       mounted = false;
-      window.clearInterval(interval);
     };
   }, []);
 
@@ -432,8 +432,12 @@ export default function Relatorios() {
     });
   }, [baseRows, concorrenteFilter, dateRange, familiaFilter, periodo]);
 
-  const acima = filteredRows.filter((r) => r.precoConcorrente > 0 && r.dif > 0);
-  const abaixo = filteredRows.filter((r) => r.precoConcorrente > 0 && r.dif < 0);
+  const acima = filteredRows.filter(
+    (r) => r.precoConcorrente !== null && r.precoConcorrente > 0 && Number(r.dif) > 0,
+  );
+  const abaixo = filteredRows.filter(
+    (r) => r.precoConcorrente !== null && r.precoConcorrente > 0 && Number(r.dif) < 0,
+  );
   const erros = historico.filter((h) => {
     const mapeamento = h.mapeamentos_sku;
     if (h.status !== "erro") return false;
@@ -459,7 +463,9 @@ export default function Relatorios() {
     ),
   );
 
-  const withPrice = filteredRows.filter((r) => r.precoConcorrente > 0);
+  const withPrice = filteredRows.filter(
+    (r) => r.precoConcorrente !== null && r.precoConcorrente > 0,
+  );
   const mediaPct = withPrice.reduce((acc, r) => acc + r.difPct, 0) / Math.max(withPrice.length, 1);
 
   return (

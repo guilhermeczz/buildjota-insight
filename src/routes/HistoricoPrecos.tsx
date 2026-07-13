@@ -35,9 +35,9 @@ type Concorrente = {
 type HistoricoRow = {
   id: string;
   preco_construjota: number;
-  preco_concorrente: number;
-  diferenca_valor: number;
-  diferenca_percentual: number;
+  preco_concorrente: number | null;
+  diferenca_valor: number | null;
+  diferenca_percentual: number | null;
   status: "sucesso" | "erro" | "pendente";
   mensagem_erro: string | null;
   coletado_em: string;
@@ -59,9 +59,10 @@ function normalizeHistorico(row: HistoricoRow): HistoricoRow {
   return {
     ...row,
     preco_construjota: Number(row.preco_construjota ?? 0),
-    preco_concorrente: Number(row.preco_concorrente ?? 0),
-    diferenca_valor: Number(row.diferenca_valor ?? 0),
-    diferenca_percentual: Number(row.diferenca_percentual ?? 0),
+    preco_concorrente: row.preco_concorrente === null ? null : Number(row.preco_concorrente),
+    diferenca_valor: row.diferenca_valor === null ? null : Number(row.diferenca_valor),
+    diferenca_percentual:
+      row.diferenca_percentual === null ? null : Number(row.diferenca_percentual),
   };
 }
 
@@ -86,7 +87,7 @@ export default function HistoricoPrecos() {
           "id,preco_construjota,preco_concorrente,diferenca_valor,diferenca_percentual,status,mensagem_erro,coletado_em,mapeamentos_sku(sku_concorrente,produto_id,concorrente_id,produtos(nome,sku_interno,familia_id,familias(nome)),concorrentes(nome))",
         )
         .order("coletado_em", { ascending: false })
-        .limit(1000),
+        .limit(500),
     ]);
 
     if (familiasResult.error || concorrentesResult.error || historicoResult.error) {
@@ -121,8 +122,8 @@ export default function HistoricoPrecos() {
       }
       if (statusFilter === "sucesso" && row.status !== "sucesso") return false;
       if (statusFilter === "erro" && row.status !== "erro") return false;
-      if (statusFilter === "mais-caros" && row.diferenca_valor <= 0) return false;
-      if (statusFilter === "mais-baratos" && row.diferenca_valor >= 0) return false;
+      if (statusFilter === "mais-caros" && Number(row.diferenca_valor) <= 0) return false;
+      if (statusFilter === "mais-baratos" && Number(row.diferenca_valor) >= 0) return false;
       if (q) {
         const needle = q.toLowerCase();
         if (
@@ -256,31 +257,33 @@ export default function HistoricoPrecos() {
                       </TableCell>
                       <TableCell>{formatBRL(row.preco_construjota)}</TableCell>
                       <TableCell>
-                        {row.status === "erro" ? "-" : formatBRL(row.preco_concorrente)}
+                        {row.preco_concorrente === null ? "-" : formatBRL(row.preco_concorrente)}
                       </TableCell>
                       <TableCell
                         className={
-                          row.diferenca_valor > 0
+                          Number(row.diferenca_valor) > 0
                             ? "font-medium text-destructive"
-                            : row.diferenca_valor < 0
+                            : Number(row.diferenca_valor) < 0
                               ? "font-medium text-success"
                               : ""
                         }
                       >
-                        {row.status === "erro"
+                        {row.diferenca_valor === null
                           ? "-"
-                          : `${row.diferenca_valor > 0 ? "+" : ""}${formatBRL(row.diferenca_valor)}`}
+                          : `${Number(row.diferenca_valor) > 0 ? "+" : ""}${formatBRL(row.diferenca_valor)}`}
                       </TableCell>
                       <TableCell
                         className={
-                          row.diferenca_percentual > 0
+                          Number(row.diferenca_percentual) > 0
                             ? "font-medium text-destructive"
-                            : row.diferenca_percentual < 0
+                            : Number(row.diferenca_percentual) < 0
                               ? "font-medium text-success"
                               : ""
                         }
                       >
-                        {row.status === "erro" ? "-" : formatPct(row.diferenca_percentual)}
+                        {row.diferenca_percentual === null
+                          ? "-"
+                          : formatPct(row.diferenca_percentual)}
                       </TableCell>
                       <TableCell>
                         {row.status === "sucesso" ? (

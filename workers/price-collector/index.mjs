@@ -8,9 +8,12 @@ const args = new Set(process.argv.slice(2));
 const dryRun = args.has("--dry-run");
 const headed = args.has("--headed");
 const failedOnly = args.has("--failed-only");
+const scheduled = args.has("--scheduled");
 const produtoId = argValue("--produto-id");
 const familiaId = argValue("--familia-id");
 const mapeamentoId = argValue("--mapeamento-id");
+const agendaId = argValue("--agenda-id");
+const concurrency = Math.max(1, Math.min(4, Number(argValue("--concurrency") || 1)));
 
 function argValue(name) {
   const prefix = `${name}=`;
@@ -68,7 +71,7 @@ async function main() {
     `Iniciando coleta: ${mapeamentos.length} mapeamento(s), ${groups.length} concorrente(s).`,
   );
 
-  const resultados = await collectPricesByBrowser(groups, { headed });
+  const resultados = await collectPricesByBrowser(groups, { headed, concurrency });
   const summary = summarize(resultados);
   const durationSeconds = Math.round((Date.now() - startedAt.getTime()) / 1000);
 
@@ -95,6 +98,7 @@ async function main() {
               ? " Filtro: erros."
               : ""
     }`,
+    { origem: scheduled ? "agendado" : "worker", agendaId },
   );
 
   console.log(`Execucao registrada: ${response.id} (${response.status}).`);
