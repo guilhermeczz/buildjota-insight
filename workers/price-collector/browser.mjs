@@ -1,7 +1,7 @@
 import { chromium } from "playwright";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { credentialsFor } from "./config.mjs";
+import { credentialsFor, normalizeConcorrenteName } from "./config.mjs";
 import { extractPrice } from "./extract-price.mjs";
 
 const userAgent =
@@ -14,6 +14,8 @@ const actionTimeoutMs = envNumber("WORKER_ACTION_TIMEOUT_MS", 5000, 1000, 15000)
 const productSignalTimeoutMs = envNumber("WORKER_PRICE_SIGNAL_TIMEOUT_MS", 4500, 1000, 15000);
 const productSettleMs = envNumber("WORKER_PRODUCT_SETTLE_MS", 350, 0, 3000);
 const loginSettleMs = envNumber("WORKER_LOGIN_SETTLE_MS", 1200, 0, 5000);
+const cofemaUnidade = process.env.COFEMA_UNIDADE ?? "SUMARE";
+const marestRegiao = process.env.MAREST_REGIAO ?? "SP";
 
 function envNumber(name, fallback, min, max) {
   const value = Number(process.env[name] ?? fallback);
@@ -224,6 +226,162 @@ async function dismissOverlays(page) {
   }
 }
 
+async function ensureConcorrentePreferences(page, concorrente) {
+  const nome = normalizeConcorrenteName(concorrente.nome);
+
+  if (nome === "COFEMA") return configureCofema(page);
+  if (nome === "MAREST") return configureMarest(page);
+
+  return false;
+}
+
+async function configureCofema(page) {
+  const hasPrompt = await pageHasText(page, [/definir configuracoes/]);
+  if (!hasPrompt) return false;
+
+  await selectVisibleOption(page, cofemaUnidade);
+
+  const clicked =
+    (await clickFirstVisible(page, [
+      "button:has-text('Definir configura')",
+      "input[type='submit'][value*='Definir']",
+      ".modal button.btn-primary",
+      "[role='dialog'] button:has-text('Definir')",
+      "button:has-text('Definir')",
+    ])) || (await clickExactText(page, /definir configuracoes/i));
+
+  if (!clicked) {
+    throw new Error("Configuracao de unidade da COFEMA nao confirmada");
+  }
+
+  await page
+    .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
+    .catch(() => null);
+  await page.waitForTimeout(600);
+  console.log(`[COFEMA] Configuracoes confirmadas (${cofemaUnidade}).`);
+  return true;
+}
+
+async function configureMarest(page) {
+  const hasPrompt = await pageHasText(page, [/escolha uma regiao/, /seja bem vindo/]);
+  if (!hasPrompt) return false;
+
+  let clicked = await clickExactText(page, new RegExp(`^${escapeRegex(marestRegiao)}$`, "i"));
+
+  if (!clicked) {
+    await clickFirstVisible(page, [
+      "button:has-text('Escolha uma')",
+      "a:has-text('Escolha uma')",
+      "[role='button']:has-text('Escolha uma')",
+      ".dropdown-toggle",
+    ]);
+    clicked = await clickExactText(page, new RegExp(`^${escapeRegex(marestRegiao)}$`, "i"));
+  }
+
+  if (!clicked) {
+    throw new Error(`Regiao ${marestRegiao} da MAREST nao selecionada`);
+  }
+
+  await page
+    .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
+    .catch(() => null);
+  await page.waitForTimeout(800);
+  console.log(`[MAREST] Regiao ${marestRegiao} selecionada.`);
+  return true;
+}
+
+async function openProductPage(page, context, statePath, mapping, concorrente) {
+  const productUrl = productUrlForMapping(mapping, concorrente);
+
+  await page.goto(productUrl, {
+    waitUntil: "domcontentloaded",
+    timeout: navigationTimeoutMs,
+  });
+
+  if (await ensureConcorrentePreferences(page, concorrente)) {
+    await context.storageState({ path: statePath });
+    await page.goto(productUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: navigationTimeoutMs,
+    });
+    if (await ensureConcorrentePreferences(page, concorrente)) {
+      await context.storageState({ path: statePath });
+    }
+  }
+
+  await waitForProductSignal(page);
+  if (productSettleMs > 0) await page.waitForTimeout(productSettleMs);
+}
+
+async function pageHasText(page, patterns) {
+  const text = await page
+    .locator("body")
+    .innerText({ timeout: 1500 })
+    .catch(() => "");
+  const normalized = normalizeText(text);
+
+  return patterns.some((pattern) => pattern.test(normalized));
+}
+
+async function clickExactText(page, pattern) {
+  const locator = page.getByText(pattern).first();
+  const count = await locator.count().catch(() => 0);
+  if (count === 0) return false;
+
+  const visible = await locator.isVisible().catch(() => false);
+  if (!visible) return false;
+
+  await Promise.all([
+    page.waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs }).catch(() => null),
+    locator.click({ timeout: actionTimeoutMs }),
+  ]);
+  return true;
+}
+
+async function selectVisibleOption(page, optionText) {
+  const target = normalizeText(optionText);
+  const selects = page.locator("select");
+  const count = await selects.count().catch(() => 0);
+
+  for (let index = 0; index < count; index += 1) {
+    const select = selects.nth(index);
+    const visible = await select.isVisible().catch(() => false);
+    if (!visible) continue;
+
+    const option = await select
+      .locator("option")
+      .evaluateAll((nodes, targetText) => {
+        const normalize = (value) =>
+          String(value ?? "")
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .toLowerCase();
+
+        return nodes
+          .map((node) => ({ value: node.value, text: node.textContent ?? "" }))
+          .find(
+            (item) =>
+              normalize(item.value).includes(targetText) ||
+              normalize(item.text).includes(targetText),
+          );
+      }, target)
+      .catch(() => null);
+
+    if (!option?.value) continue;
+
+    await select.selectOption(option.value, { timeout: actionTimeoutMs });
+    return true;
+  }
+
+  return false;
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export async function collectPricesByBrowser(groups, options = {}) {
   mkdirSync(authStateDir, { recursive: true });
   const concurrency = Math.max(1, Math.min(4, Number(options.concurrency ?? 1)));
@@ -279,6 +437,7 @@ async function collectGroup(browser, group, options = {}) {
 
     if (!existsSync(statePath)) {
       await login(page, group.concorrente);
+      await ensureConcorrentePreferences(page, group.concorrente);
       await context.storageState({ path: statePath });
     }
 
@@ -295,25 +454,15 @@ async function collectGroup(browser, group, options = {}) {
         }
 
         await reportProgress(options, `Lendo ${progressLabel}`);
-        const productUrl = productUrlForMapping(mapping, group.concorrente);
-        await page.goto(productUrl, {
-          waitUntil: "domcontentloaded",
-          timeout: navigationTimeoutMs,
-        });
-        await waitForProductSignal(page);
-        if (productSettleMs > 0) await page.waitForTimeout(productSettleMs);
+        await openProductPage(page, context, statePath, mapping, group.concorrente);
 
         if (await shouldRetryLogin(page, mapping, group.concorrente)) {
           rmSync(statePath, { force: true });
           await context.clearCookies().catch(() => null);
           await login(page, group.concorrente);
+          await ensureConcorrentePreferences(page, group.concorrente);
           await context.storageState({ path: statePath });
-          await page.goto(productUrl, {
-            waitUntil: "domcontentloaded",
-            timeout: navigationTimeoutMs,
-          });
-          await waitForProductSignal(page);
-          if (productSettleMs > 0) await page.waitForTimeout(productSettleMs);
+          await openProductPage(page, context, statePath, mapping, group.concorrente);
         }
 
         if (await isLoginRequired(page)) {
