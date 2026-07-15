@@ -34,7 +34,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { formatBRL, formatPct, formatDateTime } from "@/lib/format";
+import { formatBRL, formatPct, formatDateTime, toDateString } from "@/lib/format";
 import { supabase } from "@/lib/supabase";
 
 type Familia = {
@@ -119,9 +119,11 @@ function formatDateLabel(date: Date) {
 }
 
 function isInsideDateFilter(value: string | null, periodo: Periodo, range: DateRange | undefined) {
-  if (!value) return periodo === "0";
+  const normalized = toDateString(value);
+  if (!normalized) return periodo === "0";
 
-  const date = new Date(value);
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return periodo === "0";
 
   if (periodo === "custom") {
     if (range?.from && date < startOfDay(range.from)) return false;
@@ -410,8 +412,30 @@ export default function Relatorios() {
 
       setFamilias((familiasResult.data ?? []) as Familia[]);
       setConcorrentes((concorrentesResult.data ?? []) as Concorrente[]);
-      setMapeamentos((mapeamentosResult.data ?? []) as Mapeamento[]);
-      setHistorico((historicoResult.data ?? []) as Historico[]);
+      setMapeamentos(
+        ((mapeamentosResult.data ?? []) as Mapeamento[]).map((mapeamento) => ({
+          ...mapeamento,
+          ultimo_preco: mapeamento.ultimo_preco === null ? null : Number(mapeamento.ultimo_preco),
+          ultima_atualizacao: toDateString(mapeamento.ultima_atualizacao),
+          produtos: mapeamento.produtos
+            ? {
+                ...mapeamento.produtos,
+                preco_atual: Number(mapeamento.produtos.preco_atual ?? 0),
+              }
+            : null,
+        })),
+      );
+      setHistorico(
+        ((historicoResult.data ?? []) as Historico[]).map((row) => ({
+          ...row,
+          preco_construjota: Number(row.preco_construjota ?? 0),
+          preco_concorrente: row.preco_concorrente === null ? null : Number(row.preco_concorrente),
+          diferenca_valor: row.diferenca_valor === null ? null : Number(row.diferenca_valor),
+          diferenca_percentual:
+            row.diferenca_percentual === null ? null : Number(row.diferenca_percentual),
+          coletado_em: toDateString(row.coletado_em),
+        })),
+      );
       setLoading(false);
     }
 

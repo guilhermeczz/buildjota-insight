@@ -11,7 +11,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { formatBRL, formatDateTime, formatPct } from "@/lib/format";
+import { formatBRL, formatDateTime, formatPct, toDateString } from "@/lib/format";
 import { compareProductNames, sortByProductName } from "@/lib/product-sort";
 import { supabase } from "@/lib/supabase";
 import {
@@ -194,6 +194,7 @@ export default function Dashboard() {
       ((historicoResult.data ?? []) as Historico[]).map((row) => ({
         ...row,
         preco_concorrente: row.preco_concorrente === null ? null : numeric(row.preco_concorrente),
+        coletado_em: toDateString(row.coletado_em),
       })),
     );
     setExecucoes((execucoesResult.data ?? []) as Execucao[]);
@@ -320,7 +321,11 @@ export default function Dashboard() {
   ).length;
 
   const chartData = useMemo(() => {
-    const days = Array.from(new Set(filteredHistorico.map((row) => row.coletado_em.slice(0, 10))))
+    const days = Array.from(
+      new Set(
+        filteredHistorico.map((row) => toDateString(row.coletado_em).slice(0, 10)).filter(Boolean),
+      ),
+    )
       .sort()
       .slice(-7);
 
@@ -335,7 +340,8 @@ export default function Dashboard() {
         const produto = mapeamento.produtos;
         if (!produto) return;
         const historicoRow = filteredHistorico.find(
-          (item) => item.mapeamento_id === mapeamento.id && item.coletado_em.startsWith(day),
+          (item) =>
+            item.mapeamento_id === mapeamento.id && toDateString(item.coletado_em).startsWith(day),
         );
         row[`${produto.nome} (${produto.sku_interno})`] = historicoRow?.preco_concorrente ?? null;
       });

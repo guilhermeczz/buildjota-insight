@@ -76,6 +76,7 @@ const numericFields = new Set([
 ]);
 
 function normalize(value) {
+  if (value instanceof Date) return value.toISOString();
   if (Array.isArray(value)) return value.map(normalize);
   if (!value || typeof value !== "object") return value;
 

@@ -191,7 +191,8 @@ async function login(page, concorrente) {
   const credentials = credentialsFor(concorrente.nome);
   if (!credentials) return false;
 
-  const loginUrl = concorrente.nome === "MAREST" ? `${concorrente.site_url}/login` : concorrente.login_url;
+  const loginUrl =
+    concorrente.nome === "MAREST" ? `${concorrente.site_url}/login` : concorrente.login_url;
   await page.goto(absoluteUrl(loginUrl || concorrente.site_url, concorrente.site_url), {
     waitUntil: "domcontentloaded",
     timeout: 45000,
@@ -345,7 +346,9 @@ async function discoverForProduct(page, concorrente, product) {
     if (!current || candidate.score > current.score) unique.set(candidate.url, candidate);
   }
 
-  return Array.from(unique.values()).sort((a, b) => b.score - a.score).slice(0, 5);
+  return Array.from(unique.values())
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
 }
 
 async function discoverForConcorrente(browser, concorrente, products) {

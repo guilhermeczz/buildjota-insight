@@ -19,7 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, toDateString, toTimestamp } from "@/lib/format";
 import { compareProductNames, sortByProductName } from "@/lib/product-sort";
 import { supabase } from "@/lib/supabase";
 import { Loader2, Play, RotateCcw } from "lucide-react";
@@ -168,16 +168,29 @@ export default function ExecucoesRobo() {
     }
 
     if (!historicosResult.error) {
-      setHistoricosExecucao((historicosResult.data ?? []) as HistoricoExecucao[]);
+      setHistoricosExecucao(
+        ((historicosResult.data ?? []) as HistoricoExecucao[]).map((historico) => ({
+          ...historico,
+          coletado_em: toDateString(historico.coletado_em),
+        })),
+      );
     }
 
-    const nextExecucoes = (data ?? []) as Execucao[];
+    const nextExecucoes = ((data ?? []) as Execucao[]).map((execucao) => ({
+      ...execucao,
+      iniciado_em: toDateString(execucao.iniciado_em),
+      finalizado_em: execucao.finalizado_em ? toDateString(execucao.finalizado_em) : null,
+      total_processados: Number(execucao.total_processados ?? 0),
+      total_sucesso: Number(execucao.total_sucesso ?? 0),
+      total_erro: Number(execucao.total_erro ?? 0),
+      tempo_execucao_segundos: Number(execucao.tempo_execucao_segundos ?? 0),
+    }));
     setExecucoes(nextExecucoes);
     setPendingExecucao((current) => {
       if (!current) return null;
-      const currentStartedAt = new Date(current.iniciado_em).getTime();
+      const currentStartedAt = toTimestamp(current.iniciado_em);
       const hasRealExecution = nextExecucoes.some(
-        (execucao) => new Date(execucao.iniciado_em).getTime() >= currentStartedAt,
+        (execucao) => toTimestamp(execucao.iniciado_em) >= currentStartedAt,
       );
       return hasRealExecution ? null : current;
     });
@@ -342,13 +355,13 @@ export default function ExecucoesRobo() {
   }
 
   function familiasDaExecucao(execucao: Execucao) {
-    const startedAt = new Date(execucao.iniciado_em).getTime() - 1000;
-    const finishedAt = new Date(execucao.finalizado_em ?? execucao.iniciado_em).getTime() + 5000;
+    const startedAt = toTimestamp(execucao.iniciado_em) - 1000;
+    const finishedAt = toTimestamp(execucao.finalizado_em ?? execucao.iniciado_em) + 5000;
 
     return new Set(
       historicosExecucao
         .filter((historico) => {
-          const collectedAt = new Date(historico.coletado_em).getTime();
+          const collectedAt = toTimestamp(historico.coletado_em);
           return collectedAt >= startedAt && collectedAt <= finishedAt;
         })
         .map((historico) => historico.mapeamentos_sku?.produtos?.familia_id)
@@ -361,13 +374,13 @@ export default function ExecucoesRobo() {
   }
 
   const latestRetryAt = execucoes.filter(isRetryExecution).reduce((latest, execucao) => {
-    const startedAt = new Date(execucao.iniciado_em).getTime();
+    const startedAt = toTimestamp(execucao.iniciado_em);
     return Math.max(latest, startedAt);
   }, 0);
 
   function retryAlreadyRequested(execucao: Execucao) {
     if (!latestRetryAt) return false;
-    return new Date(execucao.iniciado_em).getTime() <= latestRetryAt;
+    return toTimestamp(execucao.iniciado_em) <= latestRetryAt;
   }
 
   const visibleExecucoes = (pendingExecucao ? [pendingExecucao, ...execucoes] : execucoes).filter(

@@ -17,7 +17,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { formatBRL, formatDateTime, formatPct } from "@/lib/format";
+import { formatBRL, formatDateTime, formatPct, toDateString, toTimestamp } from "@/lib/format";
 import { sortByProductName } from "@/lib/product-sort";
 import { supabase } from "@/lib/supabase";
 import {
@@ -152,6 +152,7 @@ export default function MonitoramentoPrecos() {
       ((historicoResult.data ?? []) as Historico[]).map((row) => ({
         ...row,
         preco_concorrente: row.preco_concorrente === null ? null : numeric(row.preco_concorrente),
+        coletado_em: toDateString(row.coletado_em),
       })),
     );
     setLoading(false);
@@ -174,7 +175,7 @@ export default function MonitoramentoPrecos() {
     return Array.from(groups.entries())
       .map(([id, items]) => {
         const sorted = [...items].sort(
-          (a, b) => new Date(b.coletado_em).getTime() - new Date(a.coletado_em).getTime(),
+          (a, b) => toTimestamp(b.coletado_em) - toTimestamp(a.coletado_em),
         );
         const current = sorted[0];
         const previous = sorted.slice(1).find((item) => item.preco_concorrente !== null);

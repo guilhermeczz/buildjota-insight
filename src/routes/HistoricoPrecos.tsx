@@ -18,7 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { formatBRL, formatDateTime, formatPct } from "@/lib/format";
+import { formatBRL, formatDateTime, formatPct, toDateString, toTimestamp } from "@/lib/format";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
 
@@ -63,6 +63,7 @@ function normalizeHistorico(row: HistoricoRow): HistoricoRow {
     diferenca_valor: row.diferenca_valor === null ? null : Number(row.diferenca_valor),
     diferenca_percentual:
       row.diferenca_percentual === null ? null : Number(row.diferenca_percentual),
+    coletado_em: toDateString(row.coletado_em),
   };
 }
 
@@ -113,9 +114,9 @@ export default function HistoricoPrecos() {
     return rows.filter((row) => {
       const mapeamento = row.mapeamentos_sku;
       const produto = mapeamento?.produtos;
-      const coletadoEm = new Date(row.coletado_em);
+      const coletadoEm = toTimestamp(row.coletado_em);
 
-      if (periodo !== "0" && coletadoEm < cutoff) return false;
+      if (periodo !== "0" && (!coletadoEm || coletadoEm < cutoff.getTime())) return false;
       if (familiaFilter !== "todas" && produto?.familia_id !== familiaFilter) return false;
       if (concorrenteFilter !== "todos" && mapeamento?.concorrente_id !== concorrenteFilter) {
         return false;
