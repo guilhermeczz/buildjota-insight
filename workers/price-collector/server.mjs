@@ -4,16 +4,27 @@ import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { resolve } from "node:path";
 import { loadWorkerEnv } from "./env.mjs";
+import { ensureRuntimeSchema } from "./database.mjs";
 import { query } from "../../server/db.mjs";
 
 loadWorkerEnv();
 
 const port = Number(process.env.WORKER_TRIGGER_PORT ?? 8787);
 let running = false;
+let runtimeSchemaPromise = null;
 const workerDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(workerDir, "../..");
 const workerEntry = resolve(workerDir, "index.mjs");
 const scheduleTimezone = process.env.SCHEDULE_TIMEZONE ?? "America/Sao_Paulo";
+
+function ensureSchemaOnce() {
+  runtimeSchemaPromise ??= ensureRuntimeSchema().catch((error) => {
+    runtimeSchemaPromise = null;
+    throw error;
+  });
+
+  return runtimeSchemaPromise;
+}
 
 function sendJson(res, statusCode, body) {
   res.writeHead(statusCode, {
@@ -23,10 +34,6 @@ function sendJson(res, statusCode, body) {
     "access-control-allow-headers": "content-type, authorization",
   });
   res.end(JSON.stringify(body));
-}
-
-function runWorker() {
-  return runWorkerWithArgs([]);
 }
 
 function runWorkerWithArgs(extraArgs) {
@@ -95,6 +102,8 @@ function hasRunForScheduledTime(row, current, horario) {
 }
 
 async function fetchDueSchedule() {
+  await ensureSchemaOnce();
+
   const now = new Date();
   const current = localParts(now);
   const { rows } = await query(
@@ -124,6 +133,8 @@ async function fetchDueSchedule() {
 }
 
 async function markScheduleResult(agendaId, status, error = "") {
+  await ensureSchemaOnce();
+
   await query(
     `update agenda_coletas
      set ultima_execucao = now(), ultimo_status = $1, ultimo_erro = $2
@@ -203,9 +214,14 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  running = true;
-
   try {
+    await ensureSchemaOnce();
+    if (running) {
+      sendJson(res, 409, { error: "Uma coleta ja esta em andamento." });
+      return;
+    }
+
+    running = true;
     const body = await readJsonBody(req);
     const args = [];
 
@@ -244,8 +260,8 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(port, () => {
-  console.log(`Worker trigger ouvindo em http://localhost:${port}`);
+server.listen(port, "0.0.0.0", () => {
+  console.log(`Worker trigger ouvindo em http://0.0.0.0:${port}`);
   console.log(`Agenda de coleta ativa no fuso ${scheduleTimezone}.`);
   console.log(`Horario local da agenda: ${JSON.stringify(localParts(new Date()))}.`);
   setInterval(() => {

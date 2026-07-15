@@ -14,6 +14,7 @@ import {
   verifyPassword,
 } from "./auth.mjs";
 import { runQuery } from "./query-api.mjs";
+import { ensureRuntimeSchema } from "../workers/price-collector/database.mjs";
 
 loadServerEnv();
 
@@ -26,6 +27,18 @@ const corsHeaders = {
   "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
   "access-control-allow-headers": "content-type, authorization",
 };
+
+const runtimeSchemaTables = new Set(["agenda_coletas", "execucoes_robo", "historico_precos"]);
+let runtimeSchemaPromise = null;
+
+function ensureRuntimeSchemaOnce() {
+  runtimeSchemaPromise ??= ensureRuntimeSchema().catch((error) => {
+    runtimeSchemaPromise = null;
+    throw error;
+  });
+
+  return runtimeSchemaPromise;
+}
 
 function sendJson(res, status, body) {
   res.writeHead(status, { ...corsHeaders, "content-type": "application/json" });
@@ -167,6 +180,7 @@ async function handleAdminUsers(req, res) {
 async function handleRegisterCollection(req, res) {
   const user = await requireUser(req, res);
   if (!user) return;
+  await ensureRuntimeSchemaOnce();
   const body = await readJson(req);
   const resultados = Array.isArray(body.resultados) ? body.resultados : [];
   const startedAt = new Date();
@@ -289,7 +303,11 @@ const server = createServer(async (req, res) => {
     if (path === "/api/query" && req.method === "POST") {
       const user = await requireUser(req, res);
       if (!user) return;
-      const data = await runQuery(await readJson(req));
+      const body = await readJson(req);
+      if (runtimeSchemaTables.has(String(body.table ?? ""))) {
+        await ensureRuntimeSchemaOnce();
+      }
+      const data = await runQuery(body);
       return sendJson(res, 200, { data });
     }
 
@@ -306,6 +324,6 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(port, () => {
-  console.log(`API ouvindo em http://localhost:${port}`);
+server.listen(port, "0.0.0.0", () => {
+  console.log(`API ouvindo em http://0.0.0.0:${port}`);
 });

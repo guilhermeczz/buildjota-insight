@@ -3,6 +3,7 @@ import { collectPricesByBrowser } from "./browser.mjs";
 import {
   createDatabaseClient,
   createExecution,
+  ensureRuntimeSchema,
   fetchActiveMappings,
   markExecutionFailed,
   registerResults,
@@ -73,6 +74,7 @@ async function main() {
   const startedAt = new Date();
   const origem = scheduled ? "agendado" : originArg || "worker";
   const database = createDatabaseClient();
+  await ensureRuntimeSchema();
   const mapeamentos = await fetchActiveMappings(database, {
     produtoId,
     familiaId,
