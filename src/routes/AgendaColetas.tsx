@@ -17,10 +17,8 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { formatDateTime } from "@/lib/format";
 import { apiClient } from "@/lib/api-client";
-import { CalendarClock, Loader2, Play, Save, Search } from "lucide-react";
+import { CalendarClock, Loader2, Save, Search } from "lucide-react";
 import { toast } from "sonner";
-
-const WORKER_REQUEST_TIMEOUT_MS = 12000;
 
 const weekDays = [
   { value: 1, label: "Seg" },
@@ -53,7 +51,6 @@ type AgendaRow = {
   ultimo_erro: string | null;
   dirty?: boolean;
   saving?: boolean;
-  running?: boolean;
 };
 
 type AgendaFromApi = Omit<AgendaRow, "familia_nome" | "familia_ativo"> & {
@@ -72,30 +69,6 @@ function statusBadge(status: AgendaRow["ultimo_status"]) {
     return <Badge className="bg-primary text-primary-foreground">Parcial</Badge>;
   if (status === "erro") return <Badge variant="destructive">Erro</Badge>;
   return <Badge variant="secondary">Buscando</Badge>;
-}
-
-async function requestWorkerRun(body: Record<string, unknown>) {
-  const triggerUrl = import.meta.env.VITE_WORKER_TRIGGER_URL ?? "http://localhost:8787/run";
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), WORKER_REQUEST_TIMEOUT_MS);
-
-  try {
-    const response = await fetch(triggerUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    const result = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      throw new Error(result.error ?? "Falha ao executar a coleta");
-    }
-
-    return result;
-  } finally {
-    window.clearTimeout(timeoutId);
-  }
 }
 
 function defaultAgenda(familia: Familia): AgendaRow {
@@ -266,28 +239,11 @@ export default function AgendaColetas() {
     toast.success("Agenda salva");
   }
 
-  async function runNow(row: AgendaRow) {
-    updateRow(row.familia_id, { running: true });
-
-    try {
-      await requestWorkerRun({ familiaId: row.familia_id });
-      toast.success(`Coleta iniciada para ${row.familia_nome}`);
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "Nao foi possivel chamar o worker. Verifique se o worker:server esta rodando.",
-      );
-    } finally {
-      updateRow(row.familia_id, { running: false, dirty: row.dirty });
-    }
-  }
-
   return (
     <>
       <PageHeader
         title="Agenda de Coleta"
-        description="Defina quando o robo deve coletar cada familia de produtos."
+        description="Defina os horarios automaticos por familia. Execucoes manuais ficam em Execucoes do Robo."
         actions={
           <Button variant="outline" onClick={() => void refresh()}>
             <CalendarClock className="mr-1 h-4 w-4" /> Atualizar
@@ -437,19 +393,6 @@ export default function AgendaColetas() {
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => void runNow(row)}
-                          disabled={row.running}
-                        >
-                          {row.running ? (
-                            <Loader2 className="mr-1 h-4 w-4 animate-spin" />
-                          ) : (
-                            <Play className="mr-1 h-4 w-4" />
-                          )}
-                          Executar
-                        </Button>
                         <Button
                           size="sm"
                           onClick={() => void saveRow(row)}

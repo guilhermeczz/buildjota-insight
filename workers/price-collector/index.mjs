@@ -1,6 +1,12 @@
 import { loadWorkerEnv } from "./env.mjs";
 import { collectPricesByBrowser } from "./browser.mjs";
-import { createDatabaseClient, fetchActiveMappings, registerResults } from "./database.mjs";
+import {
+  createDatabaseClient,
+  createExecution,
+  fetchActiveMappings,
+  markExecutionFailed,
+  registerResults,
+} from "./database.mjs";
 
 loadWorkerEnv();
 
@@ -51,8 +57,17 @@ function summarize(resultados) {
   };
 }
 
+function filterLabel() {
+  if (mapeamentoId) return " Filtro: mapeamento.";
+  if (produtoId) return " Filtro: produto.";
+  if (familiaId) return " Filtro: familia.";
+  if (failedOnly) return " Filtro: erros.";
+  return "";
+}
+
 async function main() {
   const startedAt = new Date();
+  const origem = scheduled ? "agendado" : originArg || "worker";
   const database = createDatabaseClient();
   const mapeamentos = await fetchActiveMappings(database, {
     produtoId,
@@ -63,18 +78,42 @@ async function main() {
 
   if (mapeamentos.length === 0) {
     console.log("Nenhum mapeamento ativo encontrado.");
+    if (!dryRun) {
+      const response = await registerResults(
+        [],
+        `Nenhum mapeamento ativo encontrado.${filterLabel()}`,
+        { origem, agendaId },
+      );
+      console.log(`Execucao registrada: ${response.id} (${response.status}).`);
+    }
     return;
   }
 
   const groups = groupByConcorrente(mapeamentos);
+  const execution = dryRun
+    ? null
+    : await createExecution(mapeamentos.length, {
+        origem,
+        mensagem: `Coleta iniciada: ${mapeamentos.length} mapeamento(s).${filterLabel()}`,
+      });
 
   console.log(
     `Iniciando coleta: ${mapeamentos.length} mapeamento(s), ${groups.length} concorrente(s).`,
   );
 
-  const resultados = await collectPricesByBrowser(groups, { headed, concurrency });
+  let resultados;
+  try {
+    resultados = await collectPricesByBrowser(groups, { headed, concurrency });
+  } catch (error) {
+    if (execution) {
+      await markExecutionFailed(execution, error);
+    }
+    throw error;
+  }
+
   const summary = summarize(resultados);
-  const durationSeconds = Math.round((Date.now() - startedAt.getTime()) / 1000);
+  const durationStart = execution?.startedAt ?? startedAt;
+  const durationSeconds = Math.round((Date.now() - durationStart.getTime()) / 1000);
 
   console.log(
     `Coleta finalizada em ${durationSeconds}s: ${summary.totalSucesso} sucesso(s), ${summary.totalErro} erro(s).`,
@@ -88,18 +127,13 @@ async function main() {
 
   const response = await registerResults(
     resultados,
-    `Worker finalizado: ${summary.totalSucesso} sucesso(s), ${summary.totalErro} erro(s).${
-      mapeamentoId
-        ? " Filtro: mapeamento."
-        : produtoId
-          ? " Filtro: produto."
-          : familiaId
-            ? " Filtro: familia."
-            : failedOnly
-              ? " Filtro: erros."
-              : ""
-    }`,
-    { origem: scheduled ? "agendado" : originArg || "worker", agendaId },
+    `Worker finalizado: ${summary.totalSucesso} sucesso(s), ${summary.totalErro} erro(s).${filterLabel()}`,
+    {
+      origem,
+      agendaId,
+      executionId: execution?.id,
+      startedAt: execution?.startedAt,
+    },
   );
 
   console.log(`Execucao registrada: ${response.id} (${response.status}).`);

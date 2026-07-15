@@ -49,7 +49,22 @@ export async function fetchActiveMappings(_client, filters = {}) {
     clauses.push(`p.familia_id = $${values.length}`);
   }
   if (filters.failedOnly) {
-    clauses.push("m.status_coleta = 'erro'");
+    clauses.push(`
+      (
+        m.status_coleta = 'erro'
+        or exists (
+          select 1
+          from historico_precos h
+          where h.mapeamento_id = m.id
+            and h.status = 'erro'
+            and h.coletado_em = (
+              select max(h2.coletado_em)
+              from historico_precos h2
+              where h2.mapeamento_id = m.id
+            )
+        )
+      )
+    `);
   }
 
   const { rows } = await query(
@@ -84,15 +99,61 @@ export async function fetchActiveMappings(_client, filters = {}) {
   return rows.map(normalize);
 }
 
-export async function registerResults(resultados, mensagem, options = {}) {
+export async function createExecution(totalProcessados, options = {}) {
   const startedAt = new Date();
+  const origem = options.origem ?? "worker";
+  const mensagem = options.mensagem ?? "Worker iniciado.";
+  const { rows } = await query(
+    `insert into execucoes_robo
+      (status,origem,iniciado_em,total_processados,total_sucesso,total_erro,mensagem)
+     values ('pendente',$1,$2,$3,0,0,$4)
+     returning id`,
+    [origem, startedAt.toISOString(), totalProcessados, mensagem],
+  );
+
+  return { id: rows[0].id, startedAt };
+}
+
+export async function markExecutionFailed(execution, error) {
+  if (!execution?.id) return;
+
+  const finishedAt = new Date();
+  const startedAt = execution.startedAt ? new Date(execution.startedAt) : finishedAt;
+  const message = error instanceof Error ? error.message : String(error ?? "Falha na coleta.");
+
+  await query(
+    `update execucoes_robo
+     set status = 'erro',
+         finalizado_em = $1,
+         total_erro = greatest(total_erro, 1),
+         mensagem = $2,
+         tempo_execucao_segundos = $3
+     where id = $4`,
+    [
+      finishedAt.toISOString(),
+      message.slice(0, 500),
+      Math.max(0, Math.round((finishedAt.getTime() - startedAt.getTime()) / 1000)),
+      execution.id,
+    ],
+  );
+}
+
+export async function registerResults(resultados, mensagem, options = {}) {
+  const startedAt = options.startedAt ? new Date(options.startedAt) : new Date();
   const origem = options.origem ?? "worker";
 
   return transaction(async (client) => {
-    const execucao = await client.query(
-      "insert into execucoes_robo (status,origem,iniciado_em,total_processados) values ('pendente',$1,$2,$3) returning id",
-      [origem, startedAt.toISOString(), resultados.length],
-    );
+    const execucaoId =
+      options.executionId ??
+      (
+        await client.query(
+          `insert into execucoes_robo
+            (status,origem,iniciado_em,total_processados,total_sucesso,total_erro,mensagem)
+           values ('pendente',$1,$2,$3,0,0,$4)
+           returning id`,
+          [origem, startedAt.toISOString(), resultados.length, "Worker iniciado."],
+        )
+      ).rows[0].id;
 
     let totalSucesso = 0;
     let totalErro = 0;
@@ -142,17 +203,18 @@ export async function registerResults(resultados, mensagem, options = {}) {
     const status = totalErro === 0 ? "sucesso" : totalSucesso === 0 ? "erro" : "parcial";
     await client.query(
       `update execucoes_robo
-       set status = $1, finalizado_em = $2, total_sucesso = $3, total_erro = $4,
-           mensagem = $5, tempo_execucao_segundos = $6
-       where id = $7`,
+       set status = $1, finalizado_em = $2, total_processados = $3, total_sucesso = $4,
+           total_erro = $5, mensagem = $6, tempo_execucao_segundos = $7
+       where id = $8`,
       [
         status,
         finishedAt.toISOString(),
+        resultados.length,
         totalSucesso,
         totalErro,
         mensagem,
         Math.round((finishedAt.getTime() - startedAt.getTime()) / 1000),
-        execucao.rows[0].id,
+        execucaoId,
       ],
     );
 
@@ -165,6 +227,6 @@ export async function registerResults(resultados, mensagem, options = {}) {
       );
     }
 
-    return { id: execucao.rows[0].id, status, total_sucesso: totalSucesso, total_erro: totalErro };
+    return { id: execucaoId, status, total_sucesso: totalSucesso, total_erro: totalErro };
   });
 }

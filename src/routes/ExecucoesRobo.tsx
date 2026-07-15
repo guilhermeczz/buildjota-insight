@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import PageHeader from "@/components/layout/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,10 +22,11 @@ import {
 import { formatDateTime, toDateString, toTimestamp } from "@/lib/format";
 import { compareProductNames, sortByProductName } from "@/lib/product-sort";
 import { apiClient } from "@/lib/api-client";
-import { Loader2, Play, RotateCcw } from "lucide-react";
+import { Activity, Loader2, Play, RefreshCw, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 
 const WORKER_REQUEST_TIMEOUT_MS = 12000;
+const WORKER_HEALTH_INTERVAL_MS = 5000;
 
 type Execucao = {
   id: string;
@@ -75,6 +76,17 @@ type HistoricoExecucao = {
 
 type Scope = "" | "todos" | "familia" | "produto" | "mapeamento";
 type StatusFilter = "todos" | Execucao["status"];
+
+type WorkerHealth = {
+  ok: boolean;
+  running: boolean;
+  scheduleTimezone?: string;
+  local?: {
+    date: string;
+    time: string;
+    weekday: number;
+  };
+};
 
 function durationLabel(seconds: number) {
   const minutes = Math.floor(seconds / 60);
@@ -126,6 +138,16 @@ async function requestWorkerRun(triggerUrl: string, body: Record<string, unknown
   }
 }
 
+function workerHealthUrl(triggerUrl: string) {
+  return triggerUrl.replace(/\/run\/?$/, "/health");
+}
+
+async function requestWorkerHealth(triggerUrl: string) {
+  const response = await fetch(workerHealthUrl(triggerUrl), { method: "GET" });
+  if (!response.ok) throw new Error("Worker indisponivel");
+  return (await response.json()) as WorkerHealth;
+}
+
 export default function ExecucoesRobo() {
   const [execucoes, setExecucoes] = useState<Execucao[]>([]);
   const [familias, setFamilias] = useState<Familia[]>([]);
@@ -143,6 +165,21 @@ export default function ExecucoesRobo() {
   const [mapeamentoId, setMapeamentoId] = useState("");
   const [retryingErrors, setRetryingErrors] = useState(false);
   const [running, setRunning] = useState(false);
+  const [workerHealth, setWorkerHealth] = useState<WorkerHealth | null>(null);
+  const [healthLoading, setHealthLoading] = useState(false);
+
+  const triggerUrl = import.meta.env.VITE_WORKER_TRIGGER_URL ?? "http://localhost:8787/run";
+
+  const refreshWorkerHealth = useCallback(async () => {
+    setHealthLoading(true);
+    try {
+      setWorkerHealth(await requestWorkerHealth(triggerUrl));
+    } catch {
+      setWorkerHealth(null);
+    } finally {
+      setHealthLoading(false);
+    }
+  }, [triggerUrl]);
 
   async function refreshExecucoes() {
     const [execucoesResult, historicosResult] = await Promise.all([
@@ -200,7 +237,8 @@ export default function ExecucoesRobo() {
   useEffect(() => {
     void refreshExecucoes();
     void loadManualOptions();
-  }, []);
+    void refreshWorkerHealth();
+  }, [refreshWorkerHealth]);
 
   useEffect(() => {
     const hasPendingExecution =
@@ -216,6 +254,14 @@ export default function ExecucoesRobo() {
 
     return () => window.clearInterval(interval);
   }, [execucoes, pendingExecucao]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refreshWorkerHealth();
+    }, WORKER_HEALTH_INTERVAL_MS);
+
+    return () => window.clearInterval(interval);
+  }, [refreshWorkerHealth]);
 
   async function loadManualOptions() {
     const [familiasResult, produtosResult, mapeamentosResult] = await Promise.all([
@@ -279,7 +325,6 @@ export default function ExecucoesRobo() {
       return;
     }
 
-    const triggerUrl = import.meta.env.VITE_WORKER_TRIGGER_URL ?? "http://localhost:8787/run";
     const body =
       scope === "familia"
         ? { familiaId }
@@ -310,6 +355,7 @@ export default function ExecucoesRobo() {
       toast.success("Coleta manual iniciada");
       setManualOpen(false);
       await refreshExecucoes();
+      await refreshWorkerHealth();
     } catch (error) {
       toast.error(
         error instanceof Error
@@ -322,8 +368,6 @@ export default function ExecucoesRobo() {
   }
 
   async function retryFailedMappings() {
-    const triggerUrl = import.meta.env.VITE_WORKER_TRIGGER_URL ?? "http://localhost:8787/run";
-
     setRetryingErrors(true);
 
     try {
@@ -343,6 +387,7 @@ export default function ExecucoesRobo() {
       });
       toast.success("Reprocessamento dos erros iniciado");
       await refreshExecucoes();
+      await refreshWorkerHealth();
     } catch (error) {
       toast.error(
         error instanceof Error
@@ -393,6 +438,24 @@ export default function ExecucoesRobo() {
     },
   );
 
+  const currentExecution =
+    pendingExecucao ??
+    execucoes.find((execucao) => execucao.status === "pendente" || !execucao.finalizado_em) ??
+    null;
+  const workerBusy = Boolean(currentExecution) || workerHealth?.running === true;
+  const lastExecution = execucoes[0] ?? null;
+  const panelExecution = currentExecution ?? lastExecution;
+  const panelStartedAt = panelExecution ? toTimestamp(panelExecution.iniciado_em) : 0;
+  const panelFinishedAt = panelExecution?.finalizado_em
+    ? toTimestamp(panelExecution.finalizado_em)
+    : 0;
+  const panelSeconds = panelExecution
+    ? Math.max(
+        0,
+        Math.round(((panelFinishedAt || Date.now()) - (panelStartedAt || Date.now())) / 1000),
+      )
+    : 0;
+
   return (
     <>
       <PageHeader
@@ -401,6 +464,7 @@ export default function ExecucoesRobo() {
         actions={
           <Button
             onClick={openManualDialog}
+            disabled={workerBusy || running || retryingErrors}
             className="bg-primary text-primary-foreground hover:bg-primary/90"
           >
             <Play className="mr-1 h-4 w-4" /> Executar coleta manual
@@ -408,113 +472,235 @@ export default function ExecucoesRobo() {
         }
       />
 
-      <Card className="shadow-sm">
-        <CardContent className="space-y-4 p-5">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label>Status</Label>
-              <select
-                value={statusFilter}
-                onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none transition-colors focus:ring-1 focus:ring-ring"
-              >
-                <option value="todos">Todos os status</option>
-                <option value="sucesso">Sucesso</option>
-                <option value="parcial">Parcial</option>
-                <option value="erro">Erro</option>
-                <option value="pendente">Buscando</option>
-              </select>
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <Card className="shadow-sm">
+          <CardContent className="space-y-4 p-5">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label>Status</Label>
+                <select
+                  value={statusFilter}
+                  onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none transition-colors focus:ring-1 focus:ring-ring"
+                >
+                  <option value="todos">Todos os status</option>
+                  <option value="sucesso">Sucesso</option>
+                  <option value="parcial">Parcial</option>
+                  <option value="erro">Erro</option>
+                  <option value="pendente">Buscando</option>
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label>Família</Label>
+                <select
+                  value={familiaFilter}
+                  onChange={(event) => setFamiliaFilter(event.target.value)}
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none transition-colors focus:ring-1 focus:ring-ring"
+                >
+                  <option value="todos">Todas as famílias</option>
+                  {familias.map((familia) => (
+                    <option key={familia.id} value={familia.id}>
+                      {familia.nome}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
 
-            <div className="space-y-1.5">
-              <Label>Família</Label>
-              <select
-                value={familiaFilter}
-                onChange={(event) => setFamiliaFilter(event.target.value)}
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none transition-colors focus:ring-1 focus:ring-ring"
-              >
-                <option value="todos">Todas as famílias</option>
-                {familias.map((familia) => (
-                  <option key={familia.id} value={familia.id}>
-                    {familia.nome}
-                  </option>
-                ))}
-              </select>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Inicio</TableHead>
+                    <TableHead>Fim</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Origem</TableHead>
+                    <TableHead>Processados</TableHead>
+                    <TableHead>Sucesso</TableHead>
+                    <TableHead>Erros</TableHead>
+                    <TableHead>Tempo</TableHead>
+                    <TableHead>Mensagem</TableHead>
+                    <TableHead className="text-right">Ações</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {loading && (
+                    <TableRow>
+                      <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
+                        Carregando execuções...
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {!loading && visibleExecucoes.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
+                        Nenhuma execução encontrada.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {visibleExecucoes.map((execucao) => (
+                    <TableRow key={execucao.id}>
+                      <TableCell className="whitespace-nowrap text-xs">
+                        {formatDateTime(execucao.iniciado_em)}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-xs">
+                        {execucao.finalizado_em ? formatDateTime(execucao.finalizado_em) : "-"}
+                      </TableCell>
+                      <TableCell>{statusBadge(execucao.status)}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{execucao.origem}</Badge>
+                      </TableCell>
+                      <TableCell>{execucao.total_processados}</TableCell>
+                      <TableCell className="text-success">{execucao.total_sucesso}</TableCell>
+                      <TableCell className="text-destructive">{execucao.total_erro}</TableCell>
+                      <TableCell className="text-xs">
+                        {durationLabel(execucao.tempo_execucao_segundos)}
+                      </TableCell>
+                      <TableCell className="max-w-xs truncate text-sm text-muted-foreground">
+                        {execucao.mensagem || "-"}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {(execucao.status === "erro" || execucao.status === "parcial") && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={retryFailedMappings}
+                            disabled={
+                              workerBusy || retryingErrors || retryAlreadyRequested(execucao)
+                            }
+                          >
+                            <RotateCcw className="mr-1 h-4 w-4" />
+                            {retryAlreadyRequested(execucao) ? "Já refeito" : "Refazer erros"}
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             </div>
-          </div>
+          </CardContent>
+        </Card>
 
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Inicio</TableHead>
-                  <TableHead>Fim</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Origem</TableHead>
-                  <TableHead>Processados</TableHead>
-                  <TableHead>Sucesso</TableHead>
-                  <TableHead>Erros</TableHead>
-                  <TableHead>Tempo</TableHead>
-                  <TableHead>Mensagem</TableHead>
-                  <TableHead className="text-right">Ações</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {loading && (
-                  <TableRow>
-                    <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
-                      Carregando execuções...
-                    </TableCell>
-                  </TableRow>
+        <Card className="self-start shadow-sm xl:sticky xl:top-24">
+          <CardContent className="space-y-4 p-5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold">Painel da coleta</div>
+                <div className="text-xs text-muted-foreground">
+                  {workerHealth
+                    ? `Worker ${workerHealth.running ? "ocupado" : "livre"}`
+                    : "Worker sem resposta"}
+                </div>
+              </div>
+              <Button
+                size="icon"
+                variant="outline"
+                onClick={() => {
+                  void refreshExecucoes();
+                  void refreshWorkerHealth();
+                }}
+                disabled={healthLoading}
+                title="Atualizar status"
+              >
+                {healthLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
                 )}
-                {!loading && visibleExecucoes.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
-                      Nenhuma execução encontrada.
-                    </TableCell>
-                  </TableRow>
+              </Button>
+            </div>
+
+            <div
+              className={`rounded-md border p-4 ${
+                workerBusy ? "border-primary/30 bg-primary/5" : "bg-muted/40"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <div
+                  className={`flex h-10 w-10 items-center justify-center rounded-full ${
+                    workerBusy ? "bg-primary text-primary-foreground" : "bg-muted"
+                  }`}
+                >
+                  {workerBusy ? (
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                  ) : (
+                    <Activity className="h-5 w-5" />
+                  )}
+                </div>
+                <div>
+                  <div className="font-medium">
+                    {workerBusy ? "Coleta em andamento" : "Nenhuma coleta rodando"}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {panelExecution
+                      ? formatDateTime(panelExecution.iniciado_em)
+                      : "Aguardando primeira execucao"}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {panelExecution ? (
+              <div className="space-y-3 text-sm">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-md border p-3">
+                    <div className="text-xs text-muted-foreground">Status</div>
+                    <div className="mt-1">{statusBadge(panelExecution.status)}</div>
+                  </div>
+                  <div className="rounded-md border p-3">
+                    <div className="text-xs text-muted-foreground">Tempo</div>
+                    <div className="mt-1 font-medium">{durationLabel(panelSeconds)}</div>
+                  </div>
+                  <div className="rounded-md border p-3">
+                    <div className="text-xs text-muted-foreground">Processados</div>
+                    <div className="mt-1 font-medium">{panelExecution.total_processados}</div>
+                  </div>
+                  <div className="rounded-md border p-3">
+                    <div className="text-xs text-muted-foreground">Resultado</div>
+                    <div className="mt-1 font-medium">
+                      {panelExecution.total_sucesso}/{panelExecution.total_erro}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-md border p-3">
+                  <div className="text-xs text-muted-foreground">Mensagem</div>
+                  <div className="mt-1 text-sm">{panelExecution.mensagem || "-"}</div>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-md border p-3 text-sm text-muted-foreground">
+                Nenhuma execucao registrada ainda.
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <Button
+                className="w-full"
+                onClick={openManualDialog}
+                disabled={workerBusy || running || retryingErrors}
+              >
+                <Play className="mr-1 h-4 w-4" /> Nova coleta manual
+              </Button>
+              <Button
+                className="w-full"
+                variant="outline"
+                onClick={retryFailedMappings}
+                disabled={workerBusy || retryingErrors}
+              >
+                {retryingErrors ? (
+                  <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                ) : (
+                  <RotateCcw className="mr-1 h-4 w-4" />
                 )}
-                {visibleExecucoes.map((execucao) => (
-                  <TableRow key={execucao.id}>
-                    <TableCell className="whitespace-nowrap text-xs">
-                      {formatDateTime(execucao.iniciado_em)}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-xs">
-                      {execucao.finalizado_em ? formatDateTime(execucao.finalizado_em) : "-"}
-                    </TableCell>
-                    <TableCell>{statusBadge(execucao.status)}</TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{execucao.origem}</Badge>
-                    </TableCell>
-                    <TableCell>{execucao.total_processados}</TableCell>
-                    <TableCell className="text-success">{execucao.total_sucesso}</TableCell>
-                    <TableCell className="text-destructive">{execucao.total_erro}</TableCell>
-                    <TableCell className="text-xs">
-                      {durationLabel(execucao.tempo_execucao_segundos)}
-                    </TableCell>
-                    <TableCell className="max-w-xs truncate text-sm text-muted-foreground">
-                      {execucao.mensagem || "-"}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {(execucao.status === "erro" || execucao.status === "parcial") && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={retryFailedMappings}
-                          disabled={retryingErrors || retryAlreadyRequested(execucao)}
-                        >
-                          <RotateCcw className="mr-1 h-4 w-4" />
-                          {retryAlreadyRequested(execucao) ? "Já refeito" : "Refazer erros"}
-                        </Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        </CardContent>
-      </Card>
+                Refazer erros
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
 
       <Dialog open={manualOpen} onOpenChange={setManualOpen}>
         <DialogContent>
