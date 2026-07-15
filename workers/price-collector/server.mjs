@@ -132,6 +132,10 @@ async function markScheduleResult(agendaId, status, error = "") {
   );
 }
 
+async function markScheduleStarted(agendaId) {
+  await markScheduleResult(agendaId, "pendente");
+}
+
 async function runDueSchedule() {
   if (running) return;
 
@@ -151,6 +155,7 @@ async function runDueSchedule() {
   );
 
   try {
+    await markScheduleStarted(schedule.id);
     const result = await runWorkerWithArgs(args);
     if (/Nenhum mapeamento ativo encontrado/i.test(result.stdout)) {
       await markScheduleResult(schedule.id, "sucesso");
