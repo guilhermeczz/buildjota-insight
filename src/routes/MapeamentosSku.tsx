@@ -161,6 +161,7 @@ export default function MapeamentosSku() {
   const [form, setForm] = useState<MapeamentoForm>(emptyForm);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deletingLoading, setDeletingLoading] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   async function refreshData() {
@@ -477,7 +478,9 @@ export default function MapeamentosSku() {
   async function deleteMapeamento() {
     if (!deleting) return;
 
+    setDeletingLoading(true);
     const { error } = await supabase.from("mapeamentos_sku").delete().eq("id", deleting.id);
+    setDeletingLoading(false);
 
     if (error) {
       toast.error("Não foi possível excluir o mapeamento");
@@ -1045,12 +1048,16 @@ export default function MapeamentosSku() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogCancel disabled={deletingLoading}>Cancelar</AlertDialogCancel>
             <AlertDialogAction
-              onClick={deleteMapeamento}
+              disabled={deletingLoading}
+              onClick={(event) => {
+                event.preventDefault();
+                void deleteMapeamento();
+              }}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Excluir
+              {deletingLoading ? "Excluindo..." : "Excluir"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

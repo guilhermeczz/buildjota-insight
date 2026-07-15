@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import PageHeader from "@/components/layout/PageHeader";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -29,7 +39,7 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { supabase } from "@/lib/supabase";
-import { Pencil, Plus, Power, Search } from "lucide-react";
+import { Pencil, Plus, Power, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 type Familia = {
@@ -56,9 +66,11 @@ export default function Familias() {
   const [statusFilter, setStatusFilter] = useState("todos");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Familia | null>(null);
+  const [deleting, setDeleting] = useState<Familia | null>(null);
   const [form, setForm] = useState<FamiliaForm>(emptyForm);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deletingLoading, setDeletingLoading] = useState(false);
 
   async function refreshFamilias() {
     const { data, error } = await supabase
@@ -180,6 +192,23 @@ export default function Familias() {
     toast.success(`Família ${ativo ? "ativada" : "inativada"}`);
   }
 
+  async function deleteFamilia() {
+    if (!deleting) return;
+
+    setDeletingLoading(true);
+    const { error } = await supabase.from("familias").delete().eq("id", deleting.id);
+    setDeletingLoading(false);
+
+    if (error) {
+      toast.error("Nao foi possivel excluir a familia");
+      return;
+    }
+
+    setList((current) => current.filter((item) => item.id !== deleting.id));
+    setDeleting(null);
+    toast.success("Familia excluida");
+  }
+
   return (
     <>
       <PageHeader
@@ -263,6 +292,14 @@ export default function Familias() {
                     <Button size="sm" variant="ghost" onClick={() => toggleAtivo(familia)}>
                       <Power className="h-4 w-4" />
                     </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setDeleting(familia)}
+                      className="text-destructive hover:text-destructive"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
                   </TableCell>
                 </TableRow>
               ))}
@@ -306,6 +343,31 @@ export default function Familias() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={!!deleting} onOpenChange={(open) => !open && setDeleting(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir familia?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Os produtos dessa familia serao mantidos, mas ficarao sem familia. A agenda de coleta
+              vinculada a essa familia tambem sera removida.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingLoading}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deletingLoading}
+              onClick={(event) => {
+                event.preventDefault();
+                void deleteFamilia();
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deletingLoading ? "Excluindo..." : "Excluir"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import PageHeader from "@/components/layout/PageHeader";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -31,7 +41,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { formatBRL } from "@/lib/format";
 import { compareProductNames, sortByProductName } from "@/lib/product-sort";
 import { supabase } from "@/lib/supabase";
-import { Pencil, Plus, Power, Search } from "lucide-react";
+import { Pencil, Plus, Power, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 type FamiliaOption = {
@@ -85,9 +95,11 @@ export default function Produtos() {
   const [statusFilter, setStatusFilter] = useState("todos");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Produto | null>(null);
+  const [deleting, setDeleting] = useState<Produto | null>(null);
   const [form, setForm] = useState<ProdutoForm>(emptyForm);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deletingLoading, setDeletingLoading] = useState(false);
 
   async function refreshData() {
     const [familiasResult, produtosResult] = await Promise.all([
@@ -264,6 +276,23 @@ export default function Produtos() {
     );
   }
 
+  async function deleteProduto() {
+    if (!deleting) return;
+
+    setDeletingLoading(true);
+    const { error } = await supabase.from("produtos").delete().eq("id", deleting.id);
+    setDeletingLoading(false);
+
+    if (error) {
+      toast.error("Nao foi possivel excluir o produto");
+      return;
+    }
+
+    setList((current) => current.filter((item) => item.id !== deleting.id));
+    setDeleting(null);
+    toast.success("Produto excluido");
+  }
+
   return (
     <>
       <PageHeader
@@ -367,6 +396,14 @@ export default function Produtos() {
                       <Button size="sm" variant="ghost" onClick={() => toggleAtivo(produto)}>
                         <Power className="h-4 w-4" />
                       </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setDeleting(produto)}
+                        className="text-destructive hover:text-destructive"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -452,6 +489,30 @@ export default function Produtos() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={!!deleting} onOpenChange={(open) => !open && setDeleting(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir produto?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Essa acao remove o produto e tambem apaga seus mapeamentos e historico de precos.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingLoading}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deletingLoading}
+              onClick={(event) => {
+                event.preventDefault();
+                void deleteProduto();
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deletingLoading ? "Excluindo..." : "Excluir"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }
