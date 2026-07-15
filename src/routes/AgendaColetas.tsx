@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { formatDateTime } from "@/lib/format";
-import { supabase } from "@/lib/supabase";
+import { apiClient } from "@/lib/api-client";
 import { CalendarClock, Loader2, Play, Save, Search } from "lucide-react";
 import { toast } from "sonner";
 
@@ -122,8 +122,8 @@ export default function AgendaColetas() {
 
   async function refresh() {
     const [familiasResult, agendaResult] = await Promise.all([
-      supabase.from("familias").select("id,nome,ativo").order("nome", { ascending: true }),
-      supabase
+      apiClient.from("familias").select("id,nome,ativo").order("nome", { ascending: true }),
+      apiClient
         .from("agenda_coletas")
         .select(
           "id,familia_id,ativo,horario,dias_semana,concorrencia_maxima,observacoes,ultima_execucao,ultimo_status,ultimo_erro,familias(id,nome,ativo)",
@@ -220,7 +220,7 @@ export default function AgendaColetas() {
     };
 
     const result = row.id
-      ? await supabase
+      ? await apiClient
           .from("agenda_coletas")
           .update(payload)
           .eq("id", row.id)
@@ -228,7 +228,7 @@ export default function AgendaColetas() {
             "id,familia_id,ativo,horario,dias_semana,concorrencia_maxima,observacoes,ultima_execucao,ultimo_status,ultimo_erro,familias(id,nome,ativo)",
           )
           .single()
-      : await supabase
+      : await apiClient
           .from("agenda_coletas")
           .insert(payload)
           .select(

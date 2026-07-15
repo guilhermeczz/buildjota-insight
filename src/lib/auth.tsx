@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import { localAuth } from "@/lib/supabase";
+import { localAuth } from "@/lib/api-client";
 
 export type UserRole = "admin" | "operador" | "visualizador";
 

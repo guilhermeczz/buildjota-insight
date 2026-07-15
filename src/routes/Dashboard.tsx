@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/table";
 import { formatBRL, formatDateTime, formatPct, toDateString } from "@/lib/format";
 import { compareProductNames, sortByProductName } from "@/lib/product-sort";
-import { supabase } from "@/lib/supabase";
+import { apiClient } from "@/lib/api-client";
 import {
   AlertTriangle,
   Boxes,
@@ -130,20 +130,20 @@ export default function Dashboard() {
       historicoResult,
       execucoesResult,
     ] = await Promise.all([
-      supabase
+      apiClient
         .from("produtos")
         .select("id,nome,sku_interno,familia_id,preco_atual,ativo,familias(id,nome)")
         .order("nome"),
-      supabase.from("familias").select("id,nome").eq("ativo", true).order("nome"),
-      supabase.from("concorrentes").select("id,nome,ativo").order("nome"),
-      supabase
+      apiClient.from("familias").select("id,nome").eq("ativo", true).order("nome"),
+      apiClient.from("concorrentes").select("id,nome,ativo").order("nome"),
+      apiClient
         .from("mapeamentos_sku")
         .select(
           "id,sku_concorrente,ultimo_preco,ultima_atualizacao,status_coleta,produtos(id,nome,sku_interno,familia_id,preco_atual,ativo,familias(id,nome)),concorrentes(id,nome)",
         )
         .eq("ativo", true)
         .order("updated_at", { ascending: false }),
-      supabase
+      apiClient
         .from("historico_precos")
         .select(
           "id,mapeamento_id,preco_concorrente,status,coletado_em,mapeamentos_sku(id,concorrente_id,produtos(id,nome,sku_interno,familia_id))",
@@ -151,7 +151,7 @@ export default function Dashboard() {
         .eq("status", "sucesso")
         .order("coletado_em", { ascending: false })
         .limit(180),
-      supabase
+      apiClient
         .from("execucoes_robo")
         .select(
           "id,status,iniciado_em,finalizado_em,total_processados,total_sucesso,total_erro,mensagem,tempo_execucao_segundos",

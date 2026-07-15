@@ -17,8 +17,23 @@ export const concorrenteEnv = {
   },
 };
 
+export const allowedConcorrenteNames = Object.keys(concorrenteEnv);
+
+export function normalizeConcorrenteName(concorrenteNome) {
+  return String(concorrenteNome ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+}
+
+export function isAllowedConcorrente(concorrenteNome) {
+  return allowedConcorrenteNames.includes(normalizeConcorrenteName(concorrenteNome));
+}
+
 export function credentialsFor(concorrenteNome) {
-  const keys = concorrenteEnv[concorrenteNome?.trim()];
+  const keys = concorrenteEnv[normalizeConcorrenteName(concorrenteNome)];
   if (!keys) return null;
 
   const login = process.env[keys.login];

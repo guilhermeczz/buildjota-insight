@@ -1,4 +1,5 @@
 import { query, transaction } from "../../server/db.mjs";
+import { allowedConcorrenteNames } from "./config.mjs";
 
 export function createDatabaseClient() {
   if (!process.env.DATABASE_URL) {
@@ -32,6 +33,8 @@ function normalize(row) {
 export async function fetchActiveMappings(_client, filters = {}) {
   const values = [];
   const clauses = ["m.ativo = true", "p.ativo = true", "c.ativo = true"];
+  values.push(allowedConcorrenteNames);
+  clauses.push(`upper(trim(c.nome)) = any($${values.length}::text[])`);
 
   if (filters.mapeamentoId) {
     values.push(filters.mapeamentoId);

@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/table";
 import { formatBRL, formatDateTime, formatPct, toDateString, toTimestamp } from "@/lib/format";
 import { sortByProductName } from "@/lib/product-sort";
-import { supabase } from "@/lib/supabase";
+import { apiClient } from "@/lib/api-client";
 import {
   ArrowDownRight,
   ArrowRight,
@@ -128,9 +128,9 @@ export default function MonitoramentoPrecos() {
 
   async function refreshData() {
     const [familiasResult, concorrentesResult, historicoResult] = await Promise.all([
-      supabase.from("familias").select("id,nome").eq("ativo", true).order("nome"),
-      supabase.from("concorrentes").select("id,nome").eq("ativo", true).order("nome"),
-      supabase
+      apiClient.from("familias").select("id,nome").eq("ativo", true).order("nome"),
+      apiClient.from("concorrentes").select("id,nome").eq("ativo", true).order("nome"),
+      apiClient
         .from("historico_precos")
         .select(
           "id,mapeamento_id,preco_concorrente,status,coletado_em,mapeamentos_sku(id,sku_concorrente,produto_id,concorrente_id,produtos(id,sku_interno,nome,familia_id,familias(id,nome)),concorrentes(id,nome))",

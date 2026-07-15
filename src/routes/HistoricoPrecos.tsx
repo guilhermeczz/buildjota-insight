@@ -19,7 +19,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatBRL, formatDateTime, formatPct, toDateString, toTimestamp } from "@/lib/format";
-import { supabase } from "@/lib/supabase";
+import { apiClient } from "@/lib/api-client";
 import { toast } from "sonner";
 
 type Familia = {
@@ -80,9 +80,9 @@ export default function HistoricoPrecos() {
 
   async function refreshData() {
     const [familiasResult, concorrentesResult, historicoResult] = await Promise.all([
-      supabase.from("familias").select("id,nome").order("nome"),
-      supabase.from("concorrentes").select("id,nome").order("nome"),
-      supabase
+      apiClient.from("familias").select("id,nome").order("nome"),
+      apiClient.from("concorrentes").select("id,nome").order("nome"),
+      apiClient
         .from("historico_precos")
         .select(
           "id,preco_construjota,preco_concorrente,diferenca_valor,diferenca_percentual,status,mensagem_erro,coletado_em,mapeamentos_sku(sku_concorrente,produto_id,concorrente_id,produtos(nome,sku_interno,familia_id,familias(nome)),concorrentes(nome))",

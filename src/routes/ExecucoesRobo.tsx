@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/table";
 import { formatDateTime, toDateString, toTimestamp } from "@/lib/format";
 import { compareProductNames, sortByProductName } from "@/lib/product-sort";
-import { supabase } from "@/lib/supabase";
+import { apiClient } from "@/lib/api-client";
 import { Loader2, Play, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 
@@ -146,14 +146,14 @@ export default function ExecucoesRobo() {
 
   async function refreshExecucoes() {
     const [execucoesResult, historicosResult] = await Promise.all([
-      supabase
+      apiClient
         .from("execucoes_robo")
         .select(
           "id,status,origem,iniciado_em,finalizado_em,total_processados,total_sucesso,total_erro,mensagem,tempo_execucao_segundos",
         )
         .order("iniciado_em", { ascending: false })
         .limit(60),
-      supabase
+      apiClient
         .from("historico_precos")
         .select("coletado_em,mapeamentos_sku(produtos(familia_id))")
         .order("coletado_em", { ascending: false })
@@ -219,13 +219,13 @@ export default function ExecucoesRobo() {
 
   async function loadManualOptions() {
     const [familiasResult, produtosResult, mapeamentosResult] = await Promise.all([
-      supabase.from("familias").select("id,nome").eq("ativo", true).order("nome"),
-      supabase
+      apiClient.from("familias").select("id,nome").eq("ativo", true).order("nome"),
+      apiClient
         .from("produtos")
         .select("id,nome,sku_interno,familia_id")
         .eq("ativo", true)
         .order("nome"),
-      supabase
+      apiClient
         .from("mapeamentos_sku")
         .select("id,sku_concorrente,produtos(nome,sku_interno),concorrentes(nome)")
         .eq("ativo", true)

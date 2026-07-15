@@ -40,7 +40,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { formatBRL } from "@/lib/format";
 import { compareProductNames, sortByProductName } from "@/lib/product-sort";
-import { supabase } from "@/lib/supabase";
+import { apiClient } from "@/lib/api-client";
 import { Pencil, Plus, Power, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -103,8 +103,8 @@ export default function Produtos() {
 
   async function refreshData() {
     const [familiasResult, produtosResult] = await Promise.all([
-      supabase.from("familias").select("id,nome,ativo").order("nome", { ascending: true }),
-      supabase
+      apiClient.from("familias").select("id,nome,ativo").order("nome", { ascending: true }),
+      apiClient
         .from("produtos")
         .select(
           "id,sku_interno,nome,familia_id,unidade,preco_atual,observacoes,ativo,familias(nome)",
@@ -205,7 +205,7 @@ export default function Produtos() {
     setSaving(true);
 
     if (editing) {
-      const { data, error } = await supabase
+      const { data, error } = await apiClient
         .from("produtos")
         .update(payload)
         .eq("id", editing.id)
@@ -236,7 +236,7 @@ export default function Produtos() {
       return;
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await apiClient
       .from("produtos")
       .insert({ ...payload, ativo: true })
       .select("id,sku_interno,nome,familia_id,unidade,preco_atual,observacoes,ativo,familias(nome)")
@@ -264,7 +264,7 @@ export default function Produtos() {
 
   async function toggleAtivo(produto: Produto) {
     const ativo = !produto.ativo;
-    const { error } = await supabase.from("produtos").update({ ativo }).eq("id", produto.id);
+    const { error } = await apiClient.from("produtos").update({ ativo }).eq("id", produto.id);
 
     if (error) {
       toast.error("Não foi possível alterar o status do produto");
@@ -280,7 +280,7 @@ export default function Produtos() {
     if (!deleting) return;
 
     setDeletingLoading(true);
-    const { error } = await supabase.from("produtos").delete().eq("id", deleting.id);
+    const { error } = await apiClient.from("produtos").delete().eq("id", deleting.id);
     setDeletingLoading(false);
 
     if (error) {

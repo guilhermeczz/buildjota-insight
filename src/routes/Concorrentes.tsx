@@ -13,7 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Plus, Pencil, Power, Lock } from "lucide-react";
-import { supabase } from "@/lib/supabase";
+import { apiClient } from "@/lib/api-client";
 import {
   Dialog,
   DialogContent,
@@ -52,7 +52,7 @@ export default function Concorrentes() {
   useEffect(() => {
     let mounted = true;
 
-    supabase
+    apiClient
       .from("concorrentes")
       .select("id,nome,site_url,login_url,tipo_consulta,observacoes,ativo")
       .order("nome")
@@ -87,7 +87,7 @@ export default function Concorrentes() {
 
     if (editing) {
       const payload = form as Concorrente;
-      supabase
+      apiClient
         .from("concorrentes")
         .update(payload)
         .eq("id", editing.id)
@@ -100,7 +100,7 @@ export default function Concorrentes() {
           toast.success("Concorrente atualizado");
         });
     } else {
-      supabase
+      apiClient
         .from("concorrentes")
         .insert({ ...(form as Concorrente), ativo: true })
         .select("id,nome,site_url,login_url,tipo_consulta,observacoes,ativo")
@@ -119,7 +119,7 @@ export default function Concorrentes() {
 
   function toggleAtivo(f: Concorrente) {
     const ativo = !f.ativo;
-    supabase
+    apiClient
       .from("concorrentes")
       .update({ ativo })
       .eq("id", f.id)

@@ -1,6 +1,6 @@
 import { loadWorkerEnv } from "./env.mjs";
 import { collectPricesByBrowser } from "./browser.mjs";
-import { createDatabaseClient, fetchActiveMappings, registerResults } from "./supabase.mjs";
+import { createDatabaseClient, fetchActiveMappings, registerResults } from "./database.mjs";
 
 loadWorkerEnv();
 
@@ -9,6 +9,7 @@ const dryRun = args.has("--dry-run");
 const headed = args.has("--headed");
 const failedOnly = args.has("--failed-only");
 const scheduled = args.has("--scheduled");
+const originArg = argValue("--origin");
 const produtoId = argValue("--produto-id");
 const familiaId = argValue("--familia-id");
 const mapeamentoId = argValue("--mapeamento-id");
@@ -98,7 +99,7 @@ async function main() {
               ? " Filtro: erros."
               : ""
     }`,
-    { origem: scheduled ? "agendado" : "worker", agendaId },
+    { origem: scheduled ? "agendado" : originArg || "worker", agendaId },
   );
 
   console.log(`Execucao registrada: ${response.id} (${response.status}).`);

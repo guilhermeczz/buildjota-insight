@@ -35,7 +35,7 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatBRL, formatPct, formatDateTime, toDateString } from "@/lib/format";
-import { supabase } from "@/lib/supabase";
+import { apiClient } from "@/lib/api-client";
 
 type Familia = {
   id: string;
@@ -381,15 +381,15 @@ export default function Relatorios() {
       setLoading(true);
       const [familiasResult, concorrentesResult, mapeamentosResult, historicoResult] =
         await Promise.all([
-          supabase.from("familias").select("id,nome").order("nome"),
-          supabase.from("concorrentes").select("id,nome").order("nome"),
-          supabase
+          apiClient.from("familias").select("id,nome").order("nome"),
+          apiClient.from("concorrentes").select("id,nome").order("nome"),
+          apiClient
             .from("mapeamentos_sku")
             .select(
               "id,produto_id,concorrente_id,sku_concorrente,ultimo_preco,ultima_atualizacao,status_coleta,produtos(id,sku_interno,nome,familia_id,preco_atual,familias(id,nome)),concorrentes(id,nome)",
             )
             .order("ultima_atualizacao", { ascending: false, nullsFirst: false }),
-          supabase
+          apiClient
             .from("historico_precos")
             .select(
               "id,mapeamento_id,preco_construjota,preco_concorrente,diferenca_valor,diferenca_percentual,status,mensagem_erro,coletado_em,mapeamentos_sku(id,produto_id,concorrente_id,sku_concorrente,produtos(id,sku_interno,nome,familia_id,preco_atual,familias(id,nome)),concorrentes(id,nome))",

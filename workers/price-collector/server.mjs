@@ -225,6 +225,8 @@ const server = createServer(async (req, res) => {
       args.push("--failed-only");
     }
 
+    args.push("--origin=manual");
+
     sendJson(res, 202, { ok: true, status: "buscando" });
 
     runWorkerWithArgs(args)

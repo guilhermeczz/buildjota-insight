@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { roleLabel, useAuth } from "@/lib/auth";
 import { formatDateTime } from "@/lib/format";
-import { supabase } from "@/lib/supabase";
+import { apiClient } from "@/lib/api-client";
 
 type ExecucaoNotification = {
   id: string;
@@ -51,7 +51,7 @@ export default function Topbar() {
     let mounted = true;
 
     const loadExecucoes = async () => {
-      const { data } = await supabase
+      const { data } = await apiClient
         .from("execucoes_robo")
         .select(
           "id,status,origem,iniciado_em,finalizado_em,total_processados,total_sucesso,total_erro,mensagem",

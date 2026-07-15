@@ -42,7 +42,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { AppUser, roleLabel, UserRole, useAuth } from "@/lib/auth";
-import { supabase } from "@/lib/supabase";
+import { apiClient } from "@/lib/api-client";
 
 type FormState = {
   id?: string;
@@ -81,7 +81,7 @@ export default function Usuarios() {
 
   const refreshUsers = useCallback(async () => {
     setLoading(true);
-    const { data, error } = await supabase
+    const { data, error } = await apiClient
       .from("profiles")
       .select("id,nome,email,role,ativo,created_at")
       .order("nome", { ascending: true });
@@ -129,7 +129,7 @@ export default function Usuarios() {
   };
 
   const callAdminUsers = async (payload: Record<string, unknown>) => {
-    const { data, error } = await supabase.functions.invoke("admin-users", {
+    const { data, error } = await apiClient.functions.invoke("admin-users", {
       body: payload,
     });
 

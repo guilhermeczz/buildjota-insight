@@ -44,7 +44,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { formatBRL, formatDateTime } from "@/lib/format";
 import { compareProductNames, sortByProductName } from "@/lib/product-sort";
-import { supabase } from "@/lib/supabase";
+import { apiClient } from "@/lib/api-client";
 import {
   ChevronDown,
   ExternalLink,
@@ -167,14 +167,14 @@ export default function MapeamentosSku() {
   async function refreshData() {
     const [produtosResult, familiasResult, concorrentesResult, mapeamentosResult] =
       await Promise.all([
-        supabase
+        apiClient
           .from("produtos")
           .select("id,sku_interno,nome,familia_id,preco_atual,familias(nome)")
           .eq("ativo", true)
           .order("nome"),
-        supabase.from("familias").select("id,nome").eq("ativo", true).order("nome"),
-        supabase.from("concorrentes").select("id,nome,ativo").eq("ativo", true).order("nome"),
-        supabase
+        apiClient.from("familias").select("id,nome").eq("ativo", true).order("nome"),
+        apiClient.from("concorrentes").select("id,nome,ativo").eq("ativo", true).order("nome"),
+        apiClient
           .from("mapeamentos_sku")
           .select(
             "id,produto_id,concorrente_id,sku_concorrente,url_produto,unidade_equivalente,seletor_preco,observacoes,ativo,ultimo_preco,ultima_atualizacao,status_coleta,produtos(id,sku_interno,nome,familia_id,preco_atual,familias(nome)),concorrentes(nome)",
@@ -391,7 +391,7 @@ export default function MapeamentosSku() {
 
     if (editing) {
       setSaving(true);
-      const { error } = await supabase
+      const { error } = await apiClient
         .from("mapeamentos_sku")
         .update({ ...payloadBase, concorrente_id: selectedConcorrentes[0] })
         .eq("id", editing.id);
@@ -438,7 +438,7 @@ export default function MapeamentosSku() {
     }
 
     setSaving(true);
-    const { error } = await supabase.from("mapeamentos_sku").insert(payloads);
+    const { error } = await apiClient.from("mapeamentos_sku").insert(payloads);
 
     setSaving(false);
 
@@ -460,7 +460,7 @@ export default function MapeamentosSku() {
 
   async function toggleAtivo(mapeamento: Mapeamento) {
     const ativo = !mapeamento.ativo;
-    const { error } = await supabase
+    const { error } = await apiClient
       .from("mapeamentos_sku")
       .update({ ativo })
       .eq("id", mapeamento.id);
@@ -479,7 +479,7 @@ export default function MapeamentosSku() {
     if (!deleting) return;
 
     setDeletingLoading(true);
-    const { error } = await supabase.from("mapeamentos_sku").delete().eq("id", deleting.id);
+    const { error } = await apiClient.from("mapeamentos_sku").delete().eq("id", deleting.id);
     setDeletingLoading(false);
 
     if (error) {

@@ -169,7 +169,7 @@ export const localAuth = {
   },
 };
 
-export const supabase = {
+export const apiClient = {
   from(table: string) {
     return new QueryBuilder(table);
   },

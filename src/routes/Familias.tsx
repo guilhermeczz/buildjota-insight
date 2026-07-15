@@ -38,7 +38,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { supabase } from "@/lib/supabase";
+import { apiClient } from "@/lib/api-client";
 import { Pencil, Plus, Power, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -73,7 +73,7 @@ export default function Familias() {
   const [deletingLoading, setDeletingLoading] = useState(false);
 
   async function refreshFamilias() {
-    const { data, error } = await supabase
+    const { data, error } = await apiClient
       .from("familias")
       .select("id,nome,descricao,ativo,created_at")
       .order("nome", { ascending: true });
@@ -127,7 +127,7 @@ export default function Familias() {
     setSaving(true);
 
     if (editing) {
-      const { error } = await supabase
+      const { error } = await apiClient
         .from("familias")
         .update({ nome, descricao })
         .eq("id", editing.id);
@@ -153,7 +153,7 @@ export default function Familias() {
       return;
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await apiClient
       .from("familias")
       .insert({ nome, descricao, ativo: true })
       .select("id,nome,descricao,ativo,created_at")
@@ -179,7 +179,7 @@ export default function Familias() {
 
   async function toggleAtivo(familia: Familia) {
     const ativo = !familia.ativo;
-    const { error } = await supabase.from("familias").update({ ativo }).eq("id", familia.id);
+    const { error } = await apiClient.from("familias").update({ ativo }).eq("id", familia.id);
 
     if (error) {
       toast.error("Não foi possível alterar o status da família");
@@ -196,7 +196,7 @@ export default function Familias() {
     if (!deleting) return;
 
     setDeletingLoading(true);
-    const { error } = await supabase.from("familias").delete().eq("id", deleting.id);
+    const { error } = await apiClient.from("familias").delete().eq("id", deleting.id);
     setDeletingLoading(false);
 
     if (error) {
