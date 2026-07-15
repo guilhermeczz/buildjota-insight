@@ -22,6 +22,17 @@ MEGALESTE_PASSWORD=
 
 # Opcional. Por padrao o worker bloqueia imagens, fontes e midias para economizar rede.
 WORKER_BLOCK_HEAVY_ASSETS=true
+
+# Opcional. Quantos concorrentes podem ser lidos ao mesmo tempo em execucoes manuais.
+# Em VM de 8 GB, 2 costuma ser um bom equilibrio. Use 1 se quiser consumo minimo.
+WORKER_CONCURRENCY=2
+
+# Opcional. Orçamento de tempo por pagina para evitar leituras travadas.
+WORKER_NAVIGATION_TIMEOUT_MS=18000
+WORKER_QUICK_LOAD_TIMEOUT_MS=3500
+WORKER_PRICE_SIGNAL_TIMEOUT_MS=4500
+WORKER_PRODUCT_SETTLE_MS=350
+WORKER_ACTION_TIMEOUT_MS=5000
 ```
 
 ## Como rodar
@@ -63,6 +74,9 @@ node workers/price-collector/index.mjs --familia-id=<id> --scheduled
 
 Configure os horarios pela tela **Agenda de Coleta**. O limite "Paralelo" controla quantos
 concorrentes podem ser lidos ao mesmo tempo, de 1 a 4. Em VPS de 8 GB, comece com 1.
+
+Para execucoes manuais, o padrao e `WORKER_CONCURRENCY=2`. Isso le dois concorrentes por vez,
+mantendo o consumo baixo sem deixar uma leitura pequena demorar demais.
 
 ## Como o worker decide o preco
 

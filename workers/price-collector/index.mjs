@@ -6,6 +6,7 @@ import {
   fetchActiveMappings,
   markExecutionFailed,
   registerResults,
+  updateExecutionProgress,
 } from "./database.mjs";
 
 loadWorkerEnv();
@@ -20,7 +21,10 @@ const produtoId = argValue("--produto-id");
 const familiaId = argValue("--familia-id");
 const mapeamentoId = argValue("--mapeamento-id");
 const agendaId = argValue("--agenda-id");
-const concurrency = Math.max(1, Math.min(4, Number(argValue("--concurrency") || 1)));
+const concurrency = Math.max(
+  1,
+  Math.min(4, Number(argValue("--concurrency") || process.env.WORKER_CONCURRENCY || 2)),
+);
 
 function argValue(name) {
   const prefix = `${name}=`;
@@ -96,6 +100,14 @@ async function main() {
         origem,
         mensagem: `Coleta iniciada: ${mapeamentos.length} mapeamento(s).${filterLabel()}`,
       });
+  let lastProgressAt = 0;
+  const reportProgress = async (message) => {
+    if (!execution) return;
+    const now = Date.now();
+    if (now - lastProgressAt < 5000) return;
+    lastProgressAt = now;
+    await updateExecutionProgress(execution.id, message);
+  };
 
   console.log(
     `Iniciando coleta: ${mapeamentos.length} mapeamento(s), ${groups.length} concorrente(s).`,
@@ -103,7 +115,11 @@ async function main() {
 
   let resultados;
   try {
-    resultados = await collectPricesByBrowser(groups, { headed, concurrency });
+    resultados = await collectPricesByBrowser(groups, {
+      headed,
+      concurrency,
+      onProgress: reportProgress,
+    });
   } catch (error) {
     if (execution) {
       await markExecutionFailed(execution, error);

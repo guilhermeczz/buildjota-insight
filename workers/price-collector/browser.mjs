@@ -8,6 +8,18 @@ const userAgent =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36";
 const authStateDir = join(process.cwd(), ".worker-auth");
 const blockHeavyAssets = process.env.WORKER_BLOCK_HEAVY_ASSETS !== "false";
+const navigationTimeoutMs = envNumber("WORKER_NAVIGATION_TIMEOUT_MS", 18000, 5000, 60000);
+const quickLoadTimeoutMs = envNumber("WORKER_QUICK_LOAD_TIMEOUT_MS", 3500, 1000, 15000);
+const actionTimeoutMs = envNumber("WORKER_ACTION_TIMEOUT_MS", 5000, 1000, 15000);
+const productSignalTimeoutMs = envNumber("WORKER_PRICE_SIGNAL_TIMEOUT_MS", 4500, 1000, 15000);
+const productSettleMs = envNumber("WORKER_PRODUCT_SETTLE_MS", 350, 0, 3000);
+const loginSettleMs = envNumber("WORKER_LOGIN_SETTLE_MS", 1200, 0, 5000);
+
+function envNumber(name, fallback, min, max) {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, value));
+}
 
 function storageStatePath(concorrenteNome) {
   const fileName = concorrenteNome
@@ -54,7 +66,7 @@ async function fillFirstVisible(page, selectors, value) {
     const visible = await locator.isVisible().catch(() => false);
     if (!visible) continue;
 
-    await locator.fill(value, { timeout: 8000 });
+    await locator.fill(value, { timeout: actionTimeoutMs });
     return true;
   }
 
@@ -71,8 +83,8 @@ async function clickFirstVisible(page, selectors) {
     if (!visible) continue;
 
     const clicked = await Promise.all([
-      page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null),
-      locator.click({ timeout: 8000 }).then(
+      page.waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs }).catch(() => null),
+      locator.click({ timeout: actionTimeoutMs }).then(
         () => true,
         () => false,
       ),
@@ -91,14 +103,14 @@ async function login(page, concorrente) {
   }
 
   const loginUrl = loginUrlForConcorrente(concorrente);
-  await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
-  await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+  await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs });
+  await page.waitForLoadState("load", { timeout: quickLoadTimeoutMs }).catch(() => null);
   await dismissOverlays(page);
   await openLoginSurface(page);
   await page
     .locator("input[type='password'], input[name*='senha' i], input[id*='senha' i]")
     .first()
-    .waitFor({ state: "visible", timeout: 8000 })
+    .waitFor({ state: "visible", timeout: actionTimeoutMs })
     .catch(() => null);
 
   const loginFilled = await fillFirstVisible(
@@ -161,10 +173,12 @@ async function login(page, concorrente) {
 
   if (!clicked) {
     await page.keyboard.press("Enter");
-    await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
+    await page
+      .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
+      .catch(() => null);
   }
 
-  await page.waitForTimeout(3000);
+  await page.waitForTimeout(loginSettleMs);
 
   if (await hasInvalidCredentialsMessage(page)) {
     throw new Error(`Credenciais invalidas em ${concorrente.nome}`);
@@ -189,7 +203,7 @@ async function openLoginSurface(page) {
     "a:has-text('Entre')",
   ]);
 
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(500);
 }
 
 async function dismissOverlays(page) {
@@ -206,7 +220,7 @@ async function dismissOverlays(page) {
     ]);
 
     if (!clicked) return;
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(250);
   }
 }
 
@@ -226,7 +240,7 @@ export async function collectPricesByBrowser(groups, options = {}) {
       while (nextIndex < groups.length) {
         const group = groups[nextIndex];
         nextIndex += 1;
-        resultados.push(...(await collectGroup(browser, group)));
+        resultados.push(...(await collectGroup(browser, group, options)));
       }
     });
 
@@ -238,7 +252,7 @@ export async function collectPricesByBrowser(groups, options = {}) {
   return resultados;
 }
 
-async function collectGroup(browser, group) {
+async function collectGroup(browser, group, options = {}) {
   const statePath = storageStatePath(group.concorrente.nome);
   const context = await browser.newContext({
     userAgent,
@@ -247,6 +261,8 @@ async function collectGroup(browser, group) {
     storageState: existsSync(statePath) ? statePath : undefined,
   });
   const page = await context.newPage();
+  page.setDefaultTimeout(actionTimeoutMs);
+  page.setDefaultNavigationTimeout(navigationTimeoutMs);
   const resultados = [];
 
   try {
@@ -266,25 +282,38 @@ async function collectGroup(browser, group) {
       await context.storageState({ path: statePath });
     }
 
-    for (const mapping of group.mapeamentos) {
+    console.log(`[${group.concorrente.nome}] Iniciando ${group.mapeamentos.length} mapeamento(s).`);
+
+    for (const [index, mapping] of group.mapeamentos.entries()) {
+      const itemStartedAt = Date.now();
+      const productLabel = `${mapping.produtos.sku_interno ?? "-"} - ${mapping.produtos.nome ?? "Produto"}`;
+      const progressLabel = `[${group.concorrente.nome}] ${index + 1}/${group.mapeamentos.length} ${productLabel}`;
+
       try {
         if (!mapping.url_produto) {
           throw new Error("URL do produto nao cadastrada");
         }
 
+        await reportProgress(options, `Lendo ${progressLabel}`);
         const productUrl = productUrlForMapping(mapping, group.concorrente);
-        await page.goto(productUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
-        await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
-        await page.waitForTimeout(1500);
+        await page.goto(productUrl, {
+          waitUntil: "domcontentloaded",
+          timeout: navigationTimeoutMs,
+        });
+        await waitForProductSignal(page);
+        if (productSettleMs > 0) await page.waitForTimeout(productSettleMs);
 
         if (await shouldRetryLogin(page, mapping, group.concorrente)) {
           rmSync(statePath, { force: true });
           await context.clearCookies().catch(() => null);
           await login(page, group.concorrente);
           await context.storageState({ path: statePath });
-          await page.goto(productUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
-          await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => null);
-          await page.waitForTimeout(1500);
+          await page.goto(productUrl, {
+            waitUntil: "domcontentloaded",
+            timeout: navigationTimeoutMs,
+          });
+          await waitForProductSignal(page);
+          if (productSettleMs > 0) await page.waitForTimeout(productSettleMs);
         }
 
         if (await isLoginRequired(page)) {
@@ -312,6 +341,9 @@ async function collectGroup(browser, group) {
           preco_concorrente: price,
           status: "sucesso",
         });
+        console.log(
+          `${progressLabel}: sucesso em ${Math.round((Date.now() - itemStartedAt) / 1000)}s.`,
+        );
       } catch (error) {
         if (
           error instanceof Error &&
@@ -328,6 +360,11 @@ async function collectGroup(browser, group) {
           status: "erro",
           mensagem_erro: error instanceof Error ? error.message : "Erro desconhecido",
         });
+        console.log(
+          `${progressLabel}: erro em ${Math.round((Date.now() - itemStartedAt) / 1000)}s - ${
+            error instanceof Error ? error.message : "Erro desconhecido"
+          }`,
+        );
       }
     }
   } catch (error) {
@@ -349,6 +386,25 @@ async function collectGroup(browser, group) {
   }
 
   return resultados;
+}
+
+async function reportProgress(options, message) {
+  if (typeof options.onProgress !== "function") return;
+  await options.onProgress(message).catch(() => null);
+}
+
+async function waitForProductSignal(page) {
+  await page
+    .waitForFunction(
+      () => {
+        const text = document.body?.innerText ?? "";
+        return /R\$\s*\d|\d{1,3}(?:\.\d{3})*,\d{2,3}|indisponivel|indisponível|sem estoque|esgotado|login|cadastre-se|preco|preço/i.test(
+          text,
+        );
+      },
+      { timeout: productSignalTimeoutMs },
+    )
+    .catch(() => null);
 }
 
 async function isLoginRequired(page) {

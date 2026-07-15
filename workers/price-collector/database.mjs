@@ -138,6 +138,17 @@ export async function markExecutionFailed(execution, error) {
   );
 }
 
+export async function updateExecutionProgress(executionId, message) {
+  if (!executionId || !message) return;
+
+  await query(
+    `update execucoes_robo
+     set mensagem = $1
+     where id = $2 and status = 'pendente'`,
+    [String(message).slice(0, 500), executionId],
+  );
+}
+
 export async function registerResults(resultados, mensagem, options = {}) {
   const startedAt = options.startedAt ? new Date(options.startedAt) : new Date();
   const origem = options.origem ?? "worker";
