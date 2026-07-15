@@ -278,6 +278,8 @@ async function collectGroup(browser, group) {
         await page.waitForTimeout(1500);
 
         if (await shouldRetryLogin(page, mapping, group.concorrente)) {
+          rmSync(statePath, { force: true });
+          await context.clearCookies().catch(() => null);
           await login(page, group.concorrente);
           await context.storageState({ path: statePath });
           await page.goto(productUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
@@ -293,7 +295,9 @@ async function collectGroup(browser, group) {
           throw new Error("Produto indisponivel no concorrente");
         }
 
-        const price = await extractPrice(page, mapping.seletor_preco);
+        const price = await extractPrice(page, mapping.seletor_preco, {
+          referencePrice: Number(mapping.produtos.preco_atual ?? 0),
+        });
 
         if (!price) {
           if (await isProductUnavailable(page)) {
@@ -348,10 +352,32 @@ async function collectGroup(browser, group) {
 }
 
 async function isLoginRequired(page) {
+  if (await hasVisiblePasswordField(page)) return true;
+
   const text = await page
     .locator("body")
     .innerText({ timeout: 5000 })
     .catch(() => "");
+  const normalized = normalizeText(text);
+
+  if (!normalized) return false;
+  if (hasPriceLikeText(text)) return false;
+
+  if (
+    [
+      /faca login/,
+      /entre ou cadastre-se/,
+      /cadastre-se para ver os precos/,
+      /login para ver os precos/,
+      /entre para ver os precos/,
+      /acesse sua conta para ver os precos/,
+      /preco disponivel apenas para clientes/,
+      /para visualizar os precos/,
+      /voce precisa estar logado/,
+    ].some((pattern) => pattern.test(normalized))
+  ) {
+    return true;
+  }
 
   return /fa[cç]a login|cadastre-se para ver os pre[cç]os/i.test(text);
 }
@@ -397,6 +423,25 @@ function normalizeText(value) {
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+function hasPriceLikeText(value) {
+  return /R\$\s*\d|\d{1,3}(?:\.\d{3})*,\d{2,3}/.test(value);
+}
+
+async function hasVisiblePasswordField(page) {
+  const fields = page.locator(
+    "input[type='password'], input[name*='senha' i], input[id*='senha' i], input[name*='password' i], input[id*='password' i]",
+  );
+  const count = await fields.count().catch(() => 0);
+
+  for (let index = 0; index < count; index += 1) {
+    const field = fields.nth(index);
+    const visible = await field.isVisible().catch(() => false);
+    if (visible) return true;
+  }
+
+  return false;
 }
 
 async function hasInvalidCredentialsMessage(page) {
