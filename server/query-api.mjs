@@ -194,15 +194,20 @@ function columnRef(table, field) {
   return `${refs[table]}.${field}`;
 }
 
+function mutationColumnRef(table, field) {
+  const directField = String(field).includes(".") ? String(field).split(".").at(-1) : field;
+  return `${table}.${directField}`;
+}
+
 function orderRef(table, field) {
   return columnRef(table, field);
 }
 
-function buildWhere(table, filters = [], values) {
+function buildWhere(table, filters = [], values, refResolver = columnRef) {
   const clauses = [];
 
   for (const filter of filters) {
-    const ref = columnRef(table, filter.field);
+    const ref = refResolver(table, filter.field);
     if (filter.op === "eq") {
       values.push(filter.value);
       clauses.push(`${ref} = $${values.length}`);
@@ -285,7 +290,7 @@ export async function runQuery(body) {
     const values = entries.map(([, value]) => value);
     const assignments = entries.map(([key], index) => `${key} = $${index + 1}`);
     let sql = `update ${table} set ${assignments.join(",")}`;
-    sql += buildWhere(table, body.filters, values);
+    sql += buildWhere(table, body.filters, values, mutationColumnRef);
     sql += " returning *";
     const { rows } = await query(sql, values);
 
@@ -302,9 +307,13 @@ export async function runQuery(body) {
   }
 
   if (action === "delete") {
+    if (!body.filters?.length) {
+      throw new Error("Delete sem filtro nao e permitido.");
+    }
+
     const values = [];
     let sql = `delete from ${table}`;
-    sql += buildWhere(table, body.filters, values);
+    sql += buildWhere(table, body.filters, values, mutationColumnRef);
     sql += " returning id";
     const { rows } = await query(sql, values);
     return rows;
