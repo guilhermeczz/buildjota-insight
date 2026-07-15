@@ -13,7 +13,6 @@ import {
   LogOut,
   Menu,
   Package,
-  Settings,
   Store,
   Users,
   X,
@@ -34,7 +33,6 @@ const NAV = [
   { to: "/relatorios", label: "Relatórios", icon: BarChart3 },
   { to: "/execucoes-robo", label: "Execuções do Robô", icon: Bot },
   { to: "/usuarios", label: "Usuários", icon: Users },
-  { to: "/configuracoes", label: "Configurações", icon: Settings },
 ];
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {

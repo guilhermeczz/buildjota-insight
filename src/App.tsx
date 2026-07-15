@@ -14,7 +14,6 @@ import HistoricoPrecos from "@/routes/HistoricoPrecos";
 import MonitoramentoPrecos from "@/routes/MonitoramentoPrecos";
 import Relatorios from "@/routes/Relatorios";
 import ExecucoesRobo from "@/routes/ExecucoesRobo";
-import Configuracoes from "@/routes/Configuracoes";
 import Usuarios from "@/routes/Usuarios";
 import NotFound from "@/routes/NotFound";
 
@@ -42,7 +41,6 @@ export default function App() {
           <Route path="/relatorios" element={<Relatorios />} />
           <Route path="/execucoes-robo" element={<ExecucoesRobo />} />
           <Route path="/usuarios" element={<Usuarios />} />
-          <Route path="/configuracoes" element={<Configuracoes />} />
           <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>
