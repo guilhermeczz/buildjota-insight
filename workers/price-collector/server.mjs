@@ -85,9 +85,13 @@ function localParts(date) {
   };
 }
 
-function localDateKey(value) {
-  if (!value) return "";
-  return localParts(new Date(value)).date;
+function hasRunForScheduledTime(row, current, horario) {
+  if (!row.ultima_execucao) return false;
+
+  const lastRun = localParts(new Date(row.ultima_execucao));
+  if (lastRun.date !== current.date) return false;
+
+  return lastRun.time >= horario;
 }
 
 async function fetchDueSchedule() {
@@ -115,7 +119,7 @@ async function fetchDueSchedule() {
     const dias = Array.isArray(row.dias_semana) ? row.dias_semana.map(Number) : [];
     if (!dias.includes(current.weekday)) return false;
     if (horario > current.time) return false;
-    return localDateKey(row.ultima_execucao) !== current.date;
+    return !hasRunForScheduledTime(row, current, horario);
   });
 }
 
@@ -180,7 +184,7 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.method === "GET" && req.url === "/health") {
-    sendJson(res, 200, { ok: true, running });
+    sendJson(res, 200, { ok: true, running, scheduleTimezone, local: localParts(new Date()) });
     return;
   }
 
@@ -236,6 +240,7 @@ const server = createServer(async (req, res) => {
 server.listen(port, () => {
   console.log(`Worker trigger ouvindo em http://localhost:${port}`);
   console.log(`Agenda de coleta ativa no fuso ${scheduleTimezone}.`);
+  console.log(`Horario local da agenda: ${JSON.stringify(localParts(new Date()))}.`);
   setInterval(() => {
     runDueSchedule().catch((error) => {
       console.error(error instanceof Error ? error.message : error);
