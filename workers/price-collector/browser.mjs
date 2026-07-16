@@ -35,6 +35,30 @@ function storageStatePath(concorrenteNome) {
   return join(authStateDir, `${fileName}.json`);
 }
 
+async function clearBrowserAuthState(context, page) {
+  await context.clearCookies().catch(() => null);
+  await page
+    .evaluate(() => {
+      window.localStorage?.clear();
+      window.sessionStorage?.clear();
+    })
+    .catch(() => null);
+}
+
+async function resetAuthState(context, page, statePath, concorrente, reason) {
+  rmSync(statePath, { force: true });
+  await clearBrowserAuthState(context, page);
+  console.log(`[${concorrente.nome}] Sessao local limpa (${reason}).`);
+}
+
+function isAuthStateError(error) {
+  if (!(error instanceof Error)) return false;
+
+  return /Credenciais invalidas|Credenciais nao configuradas|Formulario de login|Login nao confirmado|Configuracao de unidade|Regiao .* nao selecionada/i.test(
+    error.message,
+  );
+}
+
 function absoluteUrl(value, fallbackBase) {
   if (!value) return fallbackBase;
   try {
@@ -103,6 +127,11 @@ async function login(page, concorrente) {
   const credentials = credentialsFor(concorrente.nome);
   if (!credentials) {
     throw new Error(`Credenciais nao configuradas para ${concorrente.nome}`);
+  }
+
+  if (resolveConcorrenteKey(concorrente.nome) === "COFEMA") {
+    await loginCofema(page, concorrente, credentials);
+    return;
   }
 
   const loginUrl = loginUrlForConcorrente(concorrente);
@@ -196,13 +225,197 @@ async function login(page, concorrente) {
   }
 }
 
+async function loginCofema(page, concorrente, credentials) {
+  const loginUrl = loginUrlForConcorrente(concorrente);
+
+  await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs });
+  await page.waitForLoadState("load", { timeout: quickLoadTimeoutMs }).catch(() => null);
+  await dismissOverlays(page);
+
+  if (await isCofemaLoggedIn(page)) {
+    await ensureConcorrentePreferences(page, concorrente);
+    return;
+  }
+  await clearCofemaLocalAuth(page);
+
+  const opened = await openCofemaLoginModal(page);
+  if (!opened) {
+    throw new Error("Formulario de login nao identificado em COFEMA");
+  }
+
+  const loginFilled = await fillFirstVisible(
+    page,
+    [
+      "#dialog-model input[name='login']",
+      "#dialog-model input[id*='login' i]",
+      "#dialog-model input[name*='usuario' i]",
+      "#dialog-model input[id*='usuario' i]",
+      "#dialog-model input[name*='cnpj' i]",
+      "#dialog-model input[type='text']",
+      "#dialog-model input:not([type])",
+    ],
+    credentials.login,
+  );
+
+  const passwordFilled = await fillFirstVisible(
+    page,
+    [
+      "#dialog-model input[name='senha']",
+      "#dialog-model input[type='password']",
+      "#dialog-model input[id*='senha' i]",
+      "#dialog-model input[name*='password' i]",
+      "#dialog-model input[id*='password' i]",
+    ],
+    credentials.password,
+  );
+
+  if (!loginFilled || !passwordFilled) {
+    throw new Error("Formulario de login nao identificado em COFEMA");
+  }
+
+  const clicked = await clickFirstVisible(page, [
+    "#dialog-model .btLogin",
+    "#dialog-model button[type='submit']",
+    "#dialog-model input[type='submit']",
+    "#dialog-model button:has-text('Entrar')",
+    "#dialog-model button:has-text('Acessar')",
+    ".modal.show .btLogin",
+  ]);
+
+  if (!clicked) {
+    await page.keyboard.press("Enter");
+  }
+
+  const logged = await waitForCofemaLogin(page);
+  if (await hasInvalidCredentialsMessage(page)) {
+    throw new Error("Credenciais invalidas em COFEMA");
+  }
+  if (!logged) {
+    throw new Error("Login nao confirmado em COFEMA");
+  }
+
+  await ensureConcorrentePreferences(page, concorrente);
+}
+
+async function openCofemaLoginModal(page) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const clicked =
+      (await clickFirstVisible(page, [
+        "#containerLogon a[data-logon='1']:has-text('Entre')",
+        ".ContainerLogonAjax a[data-logon='1']:has-text('Entre')",
+        "a[data-logon='1']:has-text('Entrar')",
+        "button[data-logon='1']:has-text('Entrar')",
+        "#containerLogon a[data-logon='1']",
+        ".ContainerLogonAjax a[data-logon='1']",
+        "a[data-logon='1']",
+        "button[data-logon='1']",
+      ])) || (await clickCofemaLoginByDom());
+
+    if (!clicked) {
+      await page.goto(`${page.url().split("?")[0]}?logon=open`, {
+        waitUntil: "domcontentloaded",
+        timeout: navigationTimeoutMs,
+      });
+    }
+
+    const visible = await page
+      .locator(
+        "#dialog-model input[name='login'], #dialog-model input[name='senha'], #dialog-model .btLogin",
+      )
+      .first()
+      .waitFor({ state: "visible", timeout: 8000 })
+      .then(
+        () => true,
+        () => false,
+      );
+
+    if (visible) return true;
+    await page.waitForTimeout(600);
+  }
+
+  return false;
+}
+
+async function clickCofemaLoginByDom(page) {
+  return page
+    .evaluate(() => {
+      const normalize = (value) =>
+        String(value ?? "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+
+      const candidates = [
+        ...document.querySelectorAll("a[data-logon='1'], button[data-logon='1']"),
+      ];
+      const target =
+        candidates.find((node) => normalize(node.textContent).includes("entre")) ??
+        candidates.find((node) => normalize(node.textContent).includes("entrar")) ??
+        candidates[0];
+
+      if (!(target instanceof HTMLElement)) return false;
+      target.click();
+      return true;
+    })
+    .catch(() => false);
+}
+
+async function isCofemaLoggedIn(page) {
+  const userValue = await page
+    .locator("input[name='user']")
+    .first()
+    .getAttribute("value", { timeout: 1000 })
+    .catch(() => "");
+
+  return userValue === "true";
+}
+
+async function clearCofemaLocalAuth(page) {
+  await page
+    .evaluate(() => {
+      const clearKnownAuthKeys = (storage) => {
+        if (!storage) return;
+        for (const key of Object.keys(storage)) {
+          if (/token|jwt|auth|login|usuario|user|cliente|session/i.test(key)) {
+            storage.removeItem(key);
+          }
+        }
+      };
+
+      clearKnownAuthKeys(window.localStorage);
+      clearKnownAuthKeys(window.sessionStorage);
+    })
+    .catch(() => null);
+}
+
+async function waitForCofemaLogin(page) {
+  for (let attempt = 1; attempt <= 12; attempt += 1) {
+    await page
+      .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
+      .catch(() => null);
+    if (await isCofemaLoggedIn(page)) return true;
+
+    const modalHasPassword = await page
+      .locator("#dialog-model input[name='senha'], #dialog-model input[type='password']")
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (!modalHasPassword && (await isCofemaLoggedIn(page))) return true;
+
+    await page.waitForTimeout(750);
+  }
+
+  return false;
+}
+
 async function openLoginSurface(page) {
   await clickFirstVisible(page, [
     ".menu-user > a",
     "a[role='button'][data-toggle='dropdown'][aria-haspopup='true']",
     "a[data-toggle='dropdown']:has(svg)",
     "#botao-login",
-    "a[href*='cliente' i]",
     "button:has-text('Cliente')",
     "a:has-text('Cliente')",
     "button:has-text('Entre ou cadastre-se')",
@@ -601,8 +814,7 @@ async function collectGroup(browser, group, options = {}) {
         await openProductPage(page, context, statePath, mapping, group.concorrente);
 
         if (await shouldRetryLogin(page, mapping, group.concorrente)) {
-          rmSync(statePath, { force: true });
-          await context.clearCookies().catch(() => null);
+          await resetAuthState(context, page, statePath, group.concorrente, "login vencido");
           await login(page, group.concorrente);
           await ensureConcorrentePreferences(page, group.concorrente);
           await context.storageState({ path: statePath });
@@ -641,14 +853,14 @@ async function collectGroup(browser, group, options = {}) {
           `${progressLabel}: sucesso em ${Math.round((Date.now() - itemStartedAt) / 1000)}s.`,
         );
       } catch (error) {
-        if (
-          error instanceof Error &&
-          /Credenciais invalidas|Login nao confirmado|Configuracao de unidade|Regiao .* nao selecionada/i.test(
-            error.message,
-          ) &&
-          existsSync(statePath)
-        ) {
-          rmSync(statePath, { force: true });
+        if (isAuthStateError(error) && existsSync(statePath)) {
+          await resetAuthState(
+            context,
+            page,
+            statePath,
+            group.concorrente,
+            "falha de autenticacao",
+          );
         }
 
         resultados.push({
@@ -667,7 +879,7 @@ async function collectGroup(browser, group, options = {}) {
     }
   } catch (error) {
     if (existsSync(statePath)) {
-      rmSync(statePath, { force: true });
+      await resetAuthState(context, page, statePath, group.concorrente, "falha geral");
     }
 
     for (const mapping of group.mapeamentos) {

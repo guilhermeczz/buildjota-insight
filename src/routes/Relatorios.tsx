@@ -167,7 +167,7 @@ function buildRows(mapeamentos: Mapeamento[]): Row[] {
       skuConcorrente: m.sku_concorrente,
       familia: produto?.familias?.nome ?? "Sem família",
       familiaId: produto?.familia_id ?? null,
-      concorrenteId: m.concorrente_id,
+      concorrenteId: m.concorrente_id || concorrente?.id || "",
       precoCJ,
       precoConcorrente,
       dif,
@@ -176,6 +176,91 @@ function buildRows(mapeamentos: Mapeamento[]): Row[] {
       ultimaAtualizacao: m.ultima_atualizacao,
     };
   });
+}
+
+function normalizeMapeamento(mapeamento: Mapeamento): Mapeamento {
+  return {
+    ...mapeamento,
+    produto_id: mapeamento.produto_id || mapeamento.produtos?.id || "",
+    concorrente_id: mapeamento.concorrente_id || mapeamento.concorrentes?.id || "",
+    ultimo_preco:
+      mapeamento.ultimo_preco === null || mapeamento.ultimo_preco === undefined
+        ? null
+        : Number(mapeamento.ultimo_preco),
+    ultima_atualizacao: toDateString(mapeamento.ultima_atualizacao),
+    produtos: mapeamento.produtos
+      ? {
+          ...mapeamento.produtos,
+          preco_atual: Number(mapeamento.produtos.preco_atual ?? 0),
+        }
+      : null,
+  };
+}
+
+function normalizeHistorico(row: Historico): Historico {
+  return {
+    ...row,
+    preco_construjota: Number(row.preco_construjota ?? 0),
+    preco_concorrente: row.preco_concorrente === null ? null : Number(row.preco_concorrente),
+    diferenca_valor: row.diferenca_valor === null ? null : Number(row.diferenca_valor),
+    diferenca_percentual:
+      row.diferenca_percentual === null ? null : Number(row.diferenca_percentual),
+    coletado_em: toDateString(row.coletado_em),
+    mapeamentos_sku: row.mapeamentos_sku ? normalizeMapeamento(row.mapeamentos_sku) : null,
+  };
+}
+
+function normalizeKey(value: string | null | undefined) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function matchesSelected(
+  selectedId: string,
+  selectedName: string | undefined,
+  candidateId: string | null | undefined,
+  candidateName: string | null | undefined,
+) {
+  if (selectedId === "todas" || selectedId === "todos") return true;
+  if (candidateId && candidateId === selectedId) return true;
+
+  const selectedKey = normalizeKey(selectedName);
+  const candidateKey = normalizeKey(candidateName);
+  return Boolean(selectedKey && candidateKey && selectedKey === candidateKey);
+}
+
+function historicoMatchesFilters({
+  historico,
+  familiaFilter,
+  familiaName,
+  concorrenteFilter,
+  concorrenteName,
+  periodo,
+  dateRange,
+}: {
+  historico: Historico;
+  familiaFilter: string;
+  familiaName?: string;
+  concorrenteFilter: string;
+  concorrenteName?: string;
+  periodo: Periodo;
+  dateRange: DateRange | undefined;
+}) {
+  const mapeamento = historico.mapeamentos_sku;
+  const familiaId = mapeamento?.produtos?.familia_id ?? "";
+  const familiaRowName = mapeamento?.produtos?.familias?.nome ?? "";
+  const concorrenteId = mapeamento?.concorrente_id || mapeamento?.concorrentes?.id || "";
+  const concorrenteRowName = mapeamento?.concorrentes?.nome ?? "";
+
+  if (historico.status !== "erro") return false;
+  if (!matchesSelected(familiaFilter, familiaName, familiaId, familiaRowName)) return false;
+  if (!matchesSelected(concorrenteFilter, concorrenteName, concorrenteId, concorrenteRowName)) {
+    return false;
+  }
+  return isInsideDateFilter(historico.coletado_em, periodo, dateRange);
 }
 
 function downloadCSV(rows: Row[], filename: string) {
@@ -412,30 +497,8 @@ export default function Relatorios() {
 
       setFamilias((familiasResult.data ?? []) as Familia[]);
       setConcorrentes((concorrentesResult.data ?? []) as Concorrente[]);
-      setMapeamentos(
-        ((mapeamentosResult.data ?? []) as Mapeamento[]).map((mapeamento) => ({
-          ...mapeamento,
-          ultimo_preco: mapeamento.ultimo_preco === null ? null : Number(mapeamento.ultimo_preco),
-          ultima_atualizacao: toDateString(mapeamento.ultima_atualizacao),
-          produtos: mapeamento.produtos
-            ? {
-                ...mapeamento.produtos,
-                preco_atual: Number(mapeamento.produtos.preco_atual ?? 0),
-              }
-            : null,
-        })),
-      );
-      setHistorico(
-        ((historicoResult.data ?? []) as Historico[]).map((row) => ({
-          ...row,
-          preco_construjota: Number(row.preco_construjota ?? 0),
-          preco_concorrente: row.preco_concorrente === null ? null : Number(row.preco_concorrente),
-          diferenca_valor: row.diferenca_valor === null ? null : Number(row.diferenca_valor),
-          diferenca_percentual:
-            row.diferenca_percentual === null ? null : Number(row.diferenca_percentual),
-          coletado_em: toDateString(row.coletado_em),
-        })),
-      );
+      setMapeamentos(((mapeamentosResult.data ?? []) as Mapeamento[]).map(normalizeMapeamento));
+      setHistorico(((historicoResult.data ?? []) as Historico[]).map(normalizeHistorico));
       setLoading(false);
     }
 
@@ -462,17 +525,33 @@ export default function Relatorios() {
   const abaixo = filteredRows.filter(
     (r) => r.precoConcorrente !== null && r.precoConcorrente > 0 && Number(r.dif) < 0,
   );
-  const erros = historico.filter((h) => {
-    const mapeamento = h.mapeamentos_sku;
-    if (h.status !== "erro") return false;
-    if (familiaFilter !== "todas" && mapeamento?.produtos?.familia_id !== familiaFilter) {
-      return false;
-    }
-    if (concorrenteFilter !== "todos" && mapeamento?.concorrente_id !== concorrenteFilter) {
-      return false;
-    }
-    return isInsideDateFilter(h.coletado_em, periodo, dateRange);
-  });
+  const selectedFamiliaName = familias.find((familia) => familia.id === familiaFilter)?.nome;
+  const selectedConcorrenteName = concorrentes.find(
+    (concorrente) => concorrente.id === concorrenteFilter,
+  )?.nome;
+  const erros = useMemo(
+    () =>
+      historico.filter((historicoRow) =>
+        historicoMatchesFilters({
+          historico: historicoRow,
+          familiaFilter,
+          familiaName: selectedFamiliaName,
+          concorrenteFilter,
+          concorrenteName: selectedConcorrenteName,
+          periodo,
+          dateRange,
+        }),
+      ),
+    [
+      concorrenteFilter,
+      dateRange,
+      familiaFilter,
+      historico,
+      periodo,
+      selectedConcorrenteName,
+      selectedFamiliaName,
+    ],
+  );
 
   const porFamilia = Object.entries(
     filteredRows.reduce<Record<string, Row[]>>(
