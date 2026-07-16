@@ -46,16 +46,19 @@ type HistoricoRow = {
     produto_id: string;
     concorrente_id: string;
     produtos?: {
+      id?: string;
       nome: string;
       sku_interno: string;
       familia_id: string | null;
       familias?: { nome: string } | null;
     } | null;
-    concorrentes?: { nome: string } | null;
+    concorrentes?: { id?: string; nome: string } | null;
   } | null;
 };
 
 function normalizeHistorico(row: HistoricoRow): HistoricoRow {
+  const mapeamento = row.mapeamentos_sku;
+
   return {
     ...row,
     preco_construjota: Number(row.preco_construjota ?? 0),
@@ -64,7 +67,26 @@ function normalizeHistorico(row: HistoricoRow): HistoricoRow {
     diferenca_percentual:
       row.diferenca_percentual === null ? null : Number(row.diferenca_percentual),
     coletado_em: toDateString(row.coletado_em),
+    mapeamentos_sku: mapeamento
+      ? {
+          ...mapeamento,
+          produto_id: mapeamento.produto_id ?? mapeamento.produtos?.id ?? "",
+          concorrente_id: mapeamento.concorrente_id ?? mapeamento.concorrentes?.id ?? "",
+        }
+      : mapeamento,
   };
+}
+
+function normalizeSearch(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function includesSearch(value: string | null | undefined, needle: string) {
+  return normalizeSearch(String(value ?? "")).includes(needle);
 }
 
 export default function HistoricoPrecos() {
@@ -114,23 +136,24 @@ export default function HistoricoPrecos() {
     return rows.filter((row) => {
       const mapeamento = row.mapeamentos_sku;
       const produto = mapeamento?.produtos;
+      const familiaId = produto?.familia_id ?? "";
+      const concorrenteId = mapeamento?.concorrente_id ?? mapeamento?.concorrentes?.id ?? "";
       const coletadoEm = toTimestamp(row.coletado_em);
 
       if (periodo !== "0" && (!coletadoEm || coletadoEm < cutoff.getTime())) return false;
-      if (familiaFilter !== "todas" && produto?.familia_id !== familiaFilter) return false;
-      if (concorrenteFilter !== "todos" && mapeamento?.concorrente_id !== concorrenteFilter) {
-        return false;
-      }
+      if (familiaFilter !== "todas" && familiaId !== familiaFilter) return false;
+      if (concorrenteFilter !== "todos" && concorrenteId !== concorrenteFilter) return false;
       if (statusFilter === "sucesso" && row.status !== "sucesso") return false;
       if (statusFilter === "erro" && row.status !== "erro") return false;
       if (statusFilter === "mais-caros" && Number(row.diferenca_valor) <= 0) return false;
       if (statusFilter === "mais-baratos" && Number(row.diferenca_valor) >= 0) return false;
       if (q) {
-        const needle = q.toLowerCase();
+        const needle = normalizeSearch(q);
         if (
-          !produto?.nome.toLowerCase().includes(needle) &&
-          !produto?.sku_interno.toLowerCase().includes(needle) &&
-          !mapeamento?.sku_concorrente.toLowerCase().includes(needle)
+          !includesSearch(produto?.nome, needle) &&
+          !includesSearch(produto?.sku_interno, needle) &&
+          !includesSearch(mapeamento?.sku_concorrente, needle) &&
+          !includesSearch(mapeamento?.concorrentes?.nome, needle)
         ) {
           return false;
         }

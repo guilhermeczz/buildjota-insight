@@ -2,7 +2,7 @@ import { chromium } from "playwright";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { credentialsFor, resolveConcorrenteKey } from "./config.mjs";
-import { extractPrice } from "./extract-price.mjs";
+import { extractPrice, extractPriceNearTerms } from "./extract-price.mjs";
 
 const userAgent =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36";
@@ -154,6 +154,14 @@ async function login(page, concorrente) {
   );
 
   if (!loginFilled || !passwordFilled) {
+    if (resolveConcorrenteKey(concorrente.nome) === "COFEMA") {
+      await ensureConcorrentePreferences(page, concorrente).catch(() => false);
+      console.log(
+        "[COFEMA] Formulario de login nao identificado; tentando leitura com sessao/unidade atual.",
+      );
+      return;
+    }
+
     throw new Error(`Formulario de login nao identificado em ${concorrente.nome}`);
   }
 
@@ -194,6 +202,9 @@ async function openLoginSurface(page) {
     "a[role='button'][data-toggle='dropdown'][aria-haspopup='true']",
     "a[data-toggle='dropdown']:has(svg)",
     "#botao-login",
+    "a[href*='cliente' i]",
+    "button:has-text('Cliente')",
+    "a:has-text('Cliente')",
     "button:has-text('Entre ou cadastre-se')",
     "button:has-text('Faça login')",
     "button:has-text('Faca login')",
@@ -606,9 +617,12 @@ async function collectGroup(browser, group, options = {}) {
           throw new Error("Produto indisponivel no concorrente");
         }
 
-        const price = await extractPrice(page, mapping.seletor_preco, {
+        const priceOptions = {
           referencePrice: Number(mapping.produtos.preco_atual ?? 0),
-        });
+        };
+        const price =
+          (await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)) ??
+          (await extractPrice(page, mapping.seletor_preco, priceOptions));
 
         if (!price) {
           if (await isProductUnavailable(page)) {
@@ -677,6 +691,30 @@ async function reportProgress(options, message) {
   await options.onProgress(message).catch(() => null);
 }
 
+function priceSearchTerms(mapping) {
+  const terms = [
+    mapping.sku_concorrente,
+    mapping.produtos?.sku_interno,
+    mapping.produtos?.nome,
+    ...productNameVariants(mapping.produtos?.nome),
+  ];
+
+  return [...new Set(terms.map((term) => String(term ?? "").trim()).filter(Boolean))];
+}
+
+function productNameVariants(name) {
+  const normalized = normalizeText(String(name ?? ""));
+  if (!normalized) return [];
+
+  const withoutGenericUnits = normalized
+    .replace(/\b(lts?|litros?|un|und|unidade|balde|sache|gal[aã]o|galao)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const brandAndMeasure = normalized.match(/\bbianco\b.*?\b\d+(?:[,.]\d+)?\b/)?.[0];
+
+  return [withoutGenericUnits, brandAndMeasure].filter((term) => term && term.length >= 6);
+}
+
 async function waitForProductSignal(page) {
   await waitForActionableProductSignal(page);
   await page
@@ -714,8 +752,6 @@ async function waitForActionableProductSignal(page) {
 }
 
 async function isLoginRequired(page) {
-  if (await hasVisiblePasswordField(page)) return true;
-
   const text = await page
     .locator("body")
     .innerText({ timeout: 5000 })
@@ -724,6 +760,7 @@ async function isLoginRequired(page) {
 
   if (!normalized) return false;
   if (hasPriceLikeText(text)) return false;
+  if (await hasVisiblePasswordField(page)) return true;
 
   if (
     [

@@ -145,6 +145,8 @@ function baseSelect(table) {
       select h.*,
         json_build_object(
           'id', m.id,
+          'produto_id', m.produto_id,
+          'concorrente_id', m.concorrente_id,
           'sku_concorrente', m.sku_concorrente,
           'produtos', json_build_object(
             'id', p.id,

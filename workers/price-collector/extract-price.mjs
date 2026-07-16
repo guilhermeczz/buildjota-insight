@@ -154,6 +154,88 @@ export async function extractPrice(page, selector, options = {}) {
   return parseBRL(bodyText, { ...options, preferLast: true });
 }
 
+export async function extractPriceNearTerms(page, terms, options = {}) {
+  const normalizedTerms = [...new Set((terms ?? []).map(normalizeText).filter(Boolean))]
+    .filter(isUsefulSearchTerm)
+    .sort((a, b) => b.length - a.length);
+  if (normalizedTerms.length === 0) return null;
+
+  const candidates = await page
+    .evaluate((searchTerms) => {
+      const moneyPattern = /(?:R\$\s*)?\d{1,3}(?:\.\d{3})*,\d{2,3}/;
+      const normalize = (value) =>
+        String(value ?? "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+
+      const elements = [
+        ...document.querySelectorAll(
+          [
+            "article",
+            "li",
+            "tr",
+            "[class*='produto' i]",
+            "[class*='product' i]",
+            "[class*='item' i]",
+            "[class*='card' i]",
+            "[class*='col-' i]",
+            "div",
+          ].join(", "),
+        ),
+      ];
+
+      return elements
+        .filter((element) => element instanceof HTMLElement && visible(element))
+        .map((element) => {
+          const text = element.innerText || element.textContent || "";
+          const normalized = normalize(text);
+          const matchedTerm = searchTerms.find((term) => normalized.includes(term));
+          return {
+            text,
+            length: normalized.length,
+            matchedTerm: matchedTerm ?? "",
+            hasPrice: moneyPattern.test(text),
+          };
+        })
+        .filter((item) => item.matchedTerm && item.hasPrice && item.length <= 2000)
+        .sort((a, b) => {
+          const termDiff = b.matchedTerm.length - a.matchedTerm.length;
+          if (termDiff !== 0) return termDiff;
+          return a.length - b.length;
+        })
+        .slice(0, 12)
+        .map((item) => item.text);
+    }, normalizedTerms)
+    .catch(() => []);
+
+  for (const text of candidates) {
+    const parsed = parseBRL(text, { ...options, preferLast: true });
+    if (parsed) return parsed;
+  }
+
+  return null;
+}
+
+function isUsefulSearchTerm(term) {
+  if (!term) return false;
+  if (/^\d+$/.test(term)) return term.length >= 4;
+  if (/^(bianco|otto|baumgart|produto)$/.test(term)) return false;
+  return term.length >= 6;
+}
+
 async function parseLocatorPrice(page, selector, options) {
   const locator = page.locator(selector);
   const count = await locator.count().catch(() => 0);
