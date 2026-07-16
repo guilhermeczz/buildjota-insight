@@ -14,6 +14,8 @@ const actionTimeoutMs = envNumber("WORKER_ACTION_TIMEOUT_MS", 5000, 1000, 15000)
 const productSignalTimeoutMs = envNumber("WORKER_PRICE_SIGNAL_TIMEOUT_MS", 4500, 1000, 15000);
 const productSettleMs = envNumber("WORKER_PRODUCT_SETTLE_MS", 350, 0, 3000);
 const loginSettleMs = envNumber("WORKER_LOGIN_SETTLE_MS", 1200, 0, 5000);
+const cofemaBaseUrl = process.env.COFEMA_BASE_URL ?? "https://novo.cofema.com.br";
+const cofemaLoginUrl = process.env.COFEMA_LOGIN_URL ?? "/";
 const cofemaUnidade = process.env.COFEMA_UNIDADE ?? "SUMARE";
 const marestRegiao = process.env.MAREST_REGIAO ?? "SP";
 const megalesteRegiao = process.env.MEGALESTE_REGIAO ?? "SP";
@@ -63,6 +65,20 @@ function allowsPublicPriceRead(concorrente) {
   return false;
 }
 
+function isCofema(concorrente) {
+  return resolveConcorrenteKey(concorrente.nome) === "COFEMA";
+}
+
+function consultaTipo(concorrente) {
+  return String(concorrente.tipo_consulta ?? "URL")
+    .trim()
+    .toUpperCase();
+}
+
+function usesSearchFlow(concorrente) {
+  return consultaTipo(concorrente) === "BUSCA";
+}
+
 function absoluteUrl(value, fallbackBase) {
   if (!value) return fallbackBase;
   try {
@@ -72,7 +88,22 @@ function absoluteUrl(value, fallbackBase) {
   }
 }
 
+function cofemaUrl(value = "/", fallbackBase = cofemaBaseUrl) {
+  const url = new URL(value || "/", fallbackBase || cofemaBaseUrl);
+
+  if (/cofema\.com\.br$/i.test(url.hostname)) {
+    url.protocol = "https:";
+    url.hostname = new URL(cofemaBaseUrl).hostname;
+  }
+
+  return url.toString();
+}
+
 function productUrlForMapping(mapping, concorrente) {
+  if (isCofema(concorrente)) {
+    return cofemaUrl(mapping.url_produto || concorrente.site_url);
+  }
+
   if (resolveConcorrenteKey(concorrente.nome) === "MEGALESTE" && mapping.sku_concorrente) {
     return absoluteUrl(`/c/produto/${mapping.sku_concorrente}`, concorrente.site_url);
   }
@@ -81,6 +112,10 @@ function productUrlForMapping(mapping, concorrente) {
 }
 
 function loginUrlForConcorrente(concorrente) {
+  if (isCofema(concorrente)) {
+    return cofemaUrl(cofemaLoginUrl);
+  }
+
   if (resolveConcorrenteKey(concorrente.nome) === "MAREST") {
     return absoluteUrl("/login", concorrente.site_url);
   }
@@ -133,7 +168,7 @@ async function login(page, concorrente) {
     throw new Error(`Credenciais nao configuradas para ${concorrente.nome}`);
   }
 
-  if (resolveConcorrenteKey(concorrente.nome) === "COFEMA") {
+  if (isCofema(concorrente)) {
     await loginCofema(page, concorrente, credentials);
     return;
   }
@@ -187,7 +222,7 @@ async function login(page, concorrente) {
   );
 
   if (!loginFilled || !passwordFilled) {
-    if (resolveConcorrenteKey(concorrente.nome) === "COFEMA") {
+    if (isCofema(concorrente)) {
       await ensurePreferencesForRead(page, concorrente).catch(() => false);
       console.log(
         "[COFEMA] Formulario de login nao identificado; tentando leitura com sessao/unidade atual.",
@@ -250,6 +285,20 @@ async function loginCofema(page, concorrente, credentials) {
   const loginFilled = await fillFirstVisible(
     page,
     [
+      "[role='dialog'] input[placeholder*='código' i]",
+      "[role='dialog'] input[placeholder*='codigo' i]",
+      "[role='dialog'] input[placeholder*='CPF' i]",
+      "[role='dialog'] input[placeholder*='CNPJ' i]",
+      "[role='dialog'] input[name*='codigo' i]",
+      "[role='dialog'] input[name*='cpf' i]",
+      "[role='dialog'] input[name*='cnpj' i]",
+      "[role='dialog'] input[type='text']",
+      "[role='dialog'] input:not([type])",
+      ".modal input[placeholder*='código' i]",
+      ".modal input[placeholder*='codigo' i]",
+      ".modal input[placeholder*='CPF' i]",
+      ".modal input[placeholder*='CNPJ' i]",
+      ".modal input[type='text']",
       "#dialog-model input[name='login']",
       "#dialog-model input[id*='login' i]",
       "#dialog-model input[name*='usuario' i]",
@@ -264,6 +313,10 @@ async function loginCofema(page, concorrente, credentials) {
   const passwordFilled = await fillFirstVisible(
     page,
     [
+      "[role='dialog'] input[type='password']",
+      "[role='dialog'] input[placeholder*='senha' i]",
+      ".modal input[type='password']",
+      ".modal input[placeholder*='senha' i]",
       "#dialog-model input[name='senha']",
       "#dialog-model input[type='password']",
       "#dialog-model input[id*='senha' i]",
@@ -278,6 +331,10 @@ async function loginCofema(page, concorrente, credentials) {
   }
 
   const clicked = await clickFirstVisible(page, [
+    "[role='dialog'] button:has-text('Entrar')",
+    "[role='dialog'] button[type='submit']",
+    ".modal button:has-text('Entrar')",
+    ".modal button[type='submit']",
     "#dialog-model .btLogin",
     "#dialog-model button[type='submit']",
     "#dialog-model input[type='submit']",
@@ -303,8 +360,17 @@ async function loginCofema(page, concorrente, credentials) {
 
 async function openCofemaLoginModal(page) {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
+    if (await isCofemaLoginFormVisible(page)) return true;
+
     const clicked =
       (await clickFirstVisible(page, [
+        "button:has-text('Entre ou Cadastre-se')",
+        "a:has-text('Entre ou Cadastre-se')",
+        "[role='button']:has-text('Entre ou Cadastre-se')",
+        "button:has-text('Entre ou Cadastre')",
+        "a:has-text('Entre ou Cadastre')",
+        "[role='button']:has-text('Entre ou Cadastre')",
+        "button:has-text('Cadastre-se')",
         "#containerLogon a[data-logon='1']:has-text('Entre')",
         ".ContainerLogonAjax a[data-logon='1']:has-text('Entre')",
         "a[data-logon='1']:has-text('Entrar')",
@@ -315,29 +381,107 @@ async function openCofemaLoginModal(page) {
         "button[data-logon='1']",
       ])) || (await clickCofemaLoginByDom());
 
-    if (!clicked) {
-      await page.goto(`${page.url().split("?")[0]}?logon=open`, {
-        waitUntil: "domcontentloaded",
-        timeout: navigationTimeoutMs,
-      });
+    if (clicked) {
+      await page.waitForTimeout(350);
+      await clickCofemaAreaCliente(page);
     }
 
-    const visible = await page
-      .locator(
-        "#dialog-model input[name='login'], #dialog-model input[name='senha'], #dialog-model .btLogin",
-      )
-      .first()
-      .waitFor({ state: "visible", timeout: 8000 })
-      .then(
-        () => true,
-        () => false,
-      );
+    const visible = await waitForCofemaLoginForm(page);
 
     if (visible) return true;
     await page.waitForTimeout(600);
   }
 
   return false;
+}
+
+async function isCofemaLoginFormVisible(page) {
+  const passwordVisible = await page
+    .locator(
+      [
+        "[role='dialog'] input[type='password']",
+        ".modal input[type='password']",
+        "#dialog-model input[name='senha']",
+        "#dialog-model input[type='password']",
+        "input[placeholder*='senha' i]",
+      ].join(", "),
+    )
+    .first()
+    .isVisible()
+    .catch(() => false);
+
+  if (!passwordVisible) return false;
+
+  return (
+    (await pageHasText(page, [
+      /login do cliente/,
+      /digite seu codigo/,
+      /digite seu cod/,
+      /cpf ou cnpj/,
+      /digite sua senha/,
+    ])) || passwordVisible
+  );
+}
+
+async function waitForCofemaLoginForm(page) {
+  return page
+    .locator(
+      [
+        "[role='dialog'] input[type='password']",
+        ".modal input[type='password']",
+        "#dialog-model input[name='senha']",
+        "#dialog-model input[type='password']",
+        "input[placeholder*='senha' i]",
+      ].join(", "),
+    )
+    .first()
+    .waitFor({ state: "visible", timeout: 8000 })
+    .then(
+      () => true,
+      () => false,
+    );
+}
+
+async function clickCofemaAreaCliente(page) {
+  return (
+    (await clickExactText(page, /^(area|área)\s+do\s+cliente$/i).catch(() => false)) ||
+    (await clickFirstVisible(page, [
+      "[role='menuitem']:has-text('Área do Cliente')",
+      "[role='menuitem']:has-text('Area do Cliente')",
+      "button:has-text('Área do Cliente')",
+      "button:has-text('Area do Cliente')",
+      "a:has-text('Área do Cliente')",
+      "a:has-text('Area do Cliente')",
+      "li:has-text('Área do Cliente')",
+      "li:has-text('Area do Cliente')",
+    ])) ||
+    (await clickCofemaAreaClienteByDom(page))
+  );
+}
+
+async function clickCofemaAreaClienteByDom(page) {
+  return page
+    .evaluate(() => {
+      const normalize = (value) =>
+        String(value ?? "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+
+      const candidates = [
+        ...document.querySelectorAll("button, a, [role='menuitem'], li, div, span"),
+      ];
+      const label = "area do cliente";
+      const target = candidates.find((node) => normalize(node.textContent) === label);
+      const clickable = target?.closest("button, a, [role='menuitem'], li, div");
+
+      if (!(clickable instanceof HTMLElement)) return false;
+      clickable.click();
+      return true;
+    })
+    .catch(() => false);
 }
 
 async function clickCofemaLoginByDom(page) {
@@ -352,9 +496,12 @@ async function clickCofemaLoginByDom(page) {
           .toLowerCase();
 
       const candidates = [
-        ...document.querySelectorAll("a[data-logon='1'], button[data-logon='1']"),
+        ...document.querySelectorAll(
+          "a[data-logon='1'], button[data-logon='1'], button, a, [role='button']",
+        ),
       ];
       const target =
+        candidates.find((node) => normalize(node.textContent).includes("entre ou cadastre")) ??
         candidates.find((node) => normalize(node.textContent).includes("entre")) ??
         candidates.find((node) => normalize(node.textContent).includes("entrar")) ??
         candidates[0];
@@ -367,13 +514,45 @@ async function clickCofemaLoginByDom(page) {
 }
 
 async function isCofemaLoggedIn(page) {
+  if (await isCofemaLoginFormVisible(page)) return false;
+
   const userValue = await page
     .locator("input[name='user']")
     .first()
     .getAttribute("value", { timeout: 1000 })
     .catch(() => "");
 
-  return userValue === "true";
+  if (userValue === "true") return true;
+
+  const hasStoredAuth = await page
+    .evaluate(() => {
+      const hasAuthEntry = (storage) => {
+        if (!storage) return false;
+        return Object.entries(storage).some(([key, value]) => {
+          const name = String(key ?? "");
+          const content = String(value ?? "");
+          return (
+            /token|jwt|auth|cliente|customer|session|usuario|user/i.test(name) &&
+            content &&
+            !/^(false|null|undefined|\{\}|\[\])$/i.test(content)
+          );
+        });
+      };
+
+      return hasAuthEntry(window.localStorage) || hasAuthEntry(window.sessionStorage);
+    })
+    .catch(() => false);
+
+  if (hasStoredAuth) return true;
+
+  return pageHasText(page, [
+    /minha conta/,
+    /meus pedidos/,
+    /sair/,
+    /ola[, ]/,
+    /ol[aá][, ]/,
+    /bem vindo/,
+  ]);
 }
 
 async function clearCofemaLocalAuth(page) {
@@ -401,11 +580,7 @@ async function waitForCofemaLogin(page) {
       .catch(() => null);
     if (await isCofemaLoggedIn(page)) return true;
 
-    const modalHasPassword = await page
-      .locator("#dialog-model input[name='senha'], #dialog-model input[type='password']")
-      .first()
-      .isVisible()
-      .catch(() => false);
+    const modalHasPassword = await isCofemaLoginFormVisible(page);
     if (!modalHasPassword && (await isCofemaLoggedIn(page))) return true;
 
     await page.waitForTimeout(750);
@@ -551,6 +726,11 @@ async function configureRegionSelector(page, providerName, region) {
 }
 
 async function openProductPage(page, context, statePath, mapping, concorrente) {
+  if (usesSearchFlow(concorrente)) {
+    await openProductBySearch(page, context, statePath, mapping, concorrente);
+    return;
+  }
+
   const productUrl = productUrlForMapping(mapping, concorrente);
 
   await page.goto(productUrl, {
@@ -575,6 +755,365 @@ async function openProductPage(page, context, statePath, mapping, concorrente) {
     await waitForProductSignal(page);
   }
   if (productSettleMs > 0) await page.waitForTimeout(productSettleMs);
+}
+
+async function openProductBySearch(page, context, statePath, mapping, concorrente) {
+  const queries = searchQueriesForMapping(mapping);
+  if (queries.length === 0) {
+    throw new Error("Termo de busca do produto nao cadastrado");
+  }
+
+  const searchStartUrl = searchStartUrlForMapping(mapping, concorrente);
+  let lastError = null;
+
+  for (const query of queries) {
+    try {
+      await page.goto(searchStartUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: navigationTimeoutMs,
+      });
+
+      if (await ensurePreferencesForRead(page, concorrente)) {
+        await context.storageState({ path: statePath });
+        await page.goto(searchStartUrl, {
+          waitUntil: "domcontentloaded",
+          timeout: navigationTimeoutMs,
+        });
+      }
+
+      const searched = await submitSiteSearch(page, query);
+      const openedSearchPage =
+        searched || (await openSearchFallback(page, query, concorrente, mapping));
+      if (!openedSearchPage) {
+        lastError = new Error(`Busca nao retornou resultado para "${query}"`);
+        continue;
+      }
+
+      await waitForProductSignal(page);
+
+      if (!(await isExpectedProductPage(page, mapping))) {
+        await clickBestSearchResult(page, mapping);
+        await waitForProductSignal(page);
+      }
+
+      if (await ensurePreferencesForRead(page, concorrente)) {
+        await context.storageState({ path: statePath });
+        await waitForProductSignal(page);
+      }
+
+      if (productSettleMs > 0) await page.waitForTimeout(productSettleMs);
+
+      if (await isExpectedProductPage(page, mapping)) return;
+
+      lastError = new Error(`Produto nao confirmado na busca por "${query}"`);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw new Error(
+    lastError instanceof Error
+      ? `Produto nao encontrado na busca do concorrente: ${lastError.message}`
+      : "Produto nao encontrado na busca do concorrente",
+  );
+}
+
+async function openSearchFallback(page, query, concorrente, mapping) {
+  let lastError = null;
+
+  for (const url of searchUrlFallbacks(query, concorrente)) {
+    try {
+      await page.goto(url, {
+        waitUntil: "domcontentloaded",
+        timeout: navigationTimeoutMs,
+      });
+
+      await waitForProductSignal(page);
+      if (await hasSearchResultContent(page, query, mapping)) return true;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (lastError) throw lastError;
+  return false;
+}
+
+function searchQueriesForMapping(mapping) {
+  const supplierSku = cleanSearchQuery(mapping.sku_concorrente);
+  const productName = cleanSearchQuery(mapping.produtos?.nome);
+  const productVariants = productNameVariants(mapping.produtos?.nome).map(cleanSearchQuery);
+  const internalSku = cleanSearchQuery(mapping.produtos?.sku_interno);
+
+  const descriptionQueries = [productName, ...productVariants].filter(Boolean);
+  const rawQueries = supplierSku
+    ? [
+        ...(productName
+          ? [
+              `${supplierSku} ${productName}`,
+              `Codigo ${supplierSku} ${productName}`,
+              `Cod ${supplierSku} ${productName}`,
+            ]
+          : []),
+        ...descriptionQueries.map((description) => `${supplierSku} ${description}`),
+        `Codigo ${supplierSku}`,
+        `Codigo: ${supplierSku}`,
+        `Código ${supplierSku}`,
+        `Cod ${supplierSku}`,
+        `Cod: ${supplierSku}`,
+        supplierSku,
+        ...(internalSku && internalSku !== supplierSku ? [`${supplierSku} ${internalSku}`] : []),
+      ]
+    : [productName, ...productVariants, internalSku];
+
+  return [...new Set(rawQueries.map(cleanSearchQuery).filter((query) => query.length >= 2))];
+}
+
+function cleanSearchQuery(value) {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function searchStartUrlForMapping(mapping, concorrente) {
+  const fallback = isCofema(concorrente)
+    ? cofemaUrl(concorrente.site_url || "/")
+    : absoluteUrl(concorrente.site_url || concorrente.login_url || "/", concorrente.site_url);
+
+  if (usesSearchFlow(concorrente)) return fallback;
+  if (!mapping.url_produto) return fallback;
+
+  return isCofema(concorrente)
+    ? cofemaUrl(mapping.url_produto, fallback)
+    : absoluteUrl(mapping.url_produto, fallback);
+}
+
+function searchUrlFallbacks(query, concorrente) {
+  const encoded = encodeURIComponent(query);
+  const base = isCofema(concorrente)
+    ? cofemaUrl("/")
+    : absoluteUrl(concorrente.site_url || concorrente.login_url || "/", concorrente.site_url);
+
+  const host = new URL(base).hostname;
+  if (/marest/i.test(host)) {
+    return [
+      absoluteUrl(`/product?search=${encoded}`, base),
+      absoluteUrl(`/busca?search=${encoded}`, base),
+      absoluteUrl(`/busca?q=${encoded}`, base),
+    ];
+  }
+
+  if (/megaleste/i.test(host)) {
+    const urls = [
+      absoluteUrl(`/sp?q=${encoded}`, base),
+      absoluteUrl(`/sp?search=${encoded}`, base),
+      absoluteUrl(`/busca?q=${encoded}`, base),
+    ];
+    if (/^\d+$/.test(query)) urls.push(absoluteUrl(`/c/produto/${encoded}`, base));
+    return urls;
+  }
+
+  return [
+    absoluteUrl(`/busca?q=${encoded}`, base),
+    absoluteUrl(`/search?q=${encoded}`, base),
+    absoluteUrl(`/?q=${encoded}`, base),
+  ];
+}
+
+async function submitSiteSearch(page, query) {
+  const selectors = [
+    "input[type='search']",
+    "input[placeholder*='buscar' i]",
+    "input[placeholder*='pesquisar' i]",
+    "input[placeholder*='procura' i]",
+    "input[name*='search' i]",
+    "input[name*='busca' i]",
+    "input[id*='search' i]",
+    "input[id*='busca' i]",
+    "header input[type='text']",
+    "input[type='text']",
+  ];
+
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    const visible = await locator.isVisible().catch(() => false);
+    if (!visible) continue;
+
+    const beforeUrl = page.url();
+    await locator.fill(query, { timeout: actionTimeoutMs });
+    await Promise.all([
+      page.waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs }).catch(() => null),
+      locator.press("Enter").catch(() => null),
+    ]);
+    await page.waitForTimeout(700);
+
+    if (await hasSearchChanged(page, beforeUrl, query)) return true;
+
+    if (await clickSearchSubmit(page)) {
+      await page.waitForTimeout(900);
+      if (await hasSearchChanged(page, beforeUrl, query)) return true;
+    }
+  }
+
+  return false;
+}
+
+async function hasSearchChanged(page, beforeUrl, query) {
+  if (page.url() !== beforeUrl) return true;
+
+  const normalizedQuery = normalizeText(query);
+  const queryParts = normalizedQuery
+    .split(/[^a-z0-9,]+/)
+    .filter((part) => part.length >= 3 || /^\d+(?:[,.]\d+)?$/.test(part));
+  if (queryParts.length === 0) return true;
+
+  const text = await page
+    .locator("body")
+    .innerText({ timeout: 1500 })
+    .catch(() => "");
+  const normalizedText = normalizeText(text);
+  const matches = queryParts.filter((part) => normalizedText.includes(part)).length;
+
+  return matches >= Math.min(2, queryParts.length);
+}
+
+async function hasSearchResultContent(page, query, mapping) {
+  if (await isExpectedProductPage(page, mapping)) return true;
+
+  const text = await page
+    .locator("body")
+    .innerText({ timeout: 1500 })
+    .catch(() => "");
+  const normalizedText = normalizeText(text);
+  if (!/produto|resultado|r\$|preco|fora de estoque|indisponivel/.test(normalizedText)) {
+    return false;
+  }
+
+  const queryParts = normalizeText(query)
+    .split(/[^a-z0-9,]+/)
+    .filter((part) => part.length >= 3 || /^\d+(?:[,.]\d+)?$/.test(part));
+  if (queryParts.length === 0) return true;
+
+  const matches = queryParts.filter((part) => normalizedText.includes(part)).length;
+  return matches >= Math.min(2, queryParts.length);
+}
+
+async function clickSearchSubmit(page) {
+  return clickFirstVisible(page, [
+    "button[type='submit']:has-text('Buscar')",
+    "button[type='submit']:has-text('Pesquisar')",
+    "button[aria-label*='buscar' i]",
+    "button[aria-label*='pesquisar' i]",
+    "[role='button'][aria-label*='buscar' i]",
+    "[role='button'][aria-label*='pesquisar' i]",
+    "button:has-text('Buscar')",
+    "button:has-text('Pesquisar')",
+    "button[type='submit']",
+  ]);
+}
+
+async function clickBestSearchResult(page, mapping) {
+  const identity = productIdentity(mapping);
+  if (identity.codes.length === 0 && identity.terms.length === 0) return false;
+
+  const clicked = await page
+    .evaluate(({ codes, terms }) => {
+      const normalize = (value) =>
+        String(value ?? "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+
+      const hasCode = (text) => codes.some((code) => text.includes(code));
+      const matchedTerms = (text) => terms.filter((term) => text.includes(term));
+      const isGoodMatch = (text, matches) => {
+        if (codes.length > 0) return hasCode(text);
+        return matches.length >= Math.min(2, terms.length);
+      };
+
+      const nodes = [
+        ...document.querySelectorAll(
+          [
+            "a[href]",
+            "article",
+            "li",
+            "[class*='produto' i]",
+            "[class*='product' i]",
+            "[class*='item' i]",
+            "[class*='card' i]",
+          ].join(", "),
+        ),
+      ];
+
+      const scored = nodes
+        .filter((node) => node instanceof HTMLElement && visible(node))
+        .map((node) => {
+          const text = node.innerText || node.textContent || "";
+          const normalized = normalize(text);
+          const matches = matchedTerms(normalized);
+          const exactCodeScore = hasCode(normalized) ? 100 : 0;
+          const score = exactCodeScore + matches.reduce((sum, term) => sum + term.length, 0);
+          return { node, score, length: normalized.length, good: isGoodMatch(normalized, matches) };
+        })
+        .filter((item) => item.good && item.score > 0 && item.length <= 2500)
+        .sort((a, b) => b.score - a.score || a.length - b.length);
+
+      const target = scored[0]?.node;
+      if (!target) return false;
+
+      const clickable =
+        (target.matches("a[href]") ? target : null) ??
+        target.querySelector("a[href]") ??
+        target.closest("a[href]") ??
+        target.querySelector("button, [role='button']") ??
+        target.closest("button, [role='button']");
+      if (!(clickable instanceof HTMLElement)) return false;
+
+      clickable.click();
+      return true;
+    }, identity)
+    .catch(() => false);
+
+  if (!clicked) return false;
+
+  await page
+    .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
+    .catch(() => null);
+  await page.waitForTimeout(500);
+  return true;
+}
+
+async function isExpectedProductPage(page, mapping) {
+  const identity = productIdentity(mapping);
+  if (identity.codes.length === 0 && identity.terms.length === 0) return true;
+
+  const text = await page
+    .locator("body")
+    .innerText({ timeout: 2500 })
+    .catch(() => "");
+  const normalizedText = normalizeText(text);
+
+  if (identity.codes.some((code) => normalizedText.includes(code))) return true;
+  if (identity.terms.length === 0) return false;
+
+  const matchedTerms = identity.terms.filter((term) => normalizedText.includes(term));
+  const numericTerms = identity.terms.filter((term) => /^\d+(?:[,.]\d+)?[a-z]*$/.test(term));
+  const hasExpectedMeasure =
+    numericTerms.length === 0 || numericTerms.some((term) => normalizedText.includes(term));
+
+  return hasExpectedMeasure && matchedTerms.length >= Math.min(2, identity.terms.length);
 }
 
 async function pageHasText(page, patterns) {
@@ -824,7 +1363,7 @@ async function collectGroup(browser, group, options = {}) {
       const progressLabel = `[${group.concorrente.nome}] ${index + 1}/${group.mapeamentos.length} ${productLabel}`;
 
       try {
-        if (!mapping.url_produto) {
+        if (!usesSearchFlow(group.concorrente) && !mapping.url_produto) {
           throw new Error("URL do produto nao cadastrada");
         }
 
@@ -839,10 +1378,7 @@ async function collectGroup(browser, group, options = {}) {
           await openProductPage(page, context, statePath, mapping, group.concorrente);
         }
 
-        const cofemaSessionMissing =
-          resolveConcorrenteKey(group.concorrente.nome) === "COFEMA" &&
-          !(await isCofemaLoggedIn(page));
-        if (cofemaSessionMissing || (await isLoginRequired(page))) {
+        if (await isLoginRequired(page)) {
           throw new Error("Login nao confirmado; pagina ainda solicita autenticacao");
         }
 
@@ -856,6 +1392,10 @@ async function collectGroup(browser, group, options = {}) {
         const price =
           (await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)) ??
           (await extractPrice(page, mapping.seletor_preco, priceOptions));
+
+        if (await isProductUnavailable(page)) {
+          throw new Error("Produto indisponivel no concorrente");
+        }
 
         if (!price) {
           if (await isProductUnavailable(page)) {
@@ -935,6 +1475,34 @@ function priceSearchTerms(mapping) {
   return [...new Set(terms.map((term) => String(term ?? "").trim()).filter(Boolean))];
 }
 
+function productIdentity(mapping) {
+  const supplierSku = String(mapping.sku_concorrente ?? "").trim();
+  const fallbackSku = String(mapping.produtos?.sku_interno ?? "").trim();
+  const codes = codeCandidates(supplierSku || fallbackSku);
+  const productName = normalizeText(String(mapping.produtos?.nome ?? ""));
+  const nameTerms = productName
+    .split(/[^a-z0-9,]+/)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 3 || /^\d+(?:[,.]\d+)?$/.test(term))
+    .filter((term) => !/^(otto|baumgart|produto)$/.test(term));
+  const variantTerms = productNameVariants(mapping.produtos?.nome)
+    .flatMap((variant) => normalizeText(variant).split(/[^a-z0-9,]+/))
+    .filter((term) => term.length >= 3 || /^\d+(?:[,.]\d+)?$/.test(term));
+
+  return {
+    codes: [...new Set(codes)],
+    terms: [...new Set([...nameTerms, ...variantTerms])],
+  };
+}
+
+function codeCandidates(value) {
+  const normalized = normalizeText(String(value ?? ""));
+  const exact = /^\d{3,}$/.test(normalized) ? [normalized] : [];
+  const extracted = [...normalized.matchAll(/\d{3,}/g)].map((match) => match[0]);
+
+  return [...new Set([...exact, ...extracted])];
+}
+
 function productNameVariants(name) {
   const normalized = normalizeText(String(name ?? ""));
   if (!normalized) return [];
@@ -954,7 +1522,7 @@ async function waitForProductSignal(page) {
     .waitForFunction(
       () => {
         const text = document.body?.innerText ?? "";
-        return /R\$\s*\d|\d{1,3}(?:\.\d{3})*,\d{2,3}|indisponivel|indisponível|sem estoque|esgotado|login|cadastre-se|preco|preço/i.test(
+        return /R\$\s*\d|\d{1,3}(?:\.\d{3})*,\d{2,3}|indisponivel|indisponível|fora de estoque|sem estoque|esgotado|login|cadastre-se|preco|preço/i.test(
           text,
         );
       },
@@ -975,7 +1543,7 @@ async function waitForActionableProductSignal(page) {
           .trim()
           .toLowerCase();
 
-        return /R\$\s*\d|\d{1,3}(?:\.\d{3})*,\d{2,3}|indisponivel|sem estoque|esgotado|definir configuracoes|escolha uma regiao/.test(
+        return /R\$\s*\d|\d{1,3}(?:\.\d{3})*,\d{2,3}|indisponivel|fora de estoque|sem estoque|esgotado|definir configuracoes|escolha uma regiao/.test(
           normalized,
         );
       },
@@ -1006,6 +1574,10 @@ async function isLoginRequired(page) {
       /preco disponivel apenas para clientes/,
       /para visualizar os precos/,
       /voce precisa estar logado/,
+      /login do cliente/,
+      /digite seu codigo/,
+      /cpf ou cnpj/,
+      /digite sua senha/,
     ].some((pattern) => pattern.test(normalized))
   ) {
     return true;
@@ -1022,7 +1594,7 @@ async function isProductUnavailable(page) {
   const normalized = normalizeText(text);
 
   if (
-    /produto\s+indisponivel|item\s+indisponivel|indisponivel\s+no\s+momento|sem\s+estoque|produto\s+esgotado|avise-?me\s+quando\s+chegar/.test(
+    /fora\s+(?:de|do)\s+estoque|produto\s+indisponivel|item\s+indisponivel|indisponivel\s+no\s+momento|temporariamente\s+indisponivel|sem\s+estoque|produto\s+esgotado|esgotado|avise-?me\s+quando\s+chegar|aviseme\s+quando\s+chegar|produto\s+sob\s+consulta/.test(
       normalized,
     )
   ) {
@@ -1035,9 +1607,19 @@ async function isProductUnavailable(page) {
         "button:disabled:has-text('Comprar')",
         "button:disabled:has-text('Adicionar')",
         "button:disabled:has-text('Carrinho')",
+        "button:has-text('Fora de Estoque')",
+        "button:has-text('Fora do Estoque')",
+        "button:has-text('Indisponível')",
+        "button:has-text('Indisponivel')",
+        "button:has-text('Esgotado')",
         "[aria-disabled='true']:has-text('Comprar')",
         "[aria-disabled='true']:has-text('Adicionar')",
+        "[aria-disabled='true']:has-text('Fora de Estoque')",
         "[class*='indisponivel' i]",
+        "[class*='fora-estoque' i]",
+        "[class*='fora_de_estoque' i]",
+        "[class*='sem-estoque' i]",
+        "[class*='sem_estoque' i]",
         "[class*='unavailable' i]",
         "[class*='out-of-stock' i]",
       ].join(", "),
@@ -1082,15 +1664,13 @@ async function hasInvalidCredentialsMessage(page) {
     .innerText({ timeout: 5000 })
     .catch(() => "");
 
-  return /n[aã]o foi poss[ií]vel localizar seu cadastro|login e\/ou senha|senha inv[aá]lida|login inv[aá]lido/i.test(
+  return /n[aã]o foi poss[ií]vel localizar seu cadastro|login e\/ou senha|senha inv[aá]lida|login inv[aá]lido|usu[aá]rio ou senha|usuario ou senha|c[oó]digo.*inv[aá]lido|cpf.*inv[aá]lido|cnpj.*inv[aá]lido|credenciais inv[aá]lidas/i.test(
     text,
   );
 }
 
 async function shouldRetryLogin(page, mapping, concorrente) {
-  if (resolveConcorrenteKey(concorrente.nome) === "COFEMA" && !(await isCofemaLoggedIn(page))) {
-    return true;
-  }
+  if (isCofema(concorrente)) return isLoginRequired(page);
   if (await isLoginRequired(page)) return true;
 
   if (resolveConcorrenteKey(concorrente.nome) === "MEGALESTE") {

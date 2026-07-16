@@ -188,6 +188,7 @@ function normalize(row) {
       nome: row.concorrente_nome,
       site_url: row.site_url,
       login_url: row.login_url,
+      tipo_consulta: row.tipo_consulta ?? "URL",
       ativo: row.concorrente_ativo,
     },
   };
@@ -278,6 +279,7 @@ export async function fetchActiveMappings(_client, filters = {}) {
         c.nome as concorrente_nome,
         c.site_url,
         c.login_url,
+        c.tipo_consulta,
         c.ativo as concorrente_ativo
       from mapeamentos_sku m
       join produtos p on p.id = m.produto_id

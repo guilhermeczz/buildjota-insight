@@ -1,4 +1,7 @@
 const moneyPattern = /(?:R\$\s*)?(\d{1,3}(?:\.\d{3})*,\d{2,3})/g;
+const placeholderPricePattern = /R\$\s*[-–—]+(?:\s*[-–—]+|,\s*[-–—]+)*/i;
+const unavailableSignalPattern =
+  /fora\s+(?:de|do)\s+estoque|sem\s+estoque|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+chegar|aviseme\s+quando\s+chegar|produto\s+sob\s+consulta/;
 
 const priceHints = [
   { selector: "[itemprop='price']", preferLast: false },
@@ -33,6 +36,8 @@ const priceHints = [
 ];
 
 export function parseBRL(text, options = {}) {
+  if (shouldRejectText(text, options)) return null;
+
   const preferred = parsePreferredLabeledBRL(text, options);
   if (preferred) return preferred;
 
@@ -94,9 +99,19 @@ function parseMoney(value) {
 function selectPrice(values, options = {}) {
   const candidates = values.filter((value) => isPlausiblePrice(value, options));
   if (candidates.length === 0) return null;
+  if (options.requireSingle && candidates.length !== 1) return null;
 
   if (options.preferLargest) return Math.max(...candidates);
   return options.preferLast ? candidates[candidates.length - 1] : candidates[0];
+}
+
+function shouldRejectText(text, options = {}) {
+  if (options.allowUnavailableText) return false;
+
+  const normalized = normalizeText(String(text ?? ""));
+  if (!normalized) return false;
+  if (unavailableSignalPattern.test(normalized)) return true;
+  return placeholderPricePattern.test(String(text ?? ""));
 }
 
 function isPlausiblePrice(value, options = {}) {
@@ -151,7 +166,7 @@ export async function extractPrice(page, selector, options = {}) {
     .locator("body")
     .innerText({ timeout: 8000 })
     .catch(() => "");
-  return parseBRL(bodyText, { ...options, preferLast: true });
+  return parseBRL(bodyText, { ...options, preferLast: true, requireSingle: true });
 }
 
 export async function extractPriceNearTerms(page, terms, options = {}) {
@@ -163,6 +178,9 @@ export async function extractPriceNearTerms(page, terms, options = {}) {
   const candidates = await page
     .evaluate((searchTerms) => {
       const moneyPattern = /(?:R\$\s*)?\d{1,3}(?:\.\d{3})*,\d{2,3}/;
+      const placeholderPricePattern = /R\$\s*[-–—]+(?:\s*[-–—]+|,\s*[-–—]+)*/i;
+      const unavailableSignalPattern =
+        /fora\s+(?:de|do)\s+estoque|sem\s+estoque|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+chegar|aviseme\s+quando\s+chegar|produto\s+sob\s+consulta/;
       const normalize = (value) =>
         String(value ?? "")
           .normalize("NFD")
@@ -208,9 +226,13 @@ export async function extractPriceNearTerms(page, terms, options = {}) {
             length: normalized.length,
             matchedTerm: matchedTerm ?? "",
             hasPrice: moneyPattern.test(text),
+            unavailable:
+              unavailableSignalPattern.test(normalized) || placeholderPricePattern.test(text),
           };
         })
-        .filter((item) => item.matchedTerm && item.hasPrice && item.length <= 2000)
+        .filter(
+          (item) => item.matchedTerm && item.hasPrice && !item.unavailable && item.length <= 2000,
+        )
         .sort((a, b) => {
           const termDiff = b.matchedTerm.length - a.matchedTerm.length;
           if (termDiff !== 0) return termDiff;
@@ -252,6 +274,39 @@ async function parseLocatorPrice(page, selector, options) {
           element?.getAttribute("data-preco") ??
           "";
         const fallback = element?.innerText ?? node.textContent ?? "";
+        const normalize = (value) =>
+          String(value ?? "")
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .toLowerCase();
+        const placeholderPricePattern = /R\$\s*[-–—]+(?:\s*[-–—]+|,\s*[-–—]+)*/i;
+        const unavailableSignalPattern =
+          /fora\s+(?:de|do)\s+estoque|sem\s+estoque|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+chegar|aviseme\s+quando\s+chegar|produto\s+sob\s+consulta/;
+
+        const isVisible = (target) => {
+          if (!target || target instanceof HTMLMetaElement) return true;
+          const style = window.getComputedStyle(target);
+          const rect = target.getBoundingClientRect();
+          return (
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            rect.width > 0 &&
+            rect.height > 0
+          );
+        };
+        const rootClassAndId = `${element?.className ?? ""} ${element?.id ?? ""}`;
+        const rootStyle = element ? window.getComputedStyle(element) : null;
+        const rootIsOldPrice =
+          Boolean(rootStyle && /line-through/.test(rootStyle.textDecorationLine)) ||
+          /(preco[-_ ]?de|precoantigo|old[-_ ]?price|valor[-_ ]?de|riscado|strike)/i.test(
+            rootClassAndId,
+          );
+
+        if (element && !content && (!isVisible(element) || rootIsOldPrice)) {
+          return { preferred: "", fallback: "" };
+        }
 
         const isOldPriceNode = (target) => {
           let current = target instanceof Element ? target : target.parentElement;
@@ -278,19 +333,37 @@ async function parseLocatorPrice(page, selector, options) {
           if (!isOldPriceNode(textNode)) textNodes.push(textNode.textContent ?? "");
         }
 
-        return {
-          preferred: `${content} ${textNodes.join(" ")}`.trim(),
-          fallback: `${content} ${fallback}`.trim(),
-        };
+        const preferred = `${content} ${textNodes.join(" ")}`.trim();
+        const fallbackText = `${content} ${fallback}`.trim();
+        const combinedText = `${preferred} ${fallbackText}`;
+
+        if (
+          placeholderPricePattern.test(combinedText) ||
+          unavailableSignalPattern.test(normalize(combinedText))
+        ) {
+          return { preferred: "", fallback: "" };
+        }
+
+        return { preferred, fallback: fallbackText };
       }),
     )
     .catch(() => []);
 
-  const preferred = priceTexts
+  const filteredPriceTexts = priceTexts.filter((item) => {
+    const text = `${item.preferred ?? ""} ${item.fallback ?? ""}`;
+    const normalized = normalizeText(text);
+    return (
+      text.trim() &&
+      !placeholderPricePattern.test(text) &&
+      !unavailableSignalPattern.test(normalized)
+    );
+  });
+
+  const preferred = filteredPriceTexts
     .map((item) => item.preferred)
     .filter(Boolean)
     .join(" ");
-  const fallback = priceTexts
+  const fallback = filteredPriceTexts
     .map((item) => item.fallback)
     .filter(Boolean)
     .join(" ");
