@@ -306,6 +306,22 @@ export async function createExecution(totalProcessados, options = {}) {
   return { id: rows[0].id, startedAt };
 }
 
+export async function updateExecutionPlan(executionId, totalProcessados, message) {
+  if (!executionId) return;
+
+  await query(
+    `update execucoes_robo
+     set total_processados = $1,
+         mensagem = $2
+     where id = $3 and status = 'pendente'`,
+    [
+      Number(totalProcessados ?? 0),
+      String(message ?? "Coleta iniciada.").slice(0, 500),
+      executionId,
+    ],
+  );
+}
+
 export async function markExecutionFailed(execution, error) {
   if (!execution?.id) return;
 

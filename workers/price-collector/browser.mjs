@@ -59,6 +59,10 @@ function isAuthStateError(error) {
   );
 }
 
+function allowsPublicPriceRead(concorrente) {
+  return false;
+}
+
 function absoluteUrl(value, fallbackBase) {
   if (!value) return fallbackBase;
   try {
@@ -184,7 +188,7 @@ async function login(page, concorrente) {
 
   if (!loginFilled || !passwordFilled) {
     if (resolveConcorrenteKey(concorrente.nome) === "COFEMA") {
-      await ensureConcorrentePreferences(page, concorrente).catch(() => false);
+      await ensurePreferencesForRead(page, concorrente).catch(() => false);
       console.log(
         "[COFEMA] Formulario de login nao identificado; tentando leitura com sessao/unidade atual.",
       );
@@ -233,14 +237,14 @@ async function loginCofema(page, concorrente, credentials) {
   await dismissOverlays(page);
 
   if (await isCofemaLoggedIn(page)) {
-    await ensureConcorrentePreferences(page, concorrente);
+    await ensurePreferencesForRead(page, concorrente);
     return;
   }
   await clearCofemaLocalAuth(page);
 
   const opened = await openCofemaLoginModal(page);
   if (!opened) {
-    throw new Error("Formulario de login nao identificado em COFEMA");
+    throw new Error("Formulario de login da COFEMA nao abriu");
   }
 
   const loginFilled = await fillFirstVisible(
@@ -270,7 +274,7 @@ async function loginCofema(page, concorrente, credentials) {
   );
 
   if (!loginFilled || !passwordFilled) {
-    throw new Error("Formulario de login nao identificado em COFEMA");
+    throw new Error("Campos de login da COFEMA nao foram identificados");
   }
 
   const clicked = await clickFirstVisible(page, [
@@ -294,7 +298,7 @@ async function loginCofema(page, concorrente, credentials) {
     throw new Error("Login nao confirmado em COFEMA");
   }
 
-  await ensureConcorrentePreferences(page, concorrente);
+  await ensurePreferencesForRead(page, concorrente);
 }
 
 async function openCofemaLoginModal(page) {
@@ -461,6 +465,20 @@ async function ensureConcorrentePreferences(page, concorrente) {
   return false;
 }
 
+async function ensurePreferencesForRead(page, concorrente) {
+  try {
+    return await ensureConcorrentePreferences(page, concorrente);
+  } catch (error) {
+    if (!allowsPublicPriceRead(concorrente)) throw error;
+
+    console.log(
+      `[${concorrente.nome}] Preferencia do site nao confirmou; seguindo leitura publica.`,
+    );
+    await closeVisibleDialog(page).catch(() => false);
+    return false;
+  }
+}
+
 async function configureCofema(page) {
   if (!(await isCofemaPromptVisible(page))) return false;
 
@@ -540,19 +558,19 @@ async function openProductPage(page, context, statePath, mapping, concorrente) {
     timeout: navigationTimeoutMs,
   });
 
-  if (await ensureConcorrentePreferences(page, concorrente)) {
+  if (await ensurePreferencesForRead(page, concorrente)) {
     await context.storageState({ path: statePath });
     await page.goto(productUrl, {
       waitUntil: "domcontentloaded",
       timeout: navigationTimeoutMs,
     });
-    if (await ensureConcorrentePreferences(page, concorrente)) {
+    if (await ensurePreferencesForRead(page, concorrente)) {
       await context.storageState({ path: statePath });
     }
   }
 
   await waitForProductSignal(page);
-  if (await ensureConcorrentePreferences(page, concorrente)) {
+  if (await ensurePreferencesForRead(page, concorrente)) {
     await context.storageState({ path: statePath });
     await waitForProductSignal(page);
   }
@@ -794,7 +812,7 @@ async function collectGroup(browser, group, options = {}) {
 
     if (!existsSync(statePath)) {
       await login(page, group.concorrente);
-      await ensureConcorrentePreferences(page, group.concorrente);
+      await ensurePreferencesForRead(page, group.concorrente);
       await context.storageState({ path: statePath });
     }
 
@@ -816,12 +834,15 @@ async function collectGroup(browser, group, options = {}) {
         if (await shouldRetryLogin(page, mapping, group.concorrente)) {
           await resetAuthState(context, page, statePath, group.concorrente, "login vencido");
           await login(page, group.concorrente);
-          await ensureConcorrentePreferences(page, group.concorrente);
+          await ensurePreferencesForRead(page, group.concorrente);
           await context.storageState({ path: statePath });
           await openProductPage(page, context, statePath, mapping, group.concorrente);
         }
 
-        if (await isLoginRequired(page)) {
+        const cofemaSessionMissing =
+          resolveConcorrenteKey(group.concorrente.nome) === "COFEMA" &&
+          !(await isCofemaLoggedIn(page));
+        if (cofemaSessionMissing || (await isLoginRequired(page))) {
           throw new Error("Login nao confirmado; pagina ainda solicita autenticacao");
         }
 
@@ -1067,6 +1088,9 @@ async function hasInvalidCredentialsMessage(page) {
 }
 
 async function shouldRetryLogin(page, mapping, concorrente) {
+  if (resolveConcorrenteKey(concorrente.nome) === "COFEMA" && !(await isCofemaLoggedIn(page))) {
+    return true;
+  }
   if (await isLoginRequired(page)) return true;
 
   if (resolveConcorrenteKey(concorrente.nome) === "MEGALESTE") {

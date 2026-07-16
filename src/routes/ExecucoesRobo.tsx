@@ -27,6 +27,7 @@ import { toast } from "sonner";
 
 const WORKER_REQUEST_TIMEOUT_MS = 12000;
 const WORKER_HEALTH_INTERVAL_MS = 5000;
+const RECENT_PENDING_EXECUTION_MS = 2 * 60 * 1000;
 
 type Execucao = {
   id: string;
@@ -378,16 +379,11 @@ export default function ExecucoesRobo() {
     }
   }
 
-  async function retryFailedMappings(execucao?: Execucao) {
+  async function retryFailedMappings() {
     setRetryingErrors(true);
 
     try {
       const body: Record<string, unknown> = { failedOnly: true };
-      if (execucao) {
-        body.failedSince = execucao.iniciado_em;
-        body.failedUntil = execucao.finalizado_em ?? new Date().toISOString();
-      }
-
       const result = await requestWorkerRun(triggerUrl, body);
       const currentRun = result.currentRun as WorkerRun | undefined;
 
@@ -404,8 +400,8 @@ export default function ExecucoesRobo() {
         tempo_execucao_segundos: 0,
       });
       toast.success("Reprocessamento dos erros iniciado");
-      await refreshExecucoes();
       await refreshWorkerHealth();
+      await refreshExecucoes();
     } catch (error) {
       toast.error(
         error instanceof Error
@@ -432,22 +428,6 @@ export default function ExecucoesRobo() {
     );
   }
 
-  function isRetryExecution(execucao: Execucao) {
-    return /filtro:\s*erros|refazendo coletas com erro/i.test(execucao.mensagem);
-  }
-
-  const latestRetryAt = execucoes.filter(isRetryExecution).reduce((latest, execucao) => {
-    const startedAt = toTimestamp(execucao.iniciado_em);
-    return Math.max(latest, startedAt);
-  }, 0);
-
-  function retryAlreadyRequested(execucao: Execucao) {
-    if (!latestRetryAt) return false;
-    return toTimestamp(execucao.iniciado_em) <= latestRetryAt;
-  }
-
-  const dbCurrentExecution =
-    execucoes.find((execucao) => execucao.status === "pendente" || !execucao.finalizado_em) ?? null;
   const healthExecution =
     workerHealth?.running && workerHealth.currentRun
       ? ({
@@ -463,6 +443,22 @@ export default function ExecucoesRobo() {
           tempo_execucao_segundos: 0,
         } satisfies Execucao)
       : null;
+
+  function isActiveDbExecution(execucao: Execucao) {
+    if (execucao.finalizado_em && execucao.status !== "pendente") return false;
+
+    const startedAt = toTimestamp(execucao.iniciado_em);
+    if (!startedAt) return false;
+
+    const currentRunStartedAt = toTimestamp(workerHealth?.currentRun?.startedAt);
+    if (workerHealth?.running === true && currentRunStartedAt) {
+      return startedAt >= currentRunStartedAt - 60_000;
+    }
+
+    return Date.now() - startedAt <= RECENT_PENDING_EXECUTION_MS;
+  }
+
+  const dbCurrentExecution = execucoes.find(isActiveDbExecution) ?? null;
   const syntheticExecution = pendingExecucao ?? (!dbCurrentExecution ? healthExecution : null);
   const currentExecution = pendingExecucao ?? dbCurrentExecution ?? healthExecution ?? null;
   const latestFailedExecution =
@@ -601,13 +597,11 @@ export default function ExecucoesRobo() {
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => retryFailedMappings(execucao)}
-                            disabled={
-                              workerBusy || retryingErrors || retryAlreadyRequested(execucao)
-                            }
+                            onClick={() => retryFailedMappings()}
+                            disabled={workerBusy || retryingErrors}
                           >
                             <RotateCcw className="mr-1 h-4 w-4" />
-                            {retryAlreadyRequested(execucao) ? "Já refeito" : "Refazer erros"}
+                            Refazer erros
                           </Button>
                         )}
                       </TableCell>
@@ -723,7 +717,7 @@ export default function ExecucoesRobo() {
               <Button
                 className="w-full"
                 variant="outline"
-                onClick={() => retryFailedMappings(latestFailedExecution ?? undefined)}
+                onClick={() => retryFailedMappings()}
                 disabled={workerBusy || retryingErrors || !latestFailedExecution}
               >
                 {retryingErrors ? (

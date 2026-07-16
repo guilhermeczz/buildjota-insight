@@ -4,10 +4,14 @@ import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { resolve } from "node:path";
 import { loadWorkerEnv } from "./env.mjs";
-import { ensureRuntimeSchema } from "./database.mjs";
-import { query } from "../../server/db.mjs";
 
 loadWorkerEnv();
+
+// Both modules create/use the database pool during initialization.
+const [{ ensureRuntimeSchema }, { query }] = await Promise.all([
+  import("./database.mjs"),
+  import("../../server/db.mjs"),
+]);
 
 const port = Number(process.env.WORKER_TRIGGER_PORT ?? 8787);
 let running = false;
@@ -281,11 +285,11 @@ const server = createServer(async (req, res) => {
       args.push("--failed-only");
     }
 
-    if (typeof body.failedSince === "string" && body.failedSince) {
+    if (body.failedOnly !== true && typeof body.failedSince === "string" && body.failedSince) {
       args.push(`--failed-since=${body.failedSince}`);
     }
 
-    if (typeof body.failedUntil === "string" && body.failedUntil) {
+    if (body.failedOnly !== true && typeof body.failedUntil === "string" && body.failedUntil) {
       args.push(`--failed-until=${body.failedUntil}`);
     }
 

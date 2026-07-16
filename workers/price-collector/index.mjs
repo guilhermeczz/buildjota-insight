@@ -1,16 +1,23 @@
 import { loadWorkerEnv } from "./env.mjs";
-import { collectPricesByBrowser } from "./browser.mjs";
-import {
+
+loadWorkerEnv();
+
+// These modules initialize runtime settings and the database pool on import.
+// Load them only after all worker environment files have been applied.
+const [{ collectPricesByBrowser }, databaseModule] = await Promise.all([
+  import("./browser.mjs"),
+  import("./database.mjs"),
+]);
+const {
   createDatabaseClient,
   createExecution,
   ensureRuntimeSchema,
   fetchActiveMappings,
   markExecutionFailed,
   registerResults,
+  updateExecutionPlan,
   updateExecutionProgress,
-} from "./database.mjs";
-
-loadWorkerEnv();
+} = databaseModule;
 
 const args = new Set(process.argv.slice(2));
 const dryRun = args.has("--dry-run");
@@ -77,88 +84,100 @@ async function main() {
   const origem = scheduled ? "agendado" : originArg || "worker";
   const database = createDatabaseClient();
   await ensureRuntimeSchema();
-  const mapeamentos = await fetchActiveMappings(database, {
-    produtoId,
-    familiaId,
-    mapeamentoId,
-    failedOnly,
-    failedSince,
-    failedUntil,
-  });
-
-  if (mapeamentos.length === 0) {
-    console.log("Nenhum mapeamento ativo encontrado.");
-    if (!dryRun) {
-      const response = await registerResults(
-        [],
-        `Nenhum mapeamento ativo encontrado.${filterLabel()}`,
-        { origem, agendaId },
-      );
-      console.log(`Execucao registrada: ${response.id} (${response.status}).`);
-    }
-    return;
-  }
-
-  const groups = groupByConcorrente(mapeamentos);
   const execution = dryRun
     ? null
-    : await createExecution(mapeamentos.length, {
+    : await createExecution(0, {
         origem,
-        mensagem: `Coleta iniciada: ${mapeamentos.length} mapeamento(s).${filterLabel()}`,
+        mensagem: failedOnly
+          ? "Preparando reprocessamento dos erros..."
+          : "Preparando coleta manual...",
       });
-  let lastProgressAt = 0;
-  const reportProgress = async (message) => {
-    if (!execution) return;
-    const now = Date.now();
-    if (now - lastProgressAt < 5000) return;
-    lastProgressAt = now;
-    await updateExecutionProgress(execution.id, message);
-  };
 
-  console.log(
-    `Iniciando coleta: ${mapeamentos.length} mapeamento(s), ${groups.length} concorrente(s).`,
-  );
-
-  let resultados;
   try {
-    resultados = await collectPricesByBrowser(groups, {
+    const mapeamentos = await fetchActiveMappings(database, {
+      produtoId,
+      familiaId,
+      mapeamentoId,
+      failedOnly,
+      failedSince,
+      failedUntil,
+    });
+    await updateExecutionPlan(
+      execution?.id,
+      mapeamentos.length,
+      `Coleta iniciada: ${mapeamentos.length} mapeamento(s).${filterLabel()}`,
+    );
+
+    if (mapeamentos.length === 0) {
+      console.log("Nenhum mapeamento ativo encontrado.");
+      if (!dryRun) {
+        const response = await registerResults(
+          [],
+          `Nenhum mapeamento ativo encontrado.${filterLabel()}`,
+          {
+            origem,
+            agendaId,
+            executionId: execution?.id,
+            startedAt: execution?.startedAt,
+          },
+        );
+        console.log(`Execucao registrada: ${response.id} (${response.status}).`);
+      }
+      return;
+    }
+
+    const groups = groupByConcorrente(mapeamentos);
+    let lastProgressAt = 0;
+    const reportProgress = async (message) => {
+      if (!execution) return;
+      const now = Date.now();
+      if (now - lastProgressAt < 5000) return;
+      lastProgressAt = now;
+      await updateExecutionProgress(execution.id, message);
+    };
+
+    console.log(
+      `Iniciando coleta: ${mapeamentos.length} mapeamento(s), ${groups.length} concorrente(s).`,
+    );
+
+    const resultados = await collectPricesByBrowser(groups, {
       headed,
       concurrency,
       onProgress: reportProgress,
     });
+
+    const summary = summarize(resultados);
+    const durationStart = execution?.startedAt ?? startedAt;
+    const durationSeconds = Math.round((Date.now() - durationStart.getTime()) / 1000);
+
+    console.log(
+      `Coleta finalizada em ${durationSeconds}s: ${summary.totalSucesso} sucesso(s), ${summary.totalErro} erro(s).`,
+    );
+
+    if (dryRun) {
+      console.log(JSON.stringify(resultados, null, 2));
+      console.log("Dry run: nenhum dado foi gravado no banco.");
+      return;
+    }
+
+    const response = await registerResults(
+      resultados,
+      `Worker finalizado: ${summary.totalSucesso} sucesso(s), ${summary.totalErro} erro(s).${filterLabel()}`,
+      {
+        origem,
+        agendaId,
+        executionId: execution?.id,
+        startedAt: execution?.startedAt,
+      },
+    );
+
+    console.log(`Execucao registrada: ${response.id} (${response.status}).`);
   } catch (error) {
     if (execution) {
       await markExecutionFailed(execution, error);
     }
     throw error;
   }
-
-  const summary = summarize(resultados);
-  const durationStart = execution?.startedAt ?? startedAt;
-  const durationSeconds = Math.round((Date.now() - durationStart.getTime()) / 1000);
-
-  console.log(
-    `Coleta finalizada em ${durationSeconds}s: ${summary.totalSucesso} sucesso(s), ${summary.totalErro} erro(s).`,
-  );
-
-  if (dryRun) {
-    console.log(JSON.stringify(resultados, null, 2));
-    console.log("Dry run: nenhum dado foi gravado no banco.");
-    return;
-  }
-
-  const response = await registerResults(
-    resultados,
-    `Worker finalizado: ${summary.totalSucesso} sucesso(s), ${summary.totalErro} erro(s).${filterLabel()}`,
-    {
-      origem,
-      agendaId,
-      executionId: execution?.id,
-      startedAt: execution?.startedAt,
-    },
-  );
-
-  console.log(`Execucao registrada: ${response.id} (${response.status}).`);
 }
 
 main().catch((error) => {
