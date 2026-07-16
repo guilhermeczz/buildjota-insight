@@ -197,7 +197,14 @@ export async function fetchActiveMappings(_client, filters = {}) {
   const values = [];
   const clauses = ["m.ativo = true", "p.ativo = true", "c.ativo = true"];
   values.push(allowedConcorrenteNames);
-  clauses.push(`upper(trim(c.nome)) = any($${values.length}::text[])`);
+  clauses.push(`
+    exists (
+      select 1
+      from unnest($${values.length}::text[]) as allowed(nome)
+      where upper(trim(c.nome)) = allowed.nome
+         or upper(trim(c.nome)) like allowed.nome || ' %'
+    )
+  `);
 
   if (filters.mapeamentoId) {
     values.push(filters.mapeamentoId);
@@ -212,22 +219,44 @@ export async function fetchActiveMappings(_client, filters = {}) {
     clauses.push(`p.familia_id = $${values.length}`);
   }
   if (filters.failedOnly) {
-    clauses.push(`
-      (
-        m.status_coleta = 'erro'
-        or exists (
+    if (filters.failedSince || filters.failedUntil) {
+      const failedClauses = ["h.mapeamento_id = m.id", "h.status = 'erro'"];
+
+      if (filters.failedSince) {
+        values.push(filters.failedSince);
+        failedClauses.push(`h.coletado_em >= $${values.length}`);
+      }
+
+      if (filters.failedUntil) {
+        values.push(filters.failedUntil);
+        failedClauses.push(`h.coletado_em <= $${values.length}`);
+      }
+
+      clauses.push(`
+        exists (
           select 1
           from historico_precos h
-          where h.mapeamento_id = m.id
-            and h.status = 'erro'
-            and h.coletado_em = (
-              select max(h2.coletado_em)
-              from historico_precos h2
-              where h2.mapeamento_id = m.id
-            )
+          where ${failedClauses.join(" and ")}
         )
-      )
-    `);
+      `);
+    } else {
+      clauses.push(`
+        (
+          m.status_coleta = 'erro'
+          or exists (
+            select 1
+            from historico_precos h
+            where h.mapeamento_id = m.id
+              and h.status = 'erro'
+              and h.coletado_em = (
+                select max(h2.coletado_em)
+                from historico_precos h2
+                where h2.mapeamento_id = m.id
+              )
+          )
+        )
+      `);
+    }
   }
 
   const { rows } = await query(

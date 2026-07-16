@@ -12,6 +12,7 @@ loadWorkerEnv();
 const port = Number(process.env.WORKER_TRIGGER_PORT ?? 8787);
 let running = false;
 let runtimeSchemaPromise = null;
+let currentRun = null;
 const workerDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(workerDir, "../..");
 const workerEntry = resolve(workerDir, "index.mjs");
@@ -36,7 +37,32 @@ function sendJson(res, statusCode, body) {
   res.end(JSON.stringify(body));
 }
 
-function runWorkerWithArgs(extraArgs) {
+function createRunInfo(kind, args, message) {
+  return {
+    id: `${kind}-${Date.now()}`,
+    kind,
+    args,
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    message,
+  };
+}
+
+function updateRunMessage(runInfo, text) {
+  if (!runInfo) return;
+
+  const lines = String(text)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const message = lines.at(-1);
+  if (!message) return;
+
+  runInfo.message = message.slice(0, 500);
+  runInfo.updatedAt = new Date().toISOString();
+}
+
+function runWorkerWithArgs(extraArgs, runInfo = currentRun) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(process.execPath, [workerEntry, ...extraArgs], {
       cwd: projectRoot,
@@ -50,12 +76,14 @@ function runWorkerWithArgs(extraArgs) {
     child.stdout.on("data", (chunk) => {
       const text = chunk.toString();
       stdout += text;
+      updateRunMessage(runInfo, text);
       process.stdout.write(text);
     });
 
     child.stderr.on("data", (chunk) => {
       const text = chunk.toString();
       stderr += text;
+      updateRunMessage(runInfo, text);
       process.stderr.write(text);
     });
 
@@ -160,6 +188,11 @@ async function runDueSchedule() {
     `--concurrency=${Math.max(1, Math.min(4, Number(schedule.concorrencia_maxima || 1)))}`,
     "--scheduled",
   ];
+  currentRun = createRunInfo(
+    "agendado",
+    args,
+    `Coleta agendada iniciada: ${schedule.familia_nome}.`,
+  );
 
   console.log(
     `Coleta agendada iniciada: ${schedule.familia_nome} (${String(schedule.horario).slice(0, 5)}).`,
@@ -167,7 +200,7 @@ async function runDueSchedule() {
 
   try {
     await markScheduleStarted(schedule.id);
-    const result = await runWorkerWithArgs(args);
+    const result = await runWorkerWithArgs(args, currentRun);
     if (/Nenhum mapeamento ativo encontrado/i.test(result.stdout)) {
       await markScheduleResult(schedule.id, "sucesso");
     }
@@ -177,6 +210,7 @@ async function runDueSchedule() {
     console.error(message);
   } finally {
     running = false;
+    currentRun = null;
   }
 }
 
@@ -200,7 +234,13 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.method === "GET" && req.url === "/health") {
-    sendJson(res, 200, { ok: true, running, scheduleTimezone, local: localParts(new Date()) });
+    sendJson(res, 200, {
+      ok: true,
+      running,
+      currentRun,
+      scheduleTimezone,
+      local: localParts(new Date()),
+    });
     return;
   }
 
@@ -241,16 +281,31 @@ const server = createServer(async (req, res) => {
       args.push("--failed-only");
     }
 
+    if (typeof body.failedSince === "string" && body.failedSince) {
+      args.push(`--failed-since=${body.failedSince}`);
+    }
+
+    if (typeof body.failedUntil === "string" && body.failedUntil) {
+      args.push(`--failed-until=${body.failedUntil}`);
+    }
+
     args.push("--origin=manual");
 
-    sendJson(res, 202, { ok: true, status: "buscando" });
+    currentRun = createRunInfo(
+      body.failedOnly === true ? "refazer-erros" : "manual",
+      args,
+      body.failedOnly === true ? "Refazendo coletas com erro..." : "Coleta manual iniciada.",
+    );
 
-    runWorkerWithArgs(args)
+    sendJson(res, 202, { ok: true, status: "buscando", currentRun });
+
+    runWorkerWithArgs(args, currentRun)
       .catch((error) => {
         console.error(error instanceof Error ? error.message : error);
       })
       .finally(() => {
         running = false;
+        currentRun = null;
       });
   } catch (error) {
     running = false;

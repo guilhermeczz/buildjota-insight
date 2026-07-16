@@ -22,6 +22,8 @@ const produtoId = argValue("--produto-id");
 const familiaId = argValue("--familia-id");
 const mapeamentoId = argValue("--mapeamento-id");
 const agendaId = argValue("--agenda-id");
+const failedSince = argValue("--failed-since");
+const failedUntil = argValue("--failed-until");
 const concurrency = Math.max(
   1,
   Math.min(4, Number(argValue("--concurrency") || process.env.WORKER_CONCURRENCY || 2)),
@@ -80,6 +82,8 @@ async function main() {
     familiaId,
     mapeamentoId,
     failedOnly,
+    failedSince,
+    failedUntil,
   });
 
   if (mapeamentos.length === 0) {

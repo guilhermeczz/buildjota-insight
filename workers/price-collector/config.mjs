@@ -29,11 +29,17 @@ export function normalizeConcorrenteName(concorrenteNome) {
 }
 
 export function isAllowedConcorrente(concorrenteNome) {
-  return allowedConcorrenteNames.includes(normalizeConcorrenteName(concorrenteNome));
+  return Boolean(resolveConcorrenteKey(concorrenteNome));
+}
+
+export function resolveConcorrenteKey(concorrenteNome) {
+  const normalized = normalizeConcorrenteName(concorrenteNome);
+  if (concorrenteEnv[normalized]) return normalized;
+  return allowedConcorrenteNames.find((name) => normalized.includes(name)) ?? null;
 }
 
 export function credentialsFor(concorrenteNome) {
-  const keys = concorrenteEnv[normalizeConcorrenteName(concorrenteNome)];
+  const keys = concorrenteEnv[resolveConcorrenteKey(concorrenteNome)];
   if (!keys) return null;
 
   const login = process.env[keys.login];

@@ -77,9 +77,18 @@ type HistoricoExecucao = {
 type Scope = "" | "todos" | "familia" | "produto" | "mapeamento";
 type StatusFilter = "todos" | Execucao["status"];
 
+type WorkerRun = {
+  id: string;
+  kind: "manual" | "refazer-erros" | "agendado" | string;
+  startedAt: string;
+  updatedAt?: string;
+  message?: string;
+};
+
 type WorkerHealth = {
   ok: boolean;
   running: boolean;
+  currentRun?: WorkerRun | null;
   scheduleTimezone?: string;
   local?: {
     date: string;
@@ -243,17 +252,18 @@ export default function ExecucoesRobo() {
   useEffect(() => {
     const hasPendingExecution =
       pendingExecucao !== null ||
+      workerHealth?.running === true ||
       execucoes.some((execucao) => execucao.status === "pendente" || !execucao.finalizado_em);
 
     const interval = window.setInterval(
       () => {
         void refreshExecucoes();
       },
-      hasPendingExecution ? 10000 : 60000,
+      hasPendingExecution ? 5000 : 60000,
     );
 
     return () => window.clearInterval(interval);
-  }, [execucoes, pendingExecucao]);
+  }, [execucoes, pendingExecucao, workerHealth?.running]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -337,11 +347,12 @@ export default function ExecucoesRobo() {
     setRunning(true);
 
     try {
-      await requestWorkerRun(triggerUrl, body);
+      const result = await requestWorkerRun(triggerUrl, body);
+      const currentRun = result.currentRun as WorkerRun | undefined;
 
-      const startedAt = new Date().toISOString();
+      const startedAt = currentRun?.startedAt ?? new Date().toISOString();
       setPendingExecucao({
-        id: `manual-${Date.now()}`,
+        id: currentRun?.id ?? `manual-${Date.now()}`,
         status: "pendente",
         origem: "manual",
         iniciado_em: startedAt,
@@ -367,17 +378,24 @@ export default function ExecucoesRobo() {
     }
   }
 
-  async function retryFailedMappings() {
+  async function retryFailedMappings(execucao?: Execucao) {
     setRetryingErrors(true);
 
     try {
-      await requestWorkerRun(triggerUrl, { failedOnly: true });
+      const body: Record<string, unknown> = { failedOnly: true };
+      if (execucao) {
+        body.failedSince = execucao.iniciado_em;
+        body.failedUntil = execucao.finalizado_em ?? new Date().toISOString();
+      }
+
+      const result = await requestWorkerRun(triggerUrl, body);
+      const currentRun = result.currentRun as WorkerRun | undefined;
 
       setPendingExecucao({
-        id: `retry-${Date.now()}`,
+        id: currentRun?.id ?? `retry-${Date.now()}`,
         status: "pendente",
         origem: "manual",
-        iniciado_em: new Date().toISOString(),
+        iniciado_em: currentRun?.startedAt ?? new Date().toISOString(),
         finalizado_em: null,
         total_processados: 0,
         total_sucesso: 0,
@@ -428,20 +446,38 @@ export default function ExecucoesRobo() {
     return toTimestamp(execucao.iniciado_em) <= latestRetryAt;
   }
 
-  const visibleExecucoes = (pendingExecucao ? [pendingExecucao, ...execucoes] : execucoes).filter(
-    (execucao) => {
-      if (statusFilter !== "todos" && execucao.status !== statusFilter) return false;
-      if (familiaFilter !== "todos" && !familiasDaExecucao(execucao).has(familiaFilter)) {
-        return false;
-      }
-      return true;
-    },
-  );
-
-  const currentExecution =
-    pendingExecucao ??
-    execucoes.find((execucao) => execucao.status === "pendente" || !execucao.finalizado_em) ??
+  const dbCurrentExecution =
+    execucoes.find((execucao) => execucao.status === "pendente" || !execucao.finalizado_em) ?? null;
+  const healthExecution =
+    workerHealth?.running && workerHealth.currentRun
+      ? ({
+          id: workerHealth.currentRun.id,
+          status: "pendente",
+          origem: workerHealth.currentRun.kind === "agendado" ? "agendado" : "manual",
+          iniciado_em: toDateString(workerHealth.currentRun.startedAt),
+          finalizado_em: null,
+          total_processados: 0,
+          total_sucesso: 0,
+          total_erro: 0,
+          mensagem: workerHealth.currentRun.message ?? "Coleta em andamento...",
+          tempo_execucao_segundos: 0,
+        } satisfies Execucao)
+      : null;
+  const syntheticExecution = pendingExecucao ?? (!dbCurrentExecution ? healthExecution : null);
+  const currentExecution = pendingExecucao ?? dbCurrentExecution ?? healthExecution ?? null;
+  const latestFailedExecution =
+    execucoes.find((execucao) => execucao.status === "erro" || execucao.status === "parcial") ??
     null;
+  const visibleExecucoes = (
+    syntheticExecution ? [syntheticExecution, ...execucoes] : execucoes
+  ).filter((execucao) => {
+    if (statusFilter !== "todos" && execucao.status !== statusFilter) return false;
+    if (familiaFilter !== "todos" && !familiasDaExecucao(execucao).has(familiaFilter)) {
+      return false;
+    }
+    return true;
+  });
+
   const workerBusy = Boolean(currentExecution) || workerHealth?.running === true;
   const lastExecution = execucoes[0] ?? null;
   const panelExecution = currentExecution ?? lastExecution;
@@ -565,7 +601,7 @@ export default function ExecucoesRobo() {
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={retryFailedMappings}
+                            onClick={() => retryFailedMappings(execucao)}
                             disabled={
                               workerBusy || retryingErrors || retryAlreadyRequested(execucao)
                             }
@@ -687,8 +723,8 @@ export default function ExecucoesRobo() {
               <Button
                 className="w-full"
                 variant="outline"
-                onClick={retryFailedMappings}
-                disabled={workerBusy || retryingErrors}
+                onClick={() => retryFailedMappings(latestFailedExecution ?? undefined)}
+                disabled={workerBusy || retryingErrors || !latestFailedExecution}
               >
                 {retryingErrors ? (
                   <Loader2 className="mr-1 h-4 w-4 animate-spin" />

@@ -7,6 +7,10 @@ const priceHints = [
   { selector: "[data-testid*='price' i]", preferLast: true },
   { selector: "[class*='precoProdutoContainer' i]", preferLast: true },
   { selector: "[class*='precoAtual' i]", preferLast: true },
+  { selector: "[class*='precoPromocional' i]", preferLast: true },
+  { selector: "[class*='preco-promocional' i]", preferLast: true },
+  { selector: "[class*='precoPor' i]", preferLast: true },
+  { selector: "[class*='preco-por' i]", preferLast: true },
   { selector: "[class*='precoVenda' i]", preferLast: true },
   { selector: "[class*='precoSelecionado' i]", preferLast: true },
   { selector: "[class*='preco-selecao' i]", preferLast: true },
@@ -14,6 +18,8 @@ const priceHints = [
   { selector: "[class*='valorProduto' i]", preferLast: true },
   { selector: "[class*='valor-produto' i]", preferLast: true },
   { selector: "[class*='product-price' i]", preferLast: true },
+  { selector: "[class*='current-price' i]", preferLast: true },
+  { selector: "[class*='price-current' i]", preferLast: true },
   { selector: "[class*='sale-price' i]", preferLast: true },
   { selector: "[class*='best-price' i]", preferLast: true },
   { selector: "[class*='price' i]", preferLast: true },
@@ -29,6 +35,9 @@ const priceHints = [
 export function parseBRL(text, options = {}) {
   const preferred = parsePreferredLabeledBRL(text, options);
   if (preferred) return preferred;
+
+  const discounted = parseDiscountedBRL(text, options);
+  if (discounted) return discounted;
 
   const matches = parseBRLValues(text);
   if (matches.length === 0) return null;
@@ -54,6 +63,18 @@ function parsePreferredLabeledBRL(text, options = {}) {
   }
 
   return null;
+}
+
+function parseDiscountedBRL(text, options = {}) {
+  if (!text) return null;
+
+  const normalized = normalizeText(text);
+  if (!/(off|desconto|promocao|promocional|por apenas|especial)/i.test(normalized)) return null;
+
+  const matches = parseBRLValues(text);
+  if (matches.length === 0) return null;
+
+  return selectPrice(matches, { ...options, preferLast: true });
 }
 
 function parseBRLValues(text) {
@@ -130,7 +151,7 @@ export async function extractPrice(page, selector, options = {}) {
     .locator("body")
     .innerText({ timeout: 8000 })
     .catch(() => "");
-  return parseBRL(bodyText, { ...options, preferLargest: true });
+  return parseBRL(bodyText, { ...options, preferLast: true });
 }
 
 async function parseLocatorPrice(page, selector, options) {
@@ -138,7 +159,7 @@ async function parseLocatorPrice(page, selector, options) {
   const count = await locator.count().catch(() => 0);
   if (count === 0) return null;
 
-  const texts = await locator
+  const priceTexts = await locator
     .evaluateAll((nodes) =>
       nodes.map((node) => {
         const element = node instanceof HTMLElement ? node : null;
@@ -148,14 +169,56 @@ async function parseLocatorPrice(page, selector, options) {
           element?.getAttribute("data-price") ??
           element?.getAttribute("data-preco") ??
           "";
-        const text = element?.innerText ?? node.textContent ?? "";
-        return `${content} ${text}`.trim();
+        const fallback = element?.innerText ?? node.textContent ?? "";
+
+        const isOldPriceNode = (target) => {
+          let current = target instanceof Element ? target : target.parentElement;
+          while (current && current !== node) {
+            const style = window.getComputedStyle(current);
+            const classAndId = `${current.className ?? ""} ${current.id ?? ""}`;
+            if (/line-through/.test(style.textDecorationLine)) return true;
+            if (
+              /(preco[-_ ]?de|precoantigo|old[-_ ]?price|valor[-_ ]?de|riscado|strike)/i.test(
+                classAndId,
+              )
+            ) {
+              return true;
+            }
+            current = current.parentElement;
+          }
+          return false;
+        };
+
+        const textNodes = [];
+        const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+          const textNode = walker.currentNode;
+          if (!isOldPriceNode(textNode)) textNodes.push(textNode.textContent ?? "");
+        }
+
+        return {
+          preferred: `${content} ${textNodes.join(" ")}`.trim(),
+          fallback: `${content} ${fallback}`.trim(),
+        };
       }),
     )
     .catch(() => []);
 
-  const joined = texts.filter(Boolean).join(" ");
-  return parseBRL(joined, options) ?? parseLoosePrice(joined, options);
+  const preferred = priceTexts
+    .map((item) => item.preferred)
+    .filter(Boolean)
+    .join(" ");
+  const fallback = priceTexts
+    .map((item) => item.fallback)
+    .filter(Boolean)
+    .join(" ");
+
+  return (
+    parseBRL(preferred, options) ??
+    parseLoosePrice(preferred, options) ??
+    parseBRL(fallback, options) ??
+    parseLoosePrice(fallback, options)
+  );
 }
 
 async function extractStructuredPrice(page, options = {}) {

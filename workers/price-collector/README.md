@@ -23,6 +23,7 @@ MEGALESTE_PASSWORD=
 # Opcional. Preferencias pos-login dos fornecedores.
 COFEMA_UNIDADE=SUMARE
 MAREST_REGIAO=SP
+MEGALESTE_REGIAO=SP
 
 # Opcional. Por padrao o worker bloqueia imagens, fontes e midias para economizar rede.
 WORKER_BLOCK_HEAVY_ASSETS=true

@@ -1,7 +1,7 @@
 import { chromium } from "playwright";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { credentialsFor, normalizeConcorrenteName } from "./config.mjs";
+import { credentialsFor, resolveConcorrenteKey } from "./config.mjs";
 import { extractPrice } from "./extract-price.mjs";
 
 const userAgent =
@@ -16,6 +16,7 @@ const productSettleMs = envNumber("WORKER_PRODUCT_SETTLE_MS", 350, 0, 3000);
 const loginSettleMs = envNumber("WORKER_LOGIN_SETTLE_MS", 1200, 0, 5000);
 const cofemaUnidade = process.env.COFEMA_UNIDADE ?? "SUMARE";
 const marestRegiao = process.env.MAREST_REGIAO ?? "SP";
+const megalesteRegiao = process.env.MEGALESTE_REGIAO ?? "SP";
 
 function envNumber(name, fallback, min, max) {
   const value = Number(process.env[name] ?? fallback);
@@ -44,7 +45,7 @@ function absoluteUrl(value, fallbackBase) {
 }
 
 function productUrlForMapping(mapping, concorrente) {
-  if (concorrente.nome === "MEGALESTE" && mapping.sku_concorrente) {
+  if (resolveConcorrenteKey(concorrente.nome) === "MEGALESTE" && mapping.sku_concorrente) {
     return absoluteUrl(`/c/produto/${mapping.sku_concorrente}`, concorrente.site_url);
   }
 
@@ -52,7 +53,7 @@ function productUrlForMapping(mapping, concorrente) {
 }
 
 function loginUrlForConcorrente(concorrente) {
-  if (concorrente.nome === "MAREST") {
+  if (resolveConcorrenteKey(concorrente.nome) === "MAREST") {
     return absoluteUrl("/login", concorrente.site_url);
   }
 
@@ -227,67 +228,84 @@ async function dismissOverlays(page) {
 }
 
 async function ensureConcorrentePreferences(page, concorrente) {
-  const nome = normalizeConcorrenteName(concorrente.nome);
+  const nome = resolveConcorrenteKey(concorrente.nome);
 
   if (nome === "COFEMA") return configureCofema(page);
-  if (nome === "MAREST") return configureMarest(page);
+  if (nome === "MAREST") return configureRegionSelector(page, "MAREST", marestRegiao);
+  if (nome === "MEGALESTE") return configureRegionSelector(page, "MEGALESTE", megalesteRegiao);
 
   return false;
 }
 
 async function configureCofema(page) {
-  const hasPrompt = await pageHasText(page, [/definir configuracoes/]);
-  if (!hasPrompt) return false;
+  if (!(await isCofemaPromptVisible(page))) return false;
 
-  await selectVisibleOption(page, cofemaUnidade);
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const selected = await selectVisibleOption(page, cofemaUnidade);
+    await page.waitForTimeout(350);
+    if (!selected) {
+      console.log(
+        `[COFEMA] Unidade ${cofemaUnidade} nao encontrada no seletor; tentativa ${attempt}.`,
+      );
+    }
 
-  const clicked =
-    (await clickFirstVisible(page, [
-      "button:has-text('Definir configura')",
-      "input[type='submit'][value*='Definir']",
-      ".modal button.btn-primary",
-      "[role='dialog'] button:has-text('Definir')",
-      "button:has-text('Definir')",
-    ])) || (await clickExactText(page, /definir configuracoes/i));
+    const clicked = await confirmCofemaSettings(page);
+    if (!clicked) {
+      throw new Error("Configuracao de unidade da COFEMA nao confirmada");
+    }
 
-  if (!clicked) {
-    throw new Error("Configuracao de unidade da COFEMA nao confirmada");
+    await page
+      .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
+      .catch(() => null);
+    await page.waitForTimeout(1200);
+
+    if (!(await isCofemaPromptVisible(page))) {
+      console.log(`[COFEMA] Configuracoes confirmadas (${cofemaUnidade}).`);
+      return true;
+    }
+
+    if (await pageHasText(page, [new RegExp(`unidade:?\\s*${escapeRegex(cofemaUnidade)}`, "i")])) {
+      const closed = await closeVisibleDialog(page);
+      if (closed && !(await isCofemaPromptVisible(page))) {
+        console.log(`[COFEMA] Unidade ${cofemaUnidade} ja estava ativa; modal fechada.`);
+        return true;
+      }
+    }
   }
 
-  await page
-    .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
-    .catch(() => null);
-  await page.waitForTimeout(600);
-  console.log(`[COFEMA] Configuracoes confirmadas (${cofemaUnidade}).`);
-  return true;
+  throw new Error("Configuracao de unidade da COFEMA permaneceu aberta");
 }
 
-async function configureMarest(page) {
+async function configureRegionSelector(page, providerName, region) {
   const hasPrompt = await pageHasText(page, [/escolha uma regiao/, /seja bem vindo/]);
   if (!hasPrompt) return false;
 
-  let clicked = await clickExactText(page, new RegExp(`^${escapeRegex(marestRegiao)}$`, "i"));
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    let clicked = await clickExactText(page, new RegExp(`^${escapeRegex(region)}$`, "i"));
 
-  if (!clicked) {
-    await clickFirstVisible(page, [
-      "button:has-text('Escolha uma')",
-      "a:has-text('Escolha uma')",
-      "[role='button']:has-text('Escolha uma')",
-      ".dropdown-toggle",
-    ]);
-    clicked = await clickExactText(page, new RegExp(`^${escapeRegex(marestRegiao)}$`, "i"));
+    if (!clicked) {
+      await clickFirstVisible(page, [
+        "button:has-text('Escolha uma')",
+        "a:has-text('Escolha uma')",
+        "[role='button']:has-text('Escolha uma')",
+        ".dropdown-toggle",
+      ]);
+      clicked = await clickExactText(page, new RegExp(`^${escapeRegex(region)}$`, "i"));
+    }
+
+    if (clicked) {
+      await page
+        .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
+        .catch(() => null);
+      await page.waitForTimeout(1000);
+      if (!(await pageHasText(page, [/escolha uma regiao/]))) {
+        console.log(`[${providerName}] Regiao ${region} selecionada.`);
+        return true;
+      }
+    }
   }
 
-  if (!clicked) {
-    throw new Error(`Regiao ${marestRegiao} da MAREST nao selecionada`);
-  }
-
-  await page
-    .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
-    .catch(() => null);
-  await page.waitForTimeout(800);
-  console.log(`[MAREST] Regiao ${marestRegiao} selecionada.`);
-  return true;
+  throw new Error(`Regiao ${region} da ${providerName} nao selecionada`);
 }
 
 async function openProductPage(page, context, statePath, mapping, concorrente) {
@@ -310,6 +328,10 @@ async function openProductPage(page, context, statePath, mapping, concorrente) {
   }
 
   await waitForProductSignal(page);
+  if (await ensureConcorrentePreferences(page, concorrente)) {
+    await context.storageState({ path: statePath });
+    await waitForProductSignal(page);
+  }
   if (productSettleMs > 0) await page.waitForTimeout(productSettleMs);
 }
 
@@ -336,6 +358,115 @@ async function clickExactText(page, pattern) {
     locator.click({ timeout: actionTimeoutMs }),
   ]);
   return true;
+}
+
+async function isCofemaPromptVisible(page) {
+  return (
+    (await pageHasText(page, [/definir configuracoes/])) ||
+    (await page
+      .locator("button:has-text('Definir configura'), .modal:has-text('Definir configura')")
+      .first()
+      .isVisible()
+      .catch(() => false))
+  );
+}
+
+async function confirmCofemaSettings(page) {
+  const selectors = [
+    ".modal.show button:has-text('Definir configura')",
+    ".modal button:has-text('Definir configura')",
+    "[role='dialog'] button:has-text('Definir configura')",
+    "button:has-text('Definir configura')",
+    "input[type='submit'][value*='Definir']",
+    ".modal.show button.btn-primary",
+    ".modal button.btn-primary",
+  ];
+
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    const visible = await locator.isVisible().catch(() => false);
+    if (!visible) continue;
+
+    const clicked = await locator.click({ timeout: actionTimeoutMs, force: true }).then(
+      () => true,
+      () => false,
+    );
+    if (clicked) return true;
+  }
+
+  if (await clickCofemaDefineButton(page)) return true;
+
+  const focused = await page
+    .locator(
+      ".modal.show button:has-text('Definir configura'), button:has-text('Definir configura')",
+    )
+    .first()
+    .focus({ timeout: actionTimeoutMs })
+    .then(
+      () => true,
+      () => false,
+    );
+  if (focused) {
+    await page.keyboard.press("Enter");
+    return true;
+  }
+
+  return false;
+}
+
+async function clickCofemaDefineButton(page) {
+  const clicked = await page
+    .evaluate(() => {
+      const normalize = (value) =>
+        String(value ?? "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+
+      const candidates = [...document.querySelectorAll("button, input[type='submit'], a")];
+      const target = candidates.find((node) => {
+        const element = node instanceof HTMLElement ? node : null;
+        if (!element) return false;
+        const style = window.getComputedStyle(element);
+        const visible =
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          element.getBoundingClientRect().width > 0 &&
+          element.getBoundingClientRect().height > 0;
+        const label =
+          element instanceof HTMLInputElement
+            ? element.value
+            : element.innerText || element.textContent;
+        return visible && normalize(label).includes("definir configuracoes");
+      });
+
+      if (!target) return false;
+      target.click();
+      return true;
+    })
+    .catch(() => false);
+
+  if (!clicked) return false;
+
+  await page
+    .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
+    .catch(() => null);
+  return true;
+}
+
+async function closeVisibleDialog(page) {
+  return clickFirstVisible(page, [
+    ".modal.show button.close",
+    ".modal.show [data-dismiss='modal']",
+    ".modal.show [aria-label='Close']",
+    ".modal.show [aria-label='Fechar']",
+    ".modal button.close",
+    ".modal [data-dismiss='modal']",
+    ".modal [aria-label='Close']",
+    ".modal [aria-label='Fechar']",
+  ]);
 }
 
 async function selectVisibleOption(page, optionText) {
@@ -372,6 +503,8 @@ async function selectVisibleOption(page, optionText) {
     if (!option?.value) continue;
 
     await select.selectOption(option.value, { timeout: actionTimeoutMs });
+    await select.dispatchEvent("input").catch(() => null);
+    await select.dispatchEvent("change").catch(() => null);
     return true;
   }
 
@@ -496,7 +629,9 @@ async function collectGroup(browser, group, options = {}) {
       } catch (error) {
         if (
           error instanceof Error &&
-          /Credenciais invalidas/i.test(error.message) &&
+          /Credenciais invalidas|Login nao confirmado|Configuracao de unidade|Regiao .* nao selecionada/i.test(
+            error.message,
+          ) &&
           existsSync(statePath)
         ) {
           rmSync(statePath, { force: true });
@@ -543,12 +678,34 @@ async function reportProgress(options, message) {
 }
 
 async function waitForProductSignal(page) {
+  await waitForActionableProductSignal(page);
   await page
     .waitForFunction(
       () => {
         const text = document.body?.innerText ?? "";
         return /R\$\s*\d|\d{1,3}(?:\.\d{3})*,\d{2,3}|indisponivel|indisponível|sem estoque|esgotado|login|cadastre-se|preco|preço/i.test(
           text,
+        );
+      },
+      { timeout: productSignalTimeoutMs },
+    )
+    .catch(() => null);
+}
+
+async function waitForActionableProductSignal(page) {
+  await page
+    .waitForFunction(
+      () => {
+        const text = document.body?.innerText ?? "";
+        const normalized = text
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+
+        return /R\$\s*\d|\d{1,3}(?:\.\d{3})*,\d{2,3}|indisponivel|sem estoque|esgotado|definir configuracoes|escolha uma regiao/.test(
+          normalized,
         );
       },
       { timeout: productSignalTimeoutMs },
@@ -663,7 +820,7 @@ async function hasInvalidCredentialsMessage(page) {
 async function shouldRetryLogin(page, mapping, concorrente) {
   if (await isLoginRequired(page)) return true;
 
-  if (concorrente.nome === "MEGALESTE") {
+  if (resolveConcorrenteKey(concorrente.nome) === "MEGALESTE") {
     const path = new URL(page.url()).pathname.replace(/\/+$/, "");
     if (path === "/sp" || path === "") return true;
 
