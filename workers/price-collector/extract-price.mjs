@@ -198,6 +198,37 @@ export async function extractPriceNearTerms(page, terms, options = {}) {
           rect.height > 0
         );
       };
+      const termMatches = (text, term) => {
+        if (!/^\d+$/.test(term)) return text.includes(term);
+        return new RegExp(`(^|[^0-9])${term}([^0-9]|$)`).test(text);
+      };
+      const isOldPriceNode = (node, root) => {
+        let current = node instanceof Element ? node : node.parentElement;
+        while (current && current !== root) {
+          const style = window.getComputedStyle(current);
+          const classAndId = `${current.className ?? ""} ${current.id ?? ""}`;
+          if (/line-through/.test(style.textDecorationLine)) return true;
+          if (
+            /(preco[-_ ]?de|precoantigo|old[-_ ]?price|valor[-_ ]?de|riscado|strike)/i.test(
+              classAndId,
+            )
+          ) {
+            return true;
+          }
+          current = current.parentElement;
+        }
+        return false;
+      };
+      const currentPriceText = (element) => {
+        const parts = [];
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+          if (!isOldPriceNode(walker.currentNode, element)) {
+            parts.push(walker.currentNode.textContent ?? "");
+          }
+        }
+        return parts.join(" ");
+      };
 
       const elements = [
         ...document.querySelectorAll(
@@ -218,9 +249,9 @@ export async function extractPriceNearTerms(page, terms, options = {}) {
       return elements
         .filter((element) => element instanceof HTMLElement && visible(element))
         .map((element) => {
-          const text = element.innerText || element.textContent || "";
+          const text = currentPriceText(element);
           const normalized = normalize(text);
-          const matchedTerm = searchTerms.find((term) => normalized.includes(term));
+          const matchedTerm = searchTerms.find((term) => termMatches(normalized, term));
           return {
             text,
             length: normalized.length,

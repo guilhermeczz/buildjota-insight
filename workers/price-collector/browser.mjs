@@ -73,6 +73,10 @@ function isConstruja(concorrente) {
   return resolveConcorrenteKey(concorrente.nome) === "CONSTRUJA";
 }
 
+function isMarest(concorrente) {
+  return resolveConcorrenteKey(concorrente.nome) === "MAREST";
+}
+
 function isMegaleste(concorrente) {
   return resolveConcorrenteKey(concorrente.nome) === "MEGALESTE";
 }
@@ -84,7 +88,7 @@ function consultaTipo(concorrente) {
 }
 
 function usesSearchFlow(concorrente) {
-  return consultaTipo(concorrente) === "BUSCA";
+  return ["BUSCA", "SKU"].includes(consultaTipo(concorrente));
 }
 
 function absoluteUrl(value, fallbackBase) {
@@ -124,7 +128,7 @@ function loginUrlForConcorrente(concorrente) {
     return cofemaUrl(cofemaLoginUrl);
   }
 
-  if (resolveConcorrenteKey(concorrente.nome) === "MAREST") {
+  if (isMarest(concorrente)) {
     return absoluteUrl("/login", concorrente.site_url);
   }
 
@@ -187,6 +191,11 @@ async function login(page, concorrente) {
 
   if (isConstruja(concorrente)) {
     await loginConstruja(page, concorrente, credentials);
+    return;
+  }
+
+  if (isMarest(concorrente)) {
+    await loginMarest(page, concorrente, credentials);
     return;
   }
 
@@ -460,6 +469,133 @@ async function isConstrujaLoggedIn(page) {
     /deslogar/,
     /credito disponivel/,
   ]);
+}
+
+async function loginMarest(page, concorrente, credentials) {
+  const loginUrl = loginUrlForConcorrente(concorrente);
+
+  await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs });
+  await page.waitForLoadState("load", { timeout: quickLoadTimeoutMs }).catch(() => null);
+  await dismissOverlays(page);
+
+  if (await isMarestLoggedIn(page)) {
+    await goToMarestHome(page, concorrente);
+    return;
+  }
+
+  const formVisible = await waitForMarestLoginForm(page);
+  if (!formVisible) {
+    throw new Error("Formulario de login da MAREST nao abriu");
+  }
+
+  const loginFilled = await fillFirstVisible(
+    page,
+    [
+      "input[placeholder*='usuario' i]",
+      "input[placeholder*='usuário' i]",
+      "input[name*='usuario' i]",
+      "input[id*='usuario' i]",
+      "input[name*='email' i]",
+      "input[id*='email' i]",
+      "input[type='email']",
+      "input[type='text']",
+      "input:not([type])",
+    ],
+    credentials.login,
+  );
+  const passwordFilled = await fillFirstVisible(
+    page,
+    [
+      "input[type='password']",
+      "input[placeholder*='senha' i]",
+      "input[name*='senha' i]",
+      "input[id*='senha' i]",
+      "input[name*='password' i]",
+      "input[id*='password' i]",
+    ],
+    credentials.password,
+  );
+
+  if (!loginFilled || !passwordFilled) {
+    throw new Error("Campos de login da MAREST nao foram identificados");
+  }
+
+  const clicked = await clickFirstVisible(page, [
+    "form button:has-text('LOGIN')",
+    "form button:has-text('Login')",
+    "button[type='submit']",
+    "button:has-text('LOGIN')",
+    "button:has-text('Login')",
+    "button:has-text('Entrar')",
+    "input[type='submit']",
+  ]);
+
+  if (!clicked) {
+    await page.keyboard.press("Enter");
+  }
+
+  const logged = await waitForMarestLogin(page);
+  if (await hasInvalidCredentialsMessage(page)) {
+    throw new Error("Credenciais invalidas em MAREST");
+  }
+  if (!logged) {
+    throw new Error("Login nao confirmado em MAREST");
+  }
+
+  await goToMarestHome(page, concorrente);
+}
+
+async function waitForMarestLoginForm(page) {
+  return page
+    .locator("input[type='password'], input[placeholder*='senha' i]")
+    .first()
+    .waitFor({ state: "visible", timeout: 8000 })
+    .then(
+      () => true,
+      () => false,
+    );
+}
+
+async function isMarestLoginFormVisible(page) {
+  return page
+    .locator("input[type='password'], input[placeholder*='senha' i]")
+    .first()
+    .isVisible()
+    .catch(() => false);
+}
+
+async function waitForMarestLogin(page) {
+  for (let attempt = 1; attempt <= 12; attempt += 1) {
+    await page
+      .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
+      .catch(() => null);
+
+    if (await isMarestLoggedIn(page)) return true;
+    await page.waitForTimeout(750);
+  }
+
+  return false;
+}
+
+async function isMarestLoggedIn(page) {
+  if (await isMarestLoginFormVisible(page)) return false;
+
+  const path = new URL(page.url()).pathname.replace(/\/+$/, "");
+  if (path === "/login" || (await isLoginRequired(page))) return false;
+  if (path === "/home" || path.startsWith("/product")) return true;
+
+  return pageHasText(page, [/ola,?\s+[^\s]/, /ver minha conta/, /sair/, /meus pedidos/]);
+}
+
+async function goToMarestHome(page, concorrente) {
+  const currentPath = new URL(page.url()).pathname.replace(/\/+$/, "");
+  if (currentPath === "/home") return;
+
+  await page.goto(absoluteUrl("/home", concorrente.site_url), {
+    waitUntil: "domcontentloaded",
+    timeout: navigationTimeoutMs,
+  });
+  await dismissOverlays(page);
 }
 
 async function loginMegaleste(page, concorrente, credentials) {
@@ -1172,7 +1308,10 @@ async function ensureConcorrentePreferences(page, concorrente) {
   const nome = resolveConcorrenteKey(concorrente.nome);
 
   if (nome === "COFEMA") return configureCofema(page);
-  if (nome === "MAREST") return configureRegionSelector(page, "MAREST", marestRegiao);
+  if (nome === "MAREST") {
+    if (await isMarestLoggedIn(page)) return false;
+    return configureRegionSelector(page, "MAREST", marestRegiao);
+  }
   if (nome === "MEGALESTE") return configureRegionSelector(page, "MEGALESTE", megalesteRegiao);
 
   return false;
@@ -1421,7 +1560,7 @@ function searchStartUrlForMapping(mapping, concorrente) {
     : absoluteUrl(concorrente.site_url || concorrente.login_url || "/", concorrente.site_url);
 
   if (usesSearchFlow(concorrente) && isMegaleste(concorrente)) {
-    return absoluteUrl("/c", fallback);
+    return absoluteUrl("/c/busca", fallback);
   }
 
   if (usesSearchFlow(concorrente)) return fallback;
@@ -1499,6 +1638,8 @@ async function submitSiteSearch(page, query) {
 async function clickSearchSubmitNearInput(locator) {
   return locator
     .evaluate((input) => {
+      if (!(input instanceof HTMLInputElement)) return false;
+
       const visible = (element) => {
         const style = window.getComputedStyle(element);
         const rect = element.getBoundingClientRect();
@@ -1509,15 +1650,64 @@ async function clickSearchSubmitNearInput(locator) {
           rect.height > 0
         );
       };
+      const normalize = (value) =>
+        String(value ?? "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+      const buttonScore = (node) => {
+        if (!(node instanceof HTMLElement) || !visible(node)) return -1;
+        const inputRect = input.getBoundingClientRect();
+        const rect = node.getBoundingClientRect();
+        const label = normalize(
+          node.innerText ||
+            node.textContent ||
+            node.getAttribute("aria-label") ||
+            node.getAttribute("title"),
+        );
+        const className = normalize(String(node.className ?? ""));
+        const idName = normalize(node.id);
+        const typeName = normalize(node.getAttribute("type"));
+        const href = normalize(node.getAttribute("href"));
+        const horizontalDistance = Math.abs(rect.left - inputRect.right);
+        const verticalOverlap =
+          rect.top <= inputRect.bottom + 12 && rect.bottom >= inputRect.top - 12;
+        const isToRight = rect.left >= inputRect.left - 8;
+        const explicitSearch =
+          /buscar|busca|pesquisar|search|procura|lupa/.test(
+            `${label} ${className} ${idName} ${typeName} ${href}`,
+          ) || typeName === "submit";
+
+        if (!explicitSearch) return -1;
+        if (!verticalOverlap || !isToRight) return -1;
+
+        const labelScore = /buscar|busca|pesquisar|search|procura|lupa/.test(label) ? 40 : 0;
+        const metaScore = /buscar|busca|pesquisar|search|procura|lupa/.test(
+          `${className} ${idName} ${href}`,
+        )
+          ? 35
+          : 0;
+        const submitScore = typeName === "submit" ? 20 : 0;
+        const distanceScore = Math.max(0, 30 - horizontalDistance / 10);
+        return labelScore + metaScore + submitScore + distanceScore;
+      };
       const root =
         input.closest("form") ??
-        input.closest("header") ??
+        input.closest("[role='search']") ??
+        input.closest("[class*='search' i]") ??
+        input.closest("[class*='busca' i]") ??
         input.parentElement?.parentElement ??
         input.parentElement;
       if (!(root instanceof HTMLElement)) return false;
 
       const buttons = [...root.querySelectorAll("button, [role='button'], input[type='submit']")];
-      const target = buttons.find((node) => node instanceof HTMLElement && visible(node));
+      const scored = buttons
+        .map((node) => ({ node, score: buttonScore(node) }))
+        .filter((item) => item.score > 0)
+        .sort((a, b) => b.score - a.score);
+      const target = scored[0]?.node;
       if (!(target instanceof HTMLElement)) return false;
 
       target.click();
@@ -1644,9 +1834,7 @@ async function clickBestSearchResult(page, mapping) {
       const clickable =
         (target.matches("a[href]") ? target : null) ??
         target.querySelector("a[href]") ??
-        target.closest("a[href]") ??
-        target.querySelector("button, [role='button']") ??
-        target.closest("button, [role='button']");
+        target.closest("a[href]");
       if (!(clickable instanceof HTMLElement)) return false;
 
       clickable.click();
@@ -1951,7 +2139,7 @@ async function collectGroup(browser, group, options = {}) {
         }
 
         if (await isProductUnavailableForMapping(page, mapping, group.concorrente)) {
-          throw new Error("Produto indisponivel no concorrente");
+          throw new Error("Produto indisponível no concorrente");
         }
 
         const priceOptions = {
@@ -1963,12 +2151,12 @@ async function collectGroup(browser, group, options = {}) {
             (await extractPrice(page, mapping.seletor_preco, priceOptions)));
 
         if (await isProductUnavailableForMapping(page, mapping, group.concorrente)) {
-          throw new Error("Produto indisponivel no concorrente");
+          throw new Error("Produto indisponível no concorrente");
         }
 
         if (!price) {
           if (await isProductUnavailableForMapping(page, mapping, group.concorrente)) {
-            throw new Error("Produto indisponivel no concorrente");
+            throw new Error("Produto indisponível no concorrente");
           }
           throw new Error("Preco nao encontrado na pagina");
         }
@@ -2034,8 +2222,10 @@ async function reportProgress(options, message) {
 }
 
 function priceSearchTerms(mapping) {
+  const supplierSku = String(mapping.sku_concorrente ?? "").trim();
+  if (supplierSku) return [...new Set([supplierSku, ...codeCandidates(supplierSku)])];
+
   const terms = [
-    mapping.sku_concorrente,
     mapping.produtos?.sku_interno,
     mapping.produtos?.nome,
     ...productNameVariants(mapping.produtos?.nome),
@@ -2066,10 +2256,13 @@ function productIdentity(mapping) {
 
 function codeCandidates(value) {
   const normalized = normalizeText(String(value ?? ""));
-  const exact = /^\d{3,}$/.test(normalized) ? [normalized] : [];
+  if (!normalized) return [];
+
+  const exact = normalized.length >= 3 ? [normalized] : [];
+  const compact = normalized.replace(/[^a-z0-9]/g, "");
   const extracted = [...normalized.matchAll(/\d{3,}/g)].map((match) => match[0]);
 
-  return [...new Set([...exact, ...extracted])];
+  return [...new Set([...exact, ...(compact.length >= 3 ? [compact] : []), ...extracted])];
 }
 
 function productNameVariants(name) {
@@ -2129,11 +2322,17 @@ async function isLoginRequired(page) {
   const normalized = normalizeText(text);
 
   if (!normalized) return false;
-  if (hasPriceLikeText(text)) return false;
   if (await hasVisiblePasswordField(page)) return true;
 
   if (
     [
+      /necessario login/,
+      /necess[aá]rio login/,
+      /fazer login\/criar conta/,
+      /faca login ou registre-se/,
+      /fa[cç]a login ou registre-se/,
+      /voce precisa de uma conta para ver os precos/,
+      /voc[eê] precisa de uma conta para ver os pre[cç]os/,
       /faca login/,
       /entre ou cadastre-se/,
       /cadastre-se para ver os precos/,
@@ -2217,6 +2416,8 @@ async function expectedProductAvailability(page, mapping) {
     .evaluate(({ codes, terms }) => {
       const unavailableSignalPattern =
         /fora\s+(?:de|do)\s+estoque|sem\s+estoque|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+chegar|aviseme\s+quando\s+chegar|produto\s+sob\s+consulta/;
+      const pricePattern = /R\$\s*\d|\d{1,3}(?:\.\d{3})*,\d{2,3}/;
+      const buyActionPattern = /\b(adic\.?|adicionar|comprar|carrinho)\b/;
       const normalize = (value) =>
         String(value ?? "")
           .normalize("NFD")
@@ -2266,16 +2467,35 @@ async function expectedProductAvailability(page, mapping) {
       const candidates = nodes
         .filter((node) => node instanceof HTMLElement && visible(node))
         .map((node) => {
-          const text = normalize(node.innerText || node.textContent || "");
-          return { text, length: text.length };
+          const rawText = node.innerText || node.textContent || "";
+          const text = normalize(rawText);
+          return {
+            text,
+            length: text.length,
+            hasPrice: pricePattern.test(rawText),
+            hasBuyAction: buyActionPattern.test(text),
+            unavailable: unavailableSignalPattern.test(text),
+          };
         })
         .filter((item) => item.length > 0 && item.length <= 2500 && isExpectedBlock(item.text))
         .sort((a, b) => a.length - b.length)
         .slice(0, 12);
 
+      const availableCandidate = candidates.find(
+        (item) => !item.unavailable && (item.hasPrice || item.hasBuyAction),
+      );
+      if (availableCandidate) return { found: true, unavailable: false };
+
+      const unavailableCandidate = candidates.find(
+        (item) => item.unavailable && !item.hasPrice && !item.hasBuyAction,
+      );
+      if (unavailableCandidate) return { found: true, unavailable: true };
+
       return {
         found: candidates.length > 0,
-        unavailable: candidates.some((item) => unavailableSignalPattern.test(item.text)),
+        unavailable:
+          candidates.length > 0 &&
+          candidates.every((item) => item.unavailable && !item.hasPrice && !item.hasBuyAction),
       };
     }, identity)
     .catch(() => ({ found: false, unavailable: false }));
@@ -2323,6 +2543,7 @@ async function hasInvalidCredentialsMessage(page) {
 async function shouldRetryLogin(page, mapping, concorrente) {
   if (isCofema(concorrente)) return isLoginRequired(page);
   if (isConstruja(concorrente)) return !(await isConstrujaLoggedIn(page));
+  if (isMarest(concorrente)) return !(await isMarestLoggedIn(page));
   if (await isLoginRequired(page)) return true;
 
   if (isMegaleste(concorrente)) {
