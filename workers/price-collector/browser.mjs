@@ -69,6 +69,10 @@ function isCofema(concorrente) {
   return resolveConcorrenteKey(concorrente.nome) === "COFEMA";
 }
 
+function isConstruja(concorrente) {
+  return resolveConcorrenteKey(concorrente.nome) === "CONSTRUJA";
+}
+
 function consultaTipo(concorrente) {
   return String(concorrente.tipo_consulta ?? "URL")
     .trim()
@@ -173,6 +177,11 @@ async function login(page, concorrente) {
     return;
   }
 
+  if (isConstruja(concorrente)) {
+    await loginConstruja(page, concorrente, credentials);
+    return;
+  }
+
   const loginUrl = loginUrlForConcorrente(concorrente);
   await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs });
   await page.waitForLoadState("load", { timeout: quickLoadTimeoutMs }).catch(() => null);
@@ -262,6 +271,182 @@ async function login(page, concorrente) {
   if (await hasInvalidCredentialsMessage(page)) {
     throw new Error(`Credenciais invalidas em ${concorrente.nome}`);
   }
+}
+
+async function loginConstruja(page, concorrente, credentials) {
+  const loginUrl = loginUrlForConcorrente(concorrente);
+
+  await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs });
+  await page.waitForLoadState("load", { timeout: quickLoadTimeoutMs }).catch(() => null);
+  await dismissOverlays(page);
+
+  if (await isConstrujaLoggedIn(page)) return;
+
+  const opened = await openConstrujaLoginModal(page);
+  if (!opened) {
+    throw new Error("Formulario de login da CONSTRUJA nao abriu");
+  }
+
+  const loginFilled = await fillFirstVisible(
+    page,
+    [
+      "[role='dialog'] input[placeholder*='CNPJ' i]",
+      "[role='dialog'] input[placeholder*='CPF' i]",
+      "[role='dialog'] input[placeholder*='e-mail' i]",
+      "[role='dialog'] input[placeholder*='email' i]",
+      ".modal input[placeholder*='CNPJ' i]",
+      ".modal input[placeholder*='CPF' i]",
+      ".modal input[placeholder*='e-mail' i]",
+      ".modal input[placeholder*='email' i]",
+      "input[placeholder*='CNPJ' i]",
+      "input[placeholder*='CPF' i]",
+      "input[placeholder*='e-mail' i]",
+      "input[placeholder*='email' i]",
+      "input[type='email']",
+      "input[name*='email' i]",
+      "input[id*='email' i]",
+      "input[name*='login' i]",
+      "input[id*='login' i]",
+      "input[name*='cnpj' i]",
+      "input[id*='cnpj' i]",
+      "input[type='text']",
+    ],
+    credentials.login,
+  );
+
+  const passwordFilled = await fillFirstVisible(
+    page,
+    [
+      "[role='dialog'] input[type='password']",
+      ".modal input[type='password']",
+      "input[type='password']",
+      "input[placeholder*='senha' i]",
+      "input[name*='senha' i]",
+      "input[id*='senha' i]",
+      "input[name*='password' i]",
+      "input[id*='password' i]",
+    ],
+    credentials.password,
+  );
+
+  if (!loginFilled || !passwordFilled) {
+    throw new Error("Campos de login da CONSTRUJA nao foram identificados");
+  }
+
+  const clicked = await clickFirstVisible(page, [
+    "[role='dialog'] button:has-text('Entrar')",
+    ".modal button:has-text('Entrar')",
+    "form button:has-text('Entrar')",
+    "button[type='submit']:has-text('Entrar')",
+    "button:has-text('Entrar')",
+    "input[type='submit']",
+  ]);
+
+  if (!clicked) {
+    await page.keyboard.press("Enter");
+  }
+
+  const logged = await waitForConstrujaLogin(page);
+  if (await hasInvalidCredentialsMessage(page)) {
+    throw new Error("Credenciais invalidas em CONSTRUJA");
+  }
+  if (!logged) {
+    throw new Error("Login nao confirmado em CONSTRUJA");
+  }
+}
+
+async function openConstrujaLoginModal(page) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    if (await isConstrujaLoginFormVisible(page)) return true;
+
+    await clickFirstVisible(page, [
+      "button:has-text('Entre ou cadastre-se')",
+      "button:has-text('Entre ou Cadastre-se')",
+      "a:has-text('Entre ou cadastre-se')",
+      "a:has-text('Entre ou Cadastre-se')",
+      "[role='button']:has-text('Entre ou cadastre-se')",
+      "[role='button']:has-text('Entre ou Cadastre-se')",
+      "button:has-text('Área do cliente')",
+      "button:has-text('Area do cliente')",
+      "a:has-text('Área do cliente')",
+      "a:has-text('Area do cliente')",
+    ]);
+
+    const visible = await waitForConstrujaLoginForm(page);
+    if (visible) return true;
+    await page.waitForTimeout(600);
+  }
+
+  return false;
+}
+
+async function isConstrujaLoginFormVisible(page) {
+  const passwordVisible = await page
+    .locator(
+      [
+        "[role='dialog'] input[type='password']",
+        ".modal input[type='password']",
+        "input[type='password']",
+      ].join(", "),
+    )
+    .first()
+    .isVisible()
+    .catch(() => false);
+
+  if (!passwordVisible) return false;
+
+  return (
+    (await pageHasText(page, [
+      /cnpj\/cpf ou e-mail/,
+      /cnpj\/cpf ou email/,
+      /sou cliente mas ainda nao tenho acesso/,
+      /ainda nao sou cliente/,
+    ])) || passwordVisible
+  );
+}
+
+async function waitForConstrujaLoginForm(page) {
+  return page
+    .locator(
+      [
+        "[role='dialog'] input[type='password']",
+        ".modal input[type='password']",
+        "input[type='password']",
+      ].join(", "),
+    )
+    .first()
+    .waitFor({ state: "visible", timeout: 8000 })
+    .then(
+      () => true,
+      () => false,
+    );
+}
+
+async function waitForConstrujaLogin(page) {
+  for (let attempt = 1; attempt <= 12; attempt += 1) {
+    await page
+      .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
+      .catch(() => null);
+
+    if (await isConstrujaLoggedIn(page)) return true;
+    await page.waitForTimeout(750);
+  }
+
+  return false;
+}
+
+async function isConstrujaLoggedIn(page) {
+  if (await isConstrujaLoginFormVisible(page)) return false;
+
+  return pageHasText(page, [
+    /area do cliente/,
+    /loja:\s*centermak/,
+    /filial:\s*construja/,
+    /minha conta/,
+    /meus pedidos/,
+    /deslogar/,
+    /credito disponivel/,
+  ]);
 }
 
 async function loginCofema(page, concorrente, credentials) {
@@ -1671,6 +1856,7 @@ async function hasInvalidCredentialsMessage(page) {
 
 async function shouldRetryLogin(page, mapping, concorrente) {
   if (isCofema(concorrente)) return isLoginRequired(page);
+  if (isConstruja(concorrente)) return !(await isConstrujaLoggedIn(page));
   if (await isLoginRequired(page)) return true;
 
   if (resolveConcorrenteKey(concorrente.nome) === "MEGALESTE") {
