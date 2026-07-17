@@ -1567,23 +1567,24 @@ async function collectGroup(browser, group, options = {}) {
           throw new Error("Login nao confirmado; pagina ainda solicita autenticacao");
         }
 
-        if (await isProductUnavailable(page)) {
+        if (await isProductUnavailableForMapping(page, mapping, group.concorrente)) {
           throw new Error("Produto indisponivel no concorrente");
         }
 
         const priceOptions = {
           referencePrice: Number(mapping.produtos.preco_atual ?? 0),
         };
-        const price =
-          (await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)) ??
-          (await extractPrice(page, mapping.seletor_preco, priceOptions));
+        const price = usesSearchFlow(group.concorrente)
+          ? await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)
+          : ((await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)) ??
+            (await extractPrice(page, mapping.seletor_preco, priceOptions)));
 
-        if (await isProductUnavailable(page)) {
+        if (await isProductUnavailableForMapping(page, mapping, group.concorrente)) {
           throw new Error("Produto indisponivel no concorrente");
         }
 
         if (!price) {
-          if (await isProductUnavailable(page)) {
+          if (await isProductUnavailableForMapping(page, mapping, group.concorrente)) {
             throw new Error("Produto indisponivel no concorrente");
           }
           throw new Error("Preco nao encontrado na pagina");
@@ -1813,6 +1814,82 @@ async function isProductUnavailable(page) {
     .catch(() => 0);
 
   return unavailableControls > 0;
+}
+
+async function isProductUnavailableForMapping(page, mapping, concorrente) {
+  if (!usesSearchFlow(concorrente)) return isProductUnavailable(page);
+
+  if (await isExpectedProductUnavailable(page, mapping)) return true;
+  return false;
+}
+
+async function isExpectedProductUnavailable(page, mapping) {
+  const identity = productIdentity(mapping);
+  if (identity.codes.length === 0 && identity.terms.length === 0) return isProductUnavailable(page);
+
+  return page
+    .evaluate(({ codes, terms }) => {
+      const unavailableSignalPattern =
+        /fora\s+(?:de|do)\s+estoque|sem\s+estoque|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+chegar|aviseme\s+quando\s+chegar|produto\s+sob\s+consulta/;
+      const normalize = (value) =>
+        String(value ?? "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+      const hasCode = (text) => codes.some((code) => text.includes(code));
+      const matchedTerms = (text) => terms.filter((term) => text.includes(term));
+      const isExpectedBlock = (text) => {
+        if (codes.length > 0) return hasCode(text);
+        const matches = matchedTerms(text);
+        const numericTerms = terms.filter((term) => /^\d+(?:[,.]\d+)?[a-z]*$/.test(term));
+        const hasMeasure =
+          numericTerms.length === 0 || numericTerms.some((term) => text.includes(term));
+        return hasMeasure && matches.length >= Math.min(2, terms.length);
+      };
+
+      const nodes = [
+        ...document.querySelectorAll(
+          [
+            "article",
+            "li",
+            "tr",
+            "[class*='produto' i]",
+            "[class*='product' i]",
+            "[class*='item' i]",
+            "[class*='card' i]",
+            "[class*='col-' i]",
+            "section",
+            "main",
+            "div",
+          ].join(", "),
+        ),
+      ];
+
+      return nodes
+        .filter((node) => node instanceof HTMLElement && visible(node))
+        .some((node) => {
+          const text = normalize(node.innerText || node.textContent || "");
+          return (
+            text.length > 0 &&
+            text.length <= 2500 &&
+            isExpectedBlock(text) &&
+            unavailableSignalPattern.test(text)
+          );
+        });
+    }, identity)
+    .catch(() => false);
 }
 
 function normalizeText(value) {
