@@ -19,6 +19,9 @@ import { ensureRuntimeSchema } from "../workers/price-collector/database.mjs";
 loadServerEnv();
 
 const port = Number(process.env.PORT ?? 3001);
+const workerInternalUrl = String(
+  process.env.WORKER_INTERNAL_URL ?? "http://127.0.0.1:8787",
+).replace(/\/+$/, "");
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distDir = join(root, "dist");
 
@@ -259,6 +262,37 @@ async function handleRegisterCollection(req, res) {
   return sendJson(res, 200, result);
 }
 
+async function handleWorkerProxy(req, res, path) {
+  const user = await requireUser(req, res);
+  if (!user) return;
+
+  const endpoint = path === "/api/worker/health" ? "/health" : "/run";
+  const method = endpoint === "/health" ? "GET" : "POST";
+
+  if (req.method !== method) {
+    return sendJson(res, 405, { error: "Metodo nao permitido." });
+  }
+
+  try {
+    const body = method === "POST" ? await readJson(req) : undefined;
+    const response = await fetch(`${workerInternalUrl}${endpoint}`, {
+      method,
+      headers: method === "POST" ? { "content-type": "application/json" } : undefined,
+      body: method === "POST" ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(15_000),
+    });
+    const result = await response.json().catch(() => ({}));
+    return sendJson(res, response.status, result);
+  } catch (error) {
+    return sendJson(res, 503, {
+      error:
+        error instanceof Error && error.name === "TimeoutError"
+          ? "O worker demorou para responder."
+          : "Worker indisponivel. Verifique o processo radar-worker no PM2.",
+    });
+  }
+}
+
 async function serveStatic(req, res, pathname) {
   const requested = pathname === "/" ? "/index.html" : pathname;
   const filePath = normalize(join(distDir, requested));
@@ -315,6 +349,8 @@ const server = createServer(async (req, res) => {
       return handleAdminUsers(req, res);
     if (path === "/api/functions/registrar-coleta" && req.method === "POST")
       return handleRegisterCollection(req, res);
+    if (path === "/api/worker/run" || path === "/api/worker/health")
+      return handleWorkerProxy(req, res, path);
 
     if (path.startsWith("/api/")) return sendJson(res, 404, { error: "Not found" });
     return serveStatic(req, res, path);

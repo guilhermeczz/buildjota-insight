@@ -116,6 +116,14 @@ function statusBadge(status: Execucao["status"]) {
   return <Badge variant="secondary">Buscando</Badge>;
 }
 
+function workerRequestHeaders() {
+  const token = localStorage.getItem("radar_auth_token");
+  return {
+    "content-type": "application/json",
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+  };
+}
+
 async function requestWorkerRun(triggerUrl: string, body: Record<string, unknown>) {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), WORKER_REQUEST_TIMEOUT_MS);
@@ -123,7 +131,7 @@ async function requestWorkerRun(triggerUrl: string, body: Record<string, unknown
   try {
     const response = await fetch(triggerUrl, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: workerRequestHeaders(),
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -153,7 +161,10 @@ function workerHealthUrl(triggerUrl: string) {
 }
 
 async function requestWorkerHealth(triggerUrl: string) {
-  const response = await fetch(workerHealthUrl(triggerUrl), { method: "GET" });
+  const response = await fetch(workerHealthUrl(triggerUrl), {
+    method: "GET",
+    headers: workerRequestHeaders(),
+  });
   if (!response.ok) throw new Error("Worker indisponivel");
   return (await response.json()) as WorkerHealth;
 }
@@ -178,7 +189,8 @@ export default function ExecucoesRobo() {
   const [workerHealth, setWorkerHealth] = useState<WorkerHealth | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
 
-  const triggerUrl = import.meta.env.VITE_WORKER_TRIGGER_URL ?? "http://localhost:8787/run";
+  const apiBaseUrl = String(import.meta.env.VITE_API_URL ?? "").replace(/\/+$/, "");
+  const triggerUrl = `${apiBaseUrl}/api/worker/run`;
 
   const refreshWorkerHealth = useCallback(async () => {
     setHealthLoading(true);

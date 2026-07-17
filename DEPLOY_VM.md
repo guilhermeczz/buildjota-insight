@@ -102,7 +102,8 @@ Criar `.env.local` no servidor:
 
 ```env
 VITE_API_URL=
-VITE_WORKER_TRIGGER_URL=https://seudominio.com/worker/run
+# O worker e acessado internamente pela API; nao configure VITE_WORKER_TRIGGER_URL.
+WORKER_INTERNAL_URL=http://127.0.0.1:8787
 
 DATABASE_URL=postgres://radar:TROCAR_SENHA_FORTE@localhost:5432/radar_construjota
 APP_JWT_SECRET=TROCAR_POR_UMA_CHAVE_GRANDE_ALEATORIA
@@ -237,4 +238,3 @@ Guarde backups fora da VM sempre que possivel.
 - Nginx apontando `/api/` para `3001` e `/worker/` para `8787`.
 - HTTPS ativo.
 - Backup configurado.
-

@@ -50,7 +50,7 @@ Se abrir a tela de login, o redirecionamento esta correto.
 
 ```env
 VITE_API_URL=
-VITE_WORKER_TRIGGER_URL=https://radarjj.sytes.net/worker/run
+WORKER_INTERNAL_URL=http://127.0.0.1:8787
 
 DATABASE_URL=postgres://radar:radar_dev_password@localhost:5432/radar_construjota
 APP_JWT_SECRET=troque-por-uma-chave-grande-na-vm

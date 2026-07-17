@@ -66,7 +66,8 @@ Deixe este processo rodando no servidor/local:
 npm run worker:server
 ```
 
-O painel chama `VITE_WORKER_TRIGGER_URL`, por padrao `http://localhost:8787/run`.
+O painel chama a API principal em `/api/worker/run`. A API encaminha a chamada internamente para
+`WORKER_INTERNAL_URL` (por padrao `http://127.0.0.1:8787`), sem expor a porta do worker ao navegador.
 
 ## Agenda automatica
 
