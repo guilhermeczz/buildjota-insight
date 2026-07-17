@@ -73,6 +73,10 @@ function isConstruja(concorrente) {
   return resolveConcorrenteKey(concorrente.nome) === "CONSTRUJA";
 }
 
+function isMegaleste(concorrente) {
+  return resolveConcorrenteKey(concorrente.nome) === "MEGALESTE";
+}
+
 function consultaTipo(concorrente) {
   return String(concorrente.tipo_consulta ?? "URL")
     .trim()
@@ -108,7 +112,7 @@ function productUrlForMapping(mapping, concorrente) {
     return cofemaUrl(mapping.url_produto || concorrente.site_url);
   }
 
-  if (resolveConcorrenteKey(concorrente.nome) === "MEGALESTE" && mapping.sku_concorrente) {
+  if (isMegaleste(concorrente) && mapping.sku_concorrente) {
     return absoluteUrl(`/c/produto/${mapping.sku_concorrente}`, concorrente.site_url);
   }
 
@@ -122,6 +126,10 @@ function loginUrlForConcorrente(concorrente) {
 
   if (resolveConcorrenteKey(concorrente.nome) === "MAREST") {
     return absoluteUrl("/login", concorrente.site_url);
+  }
+
+  if (isMegaleste(concorrente)) {
+    return absoluteUrl("/sp", concorrente.site_url);
   }
 
   return absoluteUrl(concorrente.login_url || concorrente.site_url, concorrente.site_url);
@@ -179,6 +187,11 @@ async function login(page, concorrente) {
 
   if (isConstruja(concorrente)) {
     await loginConstruja(page, concorrente, credentials);
+    return;
+  }
+
+  if (isMegaleste(concorrente)) {
+    await loginMegaleste(page, concorrente, credentials);
     return;
   }
 
@@ -447,6 +460,286 @@ async function isConstrujaLoggedIn(page) {
     /deslogar/,
     /credito disponivel/,
   ]);
+}
+
+async function loginMegaleste(page, concorrente, credentials) {
+  const loginUrl = loginUrlForConcorrente(concorrente);
+
+  await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs });
+  await page.waitForLoadState("load", { timeout: quickLoadTimeoutMs }).catch(() => null);
+  await dismissOverlays(page);
+
+  if (await isMegalesteLoggedIn(page)) {
+    await goToMegalesteCustomerHome(page, concorrente);
+    return;
+  }
+
+  const opened = await openMegalesteLoginPanel(page);
+  if (!opened) {
+    throw new Error("Formulario de login da MEGALESTE nao abriu");
+  }
+
+  const filled = await fillMegalesteLoginForm(page, credentials);
+  if (!filled) {
+    throw new Error("Campos de login da MEGALESTE nao foram identificados");
+  }
+
+  const clicked = await clickMegalesteSubmit(page);
+  if (!clicked) {
+    await page.keyboard.press("Enter");
+  }
+
+  const logged = await waitForMegalesteLogin(page);
+  if (await hasInvalidCredentialsMessage(page)) {
+    throw new Error("Credenciais invalidas em MEGALESTE");
+  }
+  if (!logged) {
+    throw new Error("Login nao confirmado em MEGALESTE");
+  }
+
+  await goToMegalesteCustomerHome(page, concorrente);
+}
+
+async function openMegalesteLoginPanel(page) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    if (await isMegalesteLoginFormVisible(page)) return true;
+
+    await clickFirstVisible(page, [
+      "[class*='login' i] button",
+      "[class*='login' i] a",
+      "[class*='user' i] button",
+      "[class*='user' i] a",
+      "[class*='usuario' i] button",
+      "[class*='usuario' i] a",
+      "button:has-text('Entrar')",
+      "a:has-text('Entrar')",
+      "[role='button']:has-text('Entrar')",
+    ]);
+
+    if (!(await isMegalesteLoginFormVisible(page))) {
+      await clickMegalesteUserMenuByDom(page);
+    }
+
+    const visible = await waitForMegalesteLoginForm(page);
+    if (visible) return true;
+    await page.waitForTimeout(500);
+  }
+
+  return false;
+}
+
+async function isMegalesteLoginFormVisible(page) {
+  return page
+    .locator("input[type='password'], input[placeholder*='senha' i]")
+    .first()
+    .isVisible()
+    .catch(() => false);
+}
+
+async function waitForMegalesteLoginForm(page) {
+  return page
+    .locator("input[type='password'], input[placeholder*='senha' i]")
+    .first()
+    .waitFor({ state: "visible", timeout: 7000 })
+    .then(
+      () => true,
+      () => false,
+    );
+}
+
+async function fillMegalesteLoginForm(page, credentials) {
+  return page
+    .evaluate(({ login, password }) => {
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+      const setValue = (input, value) => {
+        input.focus();
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+
+      const passwordInput = [...document.querySelectorAll("input")]
+        .filter((input) => input instanceof HTMLInputElement && visible(input))
+        .find((input) => {
+          const label = `${input.type} ${input.name} ${input.id} ${input.placeholder}`;
+          return /password|senha/i.test(label);
+        });
+      if (!(passwordInput instanceof HTMLInputElement)) return false;
+
+      const root =
+        passwordInput.closest("form") ??
+        passwordInput.closest("[class*='login' i]") ??
+        passwordInput.closest("[class*='user' i]") ??
+        passwordInput.parentElement?.parentElement ??
+        document.body;
+      const inputs = [...root.querySelectorAll("input")].filter(
+        (input) => input instanceof HTMLInputElement && visible(input),
+      );
+      const loginInput = inputs.find((input) => {
+        if (input === passwordInput) return false;
+        const label = `${input.type} ${input.name} ${input.id} ${input.placeholder}`;
+        return !/search|busca|pesquisa|hidden|password|senha/i.test(label);
+      });
+      if (!(loginInput instanceof HTMLInputElement)) return false;
+
+      setValue(loginInput, login);
+      setValue(passwordInput, password);
+      return true;
+    }, credentials)
+    .catch(() => false);
+}
+
+async function clickMegalesteSubmit(page) {
+  return (
+    (await clickFirstVisible(page, [
+      "button:has-text('entrar')",
+      "button:has-text('Entrar')",
+      "input[type='submit'][value*='entrar' i]",
+      "input[type='submit'][value*='Entrar' i]",
+      "[role='button']:has-text('entrar')",
+      "[role='button']:has-text('Entrar')",
+    ])) || (await clickMegalesteSubmitByDom(page))
+  );
+}
+
+async function clickMegalesteSubmitByDom(page) {
+  return page
+    .evaluate(() => {
+      const normalize = (value) =>
+        String(value ?? "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+
+      const passwordInput = [...document.querySelectorAll("input")]
+        .filter((input) => input instanceof HTMLInputElement && visible(input))
+        .find((input) => /password|senha/i.test(`${input.type} ${input.name} ${input.id}`));
+      const root =
+        passwordInput?.closest("form") ??
+        passwordInput?.closest("[class*='login' i]") ??
+        passwordInput?.parentElement?.parentElement ??
+        document.body;
+      const candidates = [
+        ...root.querySelectorAll("button, input[type='submit'], a, [role='button']"),
+      ];
+      const target = candidates.find((node) => {
+        if (!(node instanceof HTMLElement) || !visible(node)) return false;
+        const label = node instanceof HTMLInputElement ? node.value : node.innerText;
+        return /^(entrar|login|acessar)$/.test(normalize(label));
+      });
+
+      if (!(target instanceof HTMLElement)) return false;
+      target.click();
+      return true;
+    })
+    .catch(() => false);
+}
+
+async function clickMegalesteUserMenuByDom(page) {
+  return page
+    .evaluate(() => {
+      const normalize = (value) =>
+        String(value ?? "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+
+      const candidates = [
+        ...document.querySelectorAll(
+          "button, a, [role='button'], [class*='user' i], [class*='login' i]",
+        ),
+      ]
+        .filter((node) => node instanceof HTMLElement && visible(node))
+        .filter((node) => !node.closest("form") && !node.querySelector("input"))
+        .map((node) => {
+          const rect = node.getBoundingClientRect();
+          const text = normalize(
+            node.innerText || node.textContent || node.getAttribute("aria-label"),
+          );
+          const className = String(node.className ?? "");
+          const rightHeader = rect.x > window.innerWidth * 0.65 && rect.y < 190;
+          const labelScore = /entrar|login|usuario|cliente|user/.test(`${text} ${className}`)
+            ? 40
+            : 0;
+          const iconScore = node.querySelector("svg, i") ? 20 : 0;
+          const positionScore = rightHeader ? 30 : 0;
+          return { node, score: labelScore + iconScore + positionScore, x: rect.x };
+        })
+        .filter((item) => item.score > 0)
+        .sort((a, b) => b.score - a.score || b.x - a.x);
+
+      const target = candidates[0]?.node;
+      if (!(target instanceof HTMLElement)) return false;
+      target.click();
+      return true;
+    })
+    .catch(() => false);
+}
+
+async function waitForMegalesteLogin(page) {
+  for (let attempt = 1; attempt <= 12; attempt += 1) {
+    await page
+      .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
+      .catch(() => null);
+
+    if (await isMegalesteLoggedIn(page)) return true;
+    await page.waitForTimeout(700);
+  }
+
+  return false;
+}
+
+async function isMegalesteLoggedIn(page) {
+  if (await isMegalesteLoginFormVisible(page)) return false;
+
+  const path = new URL(page.url()).pathname.replace(/\/+$/, "");
+  if (path === "/c" || path.startsWith("/c/")) return true;
+
+  return pageHasText(page, [/centermak/, /seus pedidos/, /todos os produtos/]);
+}
+
+async function goToMegalesteCustomerHome(page, concorrente) {
+  const currentPath = new URL(page.url()).pathname.replace(/\/+$/, "");
+  if (currentPath === "/c" || currentPath.startsWith("/c/")) return;
+
+  await page.goto(absoluteUrl("/c", concorrente.site_url), {
+    waitUntil: "domcontentloaded",
+    timeout: navigationTimeoutMs,
+  });
+  await dismissOverlays(page);
 }
 
 async function loginCofema(page, concorrente, credentials) {
@@ -799,20 +1092,80 @@ async function openLoginSurface(page) {
 
 async function dismissOverlays(page) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const clicked = await clickFirstVisible(page, [
-      "button:has-text('Entendi')",
-      "#botao-aceitar-todos",
-      "button:has-text('Aceitar todos')",
-      "button:has-text('Aceitar')",
-      "button:has-text('Fechar')",
-      ".modal button.btn-close",
-      "[aria-label='Close']",
-      "[aria-label='Fechar']",
-    ]);
+    const clicked =
+      (await clickFirstVisible(page, [
+        "button:has-text('Entendi')",
+        "#botao-aceitar-todos",
+        "button:has-text('Aceitar todos')",
+        "button:has-text('Aceitar')",
+        "button:has-text('Recusar')",
+        "button:has-text('Fechar')",
+        "button:has-text('Não exibir mais hoje')",
+        "button:has-text('Nao exibir mais hoje')",
+        ".modal button.btn-close",
+        ".modal [class*='close' i]",
+        "[role='dialog'] [class*='close' i]",
+        "[aria-label='Close']",
+        "[aria-label='Fechar']",
+      ])) || (await clickOverlayCloseByDom(page));
 
     if (!clicked) return;
     await page.waitForTimeout(250);
   }
+}
+
+async function clickOverlayCloseByDom(page) {
+  return page
+    .evaluate(() => {
+      const normalize = (value) =>
+        String(value ?? "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+
+      const overlays = [
+        ...document.querySelectorAll(
+          ".modal, [role='dialog'], [class*='modal' i], [class*='popup' i], [class*='cookie' i], [class*='overlay' i]",
+        ),
+      ].filter((node) => node instanceof HTMLElement && visible(node));
+
+      for (const overlay of overlays) {
+        const candidates = [
+          ...overlay.querySelectorAll("button, a, [role='button'], [class*='close' i]"),
+        ].filter((node) => node instanceof HTMLElement && visible(node));
+        const target = candidates.find((node) => {
+          const label = normalize(
+            node.innerText || node.textContent || node.getAttribute("aria-label"),
+          );
+          const className = String(node.className ?? "");
+          return (
+            ["x", "×", "fechar", "close", "aceitar", "recusar", "nao exibir mais hoje"].includes(
+              label,
+            ) || /close|fechar/i.test(className)
+          );
+        });
+
+        if (target instanceof HTMLElement) {
+          target.click();
+          return true;
+        }
+      }
+
+      return false;
+    })
+    .catch(() => false);
 }
 
 async function ensureConcorrentePreferences(page, concorrente) {
@@ -943,7 +1296,7 @@ async function openProductPage(page, context, statePath, mapping, concorrente) {
 }
 
 async function openProductBySearch(page, context, statePath, mapping, concorrente) {
-  const queries = searchQueriesForMapping(mapping);
+  const queries = searchQueriesForMapping(mapping, concorrente);
   if (queries.length === 0) {
     throw new Error("Termo de busca do produto nao cadastrado");
   }
@@ -957,6 +1310,7 @@ async function openProductBySearch(page, context, statePath, mapping, concorrent
         waitUntil: "domcontentloaded",
         timeout: navigationTimeoutMs,
       });
+      await dismissOverlays(page);
 
       if (await ensurePreferencesForRead(page, concorrente)) {
         await context.storageState({ path: statePath });
@@ -964,11 +1318,13 @@ async function openProductBySearch(page, context, statePath, mapping, concorrent
           waitUntil: "domcontentloaded",
           timeout: navigationTimeoutMs,
         });
+        await dismissOverlays(page);
       }
 
       const searched = await submitSiteSearch(page, query);
+      const searchHasResults = searched && (await hasSearchResultContent(page, query, mapping));
       const openedSearchPage =
-        searched || (await openSearchFallback(page, query, concorrente, mapping));
+        searchHasResults || (await openSearchFallback(page, query, concorrente, mapping));
       if (!openedSearchPage) {
         lastError = new Error(`Busca nao retornou resultado para "${query}"`);
         continue;
@@ -1012,6 +1368,11 @@ async function openSearchFallback(page, query, concorrente, mapping) {
         waitUntil: "domcontentloaded",
         timeout: navigationTimeoutMs,
       });
+      await dismissOverlays(page);
+
+      if (shouldSearchAfterFallback(url)) {
+        await submitSiteSearch(page, query);
+      }
 
       await waitForProductSignal(page);
       if (await hasSearchResultContent(page, query, mapping)) return true;
@@ -1024,7 +1385,12 @@ async function openSearchFallback(page, query, concorrente, mapping) {
   return false;
 }
 
-function searchQueriesForMapping(mapping) {
+function shouldSearchAfterFallback(url) {
+  const pathname = new URL(url).pathname.replace(/\/+$/, "");
+  return ["/products", "/c", "/c/busca"].includes(pathname);
+}
+
+function searchQueriesForMapping(mapping, concorrente) {
   const supplierSku = cleanSearchQuery(mapping.sku_concorrente);
   const productName = cleanSearchQuery(mapping.produtos?.nome);
   const productVariants = productNameVariants(mapping.produtos?.nome).map(cleanSearchQuery);
@@ -1033,20 +1399,9 @@ function searchQueriesForMapping(mapping) {
   const descriptionQueries = [productName, ...productVariants].filter(Boolean);
   const rawQueries = supplierSku
     ? [
-        ...(productName
-          ? [
-              `${supplierSku} ${productName}`,
-              `Codigo ${supplierSku} ${productName}`,
-              `Cod ${supplierSku} ${productName}`,
-            ]
-          : []),
-        ...descriptionQueries.map((description) => `${supplierSku} ${description}`),
-        `Codigo ${supplierSku}`,
-        `Codigo: ${supplierSku}`,
-        `Código ${supplierSku}`,
-        `Cod ${supplierSku}`,
-        `Cod: ${supplierSku}`,
         supplierSku,
+        ...(productName ? [`${supplierSku} ${productName}`] : []),
+        ...descriptionQueries.map((description) => `${supplierSku} ${description}`),
         ...(internalSku && internalSku !== supplierSku ? [`${supplierSku} ${internalSku}`] : []),
       ]
     : [productName, ...productVariants, internalSku];
@@ -1065,6 +1420,10 @@ function searchStartUrlForMapping(mapping, concorrente) {
     ? cofemaUrl(concorrente.site_url || "/")
     : absoluteUrl(concorrente.site_url || concorrente.login_url || "/", concorrente.site_url);
 
+  if (usesSearchFlow(concorrente) && isMegaleste(concorrente)) {
+    return absoluteUrl("/c", fallback);
+  }
+
   if (usesSearchFlow(concorrente)) return fallback;
   if (!mapping.url_produto) return fallback;
 
@@ -1081,21 +1440,11 @@ function searchUrlFallbacks(query, concorrente) {
 
   const host = new URL(base).hostname;
   if (/marest/i.test(host)) {
-    return [
-      absoluteUrl(`/product?search=${encoded}`, base),
-      absoluteUrl(`/busca?search=${encoded}`, base),
-      absoluteUrl(`/busca?q=${encoded}`, base),
-    ];
+    return [absoluteUrl("/products", base)];
   }
 
   if (/megaleste/i.test(host)) {
-    const urls = [
-      absoluteUrl(`/sp?q=${encoded}`, base),
-      absoluteUrl(`/sp?search=${encoded}`, base),
-      absoluteUrl(`/busca?q=${encoded}`, base),
-    ];
-    if (/^\d+$/.test(query)) urls.push(absoluteUrl(`/c/produto/${encoded}`, base));
-    return urls;
+    return [absoluteUrl("/c/busca", base), absoluteUrl("/c", base)];
   }
 
   return [
@@ -1109,8 +1458,12 @@ async function submitSiteSearch(page, query) {
   const selectors = [
     "input[type='search']",
     "input[placeholder*='buscar' i]",
+    "input[placeholder*='pesquise' i]",
     "input[placeholder*='pesquisar' i]",
     "input[placeholder*='procura' i]",
+    "input[placeholder*='Cod' i]",
+    "input[placeholder*='Nome' i]",
+    "input[placeholder*='Marca' i]",
     "input[name*='search' i]",
     "input[name*='busca' i]",
     "input[id*='search' i]",
@@ -1134,13 +1487,43 @@ async function submitSiteSearch(page, query) {
 
     if (await hasSearchChanged(page, beforeUrl, query)) return true;
 
-    if (await clickSearchSubmit(page)) {
+    if ((await clickSearchSubmitNearInput(locator)) || (await clickSearchSubmit(page))) {
       await page.waitForTimeout(900);
       if (await hasSearchChanged(page, beforeUrl, query)) return true;
     }
   }
 
   return false;
+}
+
+async function clickSearchSubmitNearInput(locator) {
+  return locator
+    .evaluate((input) => {
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+      const root =
+        input.closest("form") ??
+        input.closest("header") ??
+        input.parentElement?.parentElement ??
+        input.parentElement;
+      if (!(root instanceof HTMLElement)) return false;
+
+      const buttons = [...root.querySelectorAll("button, [role='button'], input[type='submit']")];
+      const target = buttons.find((node) => node instanceof HTMLElement && visible(node));
+      if (!(target instanceof HTMLElement)) return false;
+
+      target.click();
+      return true;
+    })
+    .catch(() => false);
 }
 
 async function hasSearchChanged(page, beforeUrl, query) {
@@ -1817,15 +2200,18 @@ async function isProductUnavailable(page) {
 }
 
 async function isProductUnavailableForMapping(page, mapping, concorrente) {
-  if (!usesSearchFlow(concorrente)) return isProductUnavailable(page);
+  const availability = await expectedProductAvailability(page, mapping);
+  if (availability.unavailable) return true;
+  if (availability.found) return false;
 
-  if (await isExpectedProductUnavailable(page, mapping)) return true;
-  return false;
+  return usesSearchFlow(concorrente) ? false : isProductUnavailable(page);
 }
 
-async function isExpectedProductUnavailable(page, mapping) {
+async function expectedProductAvailability(page, mapping) {
   const identity = productIdentity(mapping);
-  if (identity.codes.length === 0 && identity.terms.length === 0) return isProductUnavailable(page);
+  if (identity.codes.length === 0 && identity.terms.length === 0) {
+    return { found: false, unavailable: await isProductUnavailable(page) };
+  }
 
   return page
     .evaluate(({ codes, terms }) => {
@@ -1877,19 +2263,22 @@ async function isExpectedProductUnavailable(page, mapping) {
         ),
       ];
 
-      return nodes
+      const candidates = nodes
         .filter((node) => node instanceof HTMLElement && visible(node))
-        .some((node) => {
+        .map((node) => {
           const text = normalize(node.innerText || node.textContent || "");
-          return (
-            text.length > 0 &&
-            text.length <= 2500 &&
-            isExpectedBlock(text) &&
-            unavailableSignalPattern.test(text)
-          );
-        });
+          return { text, length: text.length };
+        })
+        .filter((item) => item.length > 0 && item.length <= 2500 && isExpectedBlock(item.text))
+        .sort((a, b) => a.length - b.length)
+        .slice(0, 12);
+
+      return {
+        found: candidates.length > 0,
+        unavailable: candidates.some((item) => unavailableSignalPattern.test(item.text)),
+      };
     }, identity)
-    .catch(() => false);
+    .catch(() => ({ found: false, unavailable: false }));
 }
 
 function normalizeText(value) {
@@ -1936,15 +2325,9 @@ async function shouldRetryLogin(page, mapping, concorrente) {
   if (isConstruja(concorrente)) return !(await isConstrujaLoggedIn(page));
   if (await isLoginRequired(page)) return true;
 
-  if (resolveConcorrenteKey(concorrente.nome) === "MEGALESTE") {
+  if (isMegaleste(concorrente)) {
     const path = new URL(page.url()).pathname.replace(/\/+$/, "");
     if (path === "/sp" || path === "") return true;
-
-    const text = await page
-      .locator("body")
-      .innerText({ timeout: 5000 })
-      .catch(() => "");
-    if (mapping.sku_concorrente && !text.includes(mapping.sku_concorrente)) return true;
   }
 
   return false;
