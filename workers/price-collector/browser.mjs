@@ -1522,6 +1522,27 @@ async function openProductPage(page, context, statePath, mapping, concorrente) {
   if (productSettleMs > 0) await page.waitForTimeout(productSettleMs);
 }
 
+async function openProductWithAuthenticatedSession(page, context, statePath, mapping, concorrente) {
+  const maximumAttempts = isConstruja(concorrente) ? 3 : 2;
+
+  for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+    await openProductPage(page, context, statePath, mapping, concorrente);
+
+    if (!(await shouldRetryLogin(page, mapping, concorrente))) return;
+    if (attempt === maximumAttempts) return;
+
+    console.log(
+      `[${concorrente.nome}] Sessao nao permaneceu ativa no produto; ` +
+        `reautenticando (${attempt + 1}/${maximumAttempts}).`,
+    );
+    await resetAuthState(context, page, statePath, concorrente, "login vencido no produto");
+    await page.waitForTimeout(attempt * 1000);
+    await login(page, concorrente);
+    await ensurePreferencesForRead(page, concorrente);
+    await context.storageState({ path: statePath });
+  }
+}
+
 async function openProductBySearch(page, context, statePath, mapping, concorrente) {
   const queries = searchQueriesForMapping(mapping, concorrente);
   if (queries.length === 0) {
@@ -2218,15 +2239,13 @@ async function collectGroup(browser, group, options = {}) {
         }
 
         await reportProgress(options, `Lendo ${progressLabel}`);
-        await openProductPage(page, context, statePath, mapping, group.concorrente);
-
-        if (await shouldRetryLogin(page, mapping, group.concorrente)) {
-          await resetAuthState(context, page, statePath, group.concorrente, "login vencido");
-          await login(page, group.concorrente);
-          await ensurePreferencesForRead(page, group.concorrente);
-          await context.storageState({ path: statePath });
-          await openProductPage(page, context, statePath, mapping, group.concorrente);
-        }
+        await openProductWithAuthenticatedSession(
+          page,
+          context,
+          statePath,
+          mapping,
+          group.concorrente,
+        );
 
         if (await isLoginRequired(page, group.concorrente)) {
           throw new Error("Login nao confirmado; pagina ainda solicita autenticacao");
