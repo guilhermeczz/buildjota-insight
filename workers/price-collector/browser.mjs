@@ -111,9 +111,29 @@ function cofemaUrl(value = "/", fallbackBase = cofemaBaseUrl) {
   return url.toString();
 }
 
+function construjaUrl(value, concorrente) {
+  const canonicalBase = concorrente.site_url || concorrente.login_url;
+  const url = new URL(value || canonicalBase, canonicalBase);
+
+  // Cookies and web storage are origin-scoped. Keep login, search and product pages on the
+  // exact same Construja origin even when a saved URL uses a different www/protocol variant.
+  if (/^(?:www\.)?construja\.com\.br$/i.test(url.hostname) && canonicalBase) {
+    const canonical = new URL(canonicalBase);
+    url.protocol = canonical.protocol;
+    url.hostname = canonical.hostname;
+    url.port = canonical.port;
+  }
+
+  return url.toString();
+}
+
 function productUrlForMapping(mapping, concorrente) {
   if (isCofema(concorrente)) {
     return cofemaUrl(mapping.url_produto || concorrente.site_url);
+  }
+
+  if (isConstruja(concorrente)) {
+    return construjaUrl(mapping.url_produto || concorrente.site_url, concorrente);
   }
 
   if (isMegaleste(concorrente) && mapping.sku_concorrente) {
@@ -134,6 +154,10 @@ function loginUrlForConcorrente(concorrente) {
 
   if (isMegaleste(concorrente)) {
     return absoluteUrl("/sp", concorrente.site_url);
+  }
+
+  if (isConstruja(concorrente)) {
+    return construjaUrl(concorrente.login_url || concorrente.site_url, concorrente);
   }
 
   return absoluteUrl(concorrente.login_url || concorrente.site_url, concorrente.site_url);
@@ -379,6 +403,7 @@ async function loginConstruja(page, concorrente, credentials) {
   await page.waitForLoadState("networkidle", { timeout: quickLoadTimeoutMs }).catch(() => null);
   await page.waitForTimeout(750);
   await dismissOverlays(page);
+  console.log(`[CONSTRUJA] Sessao autenticada em ${new URL(page.url()).origin}.`);
 }
 
 async function openConstrujaLoginModal(page) {
@@ -1466,6 +1491,10 @@ async function openProductPage(page, context, statePath, mapping, concorrente) {
 
   const productUrl = productUrlForMapping(mapping, concorrente);
 
+  if (isConstruja(concorrente)) {
+    console.log(`[CONSTRUJA] Abrindo produto na mesma sessao: ${productUrl}`);
+  }
+
   await page.goto(productUrl, {
     waitUntil: "domcontentloaded",
     timeout: navigationTimeoutMs,
@@ -1616,7 +1645,9 @@ function cleanSearchQuery(value) {
 function searchStartUrlForMapping(mapping, concorrente) {
   const fallback = isCofema(concorrente)
     ? cofemaUrl(concorrente.site_url || "/")
-    : absoluteUrl(concorrente.site_url || concorrente.login_url || "/", concorrente.site_url);
+    : isConstruja(concorrente)
+      ? construjaUrl(concorrente.site_url || concorrente.login_url || "/", concorrente)
+      : absoluteUrl(concorrente.site_url || concorrente.login_url || "/", concorrente.site_url);
 
   if (usesSearchFlow(concorrente) && isMegaleste(concorrente)) {
     return absoluteUrl("/c/busca", fallback);
@@ -1627,7 +1658,9 @@ function searchStartUrlForMapping(mapping, concorrente) {
 
   return isCofema(concorrente)
     ? cofemaUrl(mapping.url_produto, fallback)
-    : absoluteUrl(mapping.url_produto, fallback);
+    : isConstruja(concorrente)
+      ? construjaUrl(mapping.url_produto, concorrente)
+      : absoluteUrl(mapping.url_produto, fallback);
 }
 
 function searchUrlFallbacks(query, concorrente) {
