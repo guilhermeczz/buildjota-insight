@@ -375,6 +375,10 @@ async function loginConstruja(page, concorrente, credentials) {
   if (!logged) {
     throw new Error("Login nao confirmado em CONSTRUJA");
   }
+
+  await page.waitForLoadState("networkidle", { timeout: quickLoadTimeoutMs }).catch(() => null);
+  await page.waitForTimeout(750);
+  await dismissOverlays(page);
 }
 
 async function openConstrujaLoginModal(page) {
@@ -445,12 +449,34 @@ async function waitForConstrujaLoginForm(page) {
 }
 
 async function waitForConstrujaLogin(page) {
+  let closedFormChecks = 0;
+
   for (let attempt = 1; attempt <= 12; attempt += 1) {
     await page
       .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
       .catch(() => null);
 
     if (await isConstrujaLoggedIn(page)) return true;
+
+    if (await hasInvalidCredentialsMessage(page)) return false;
+
+    const formVisible = await isConstrujaLoginFormVisible(page);
+    const text = await page
+      .locator("body")
+      .innerText({ timeout: 2500 })
+      .catch(() => "");
+    const stillLoggedOut = /entre ou cadastre-se|entrar ou cadastrar-se/.test(normalizeText(text));
+
+    // This check runs only after the credentials were submitted. Some Construja pages do not
+    // expose account labels, but a successful login consistently closes the modal and removes
+    // the logged-out action. Require two stable checks to avoid racing the header render.
+    if (!formVisible && !stillLoggedOut) {
+      closedFormChecks += 1;
+      if (closedFormChecks >= 2) return true;
+    } else {
+      closedFormChecks = 0;
+    }
+
     await page.waitForTimeout(750);
   }
 

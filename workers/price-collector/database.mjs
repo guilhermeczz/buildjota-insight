@@ -219,6 +219,10 @@ export async function fetchActiveMappings(_client, filters = {}) {
     values.push(filters.familiaId);
     clauses.push(`p.familia_id = $${values.length}`);
   }
+  if (filters.concorrente) {
+    values.push(String(filters.concorrente).trim().toUpperCase());
+    clauses.push(`upper(trim(c.nome)) = $${values.length}`);
+  }
   if (filters.failedOnly) {
     if (filters.failedSince || filters.failedUntil) {
       const failedClauses = ["h.mapeamento_id = m.id", "h.status = 'erro'"];
