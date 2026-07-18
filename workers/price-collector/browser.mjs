@@ -2484,7 +2484,7 @@ async function isProductUnavailable(page) {
   const normalized = normalizeText(text);
 
   if (
-    /fora\s+(?:de|do)\s+estoque|produto\s+indisponivel|item\s+indisponivel|indisponivel\s+no\s+momento|temporariamente\s+indisponivel|sem\s+estoque|produto\s+esgotado|esgotado|avise-?me\s+quando\s+chegar|aviseme\s+quando\s+chegar|produto\s+sob\s+consulta/.test(
+    /fora\s+(?:de|do)\s+estoque|produto\s+indisponivel|item\s+indisponivel|nao\s+disponivel|indisponivel\s+no\s+momento|temporariamente\s+indisponivel|sem\s+(?:estoque|saldo)|produto\s+esgotado|esgotado|avise-?me\s+quando\s+(?:chegar|disponivel)|aviseme\s+quando\s+(?:chegar|disponivel)|produto\s+sob\s+consulta|consulte\s+(?:a\s+)?disponibilidade|aguardando\s+estoque/.test(
       normalized,
     )
   ) {
@@ -2537,7 +2537,7 @@ async function expectedProductAvailability(page, mapping) {
   return page
     .evaluate(({ codes, terms }) => {
       const unavailableSignalPattern =
-        /fora\s+(?:de|do)\s+estoque|sem\s+estoque|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+chegar|aviseme\s+quando\s+chegar|produto\s+sob\s+consulta/;
+        /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|nao\s+disponivel|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+(?:chegar|disponivel)|aviseme\s+quando\s+(?:chegar|disponivel)|produto\s+sob\s+consulta|consulte\s+(?:a\s+)?disponibilidade|aguardando\s+estoque/;
       const pricePattern = /R\$\s*\d|\d{1,3}(?:\.\d{3})*,\d{2,3}/;
       const buyActionPattern = /\b(adic\.?|adicionar|comprar|carrinho)\b/;
       const normalize = (value) =>
@@ -2616,8 +2616,7 @@ async function expectedProductAvailability(page, mapping) {
       return {
         found: candidates.length > 0,
         unavailable:
-          candidates.length > 0 &&
-          candidates.every((item) => item.unavailable && !item.hasPrice && !item.hasBuyAction),
+          candidates.length > 0 && candidates.every((item) => !item.hasPrice && !item.hasBuyAction),
       };
     }, identity)
     .catch(() => ({ found: false, unavailable: false }));

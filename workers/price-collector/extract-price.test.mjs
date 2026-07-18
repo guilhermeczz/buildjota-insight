@@ -20,3 +20,9 @@ test("keeps reading standard Brazilian price formats", () => {
   assert.equal(parseBRL("R$ 1.162,09"), 1162.09);
   assert.equal(parseBRL("R$ 162,09"), 162.09);
 });
+
+test("rejects prices inside unavailable product blocks", () => {
+  assert.equal(parseBRL("Consulte a disponibilidade R$ 162,09"), null);
+  assert.equal(parseBRL("Produto sem saldo R$ 162,09"), null);
+  assert.equal(parseBRL("Avise-me quando disponivel R$ 162,09"), null);
+});

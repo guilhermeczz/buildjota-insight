@@ -4,7 +4,7 @@ const moneyPatternSource = String.raw`(?:R\$\s*)?(\d{1,3}(?:\s*\.\s*\d{3})*\s*,\
 const moneyPattern = new RegExp(moneyPatternSource, "g");
 const placeholderPricePattern = /R\$\s*[-–—]+(?:\s*[-–—]+|,\s*[-–—]+)*/i;
 const unavailableSignalPattern =
-  /fora\s+(?:de|do)\s+estoque|sem\s+estoque|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+chegar|aviseme\s+quando\s+chegar|produto\s+sob\s+consulta/;
+  /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|nao\s+disponivel|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+(?:chegar|disponivel)|aviseme\s+quando\s+(?:chegar|disponivel)|produto\s+sob\s+consulta|consulte\s+(?:a\s+)?disponibilidade|aguardando\s+estoque/;
 
 const priceHints = [
   { selector: "[itemprop='price']", preferLast: false },
@@ -184,7 +184,7 @@ export async function extractPriceNearTerms(page, terms, options = {}) {
         const moneyPattern = new RegExp(browserMoneyPatternSource);
         const placeholderPricePattern = /R\$\s*[-–—]+(?:\s*[-–—]+|,\s*[-–—]+)*/i;
         const unavailableSignalPattern =
-          /fora\s+(?:de|do)\s+estoque|sem\s+estoque|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+chegar|aviseme\s+quando\s+chegar|produto\s+sob\s+consulta/;
+          /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|nao\s+disponivel|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+(?:chegar|disponivel)|aviseme\s+quando\s+(?:chegar|disponivel)|produto\s+sob\s+consulta|consulte\s+(?:a\s+)?disponibilidade|aguardando\s+estoque/;
         const normalize = (value) =>
           String(value ?? "")
             .normalize("NFD")
@@ -320,7 +320,7 @@ async function parseLocatorPrice(page, selector, options) {
             .toLowerCase();
         const placeholderPricePattern = /R\$\s*[-–—]+(?:\s*[-–—]+|,\s*[-–—]+)*/i;
         const unavailableSignalPattern =
-          /fora\s+(?:de|do)\s+estoque|sem\s+estoque|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+chegar|aviseme\s+quando\s+chegar|produto\s+sob\s+consulta/;
+          /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|nao\s+disponivel|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+(?:chegar|disponivel)|aviseme\s+quando\s+(?:chegar|disponivel)|produto\s+sob\s+consulta|consulte\s+(?:a\s+)?disponibilidade|aguardando\s+estoque/;
 
         const isVisible = (target) => {
           if (!target || target instanceof HTMLMetaElement) return true;
