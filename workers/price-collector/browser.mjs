@@ -53,6 +53,35 @@ async function resetAuthState(context, page, statePath, concorrente, reason) {
   console.log(`[${concorrente.nome}] Sessao local limpa (${reason}).`);
 }
 
+async function prepareAuthenticatedSession(context, page, statePath, concorrente) {
+  const maximumAttempts = isConstruja(concorrente) ? 3 : 1;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+    try {
+      await login(page, concorrente);
+      await ensurePreferencesForRead(page, concorrente);
+      await context.storageState({ path: statePath });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt === maximumAttempts || hasInvalidCredentialsError(error)) throw error;
+
+      console.log(
+        `[${concorrente.nome}] Preparacao da sessao falhou; ` +
+          `nova tentativa automatica (${attempt + 1}/${maximumAttempts}).`,
+      );
+      await page.waitForTimeout(attempt * 1500);
+    }
+  }
+
+  throw lastError ?? new Error(`Sessao nao preparada em ${concorrente.nome}`);
+}
+
+function hasInvalidCredentialsError(error) {
+  return error instanceof Error && /Credenciais invalidas/i.test(error.message);
+}
+
 function isAuthStateError(error) {
   if (!(error instanceof Error)) return false;
 
@@ -325,8 +354,12 @@ async function loginConstruja(page, concorrente, credentials) {
   await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs });
   await page.waitForLoadState("load", { timeout: quickLoadTimeoutMs }).catch(() => null);
   await dismissOverlays(page);
+  await page.waitForTimeout(800);
 
-  if (await isConstrujaLoggedIn(page)) return;
+  if (await isConstrujaLoggedIn(page)) {
+    console.log("[CONSTRUJA] Sessao existente reutilizada.");
+    return;
+  }
 
   const opened = await openConstrujaLoginModal(page);
   if (!opened) {
@@ -555,8 +588,6 @@ async function waitForConstrujaLogin(page) {
 }
 
 async function isConstrujaLoggedIn(page) {
-  if (await isConstrujaLoginFormVisible(page)) return false;
-
   const text = await page
     .locator("body")
     .innerText({ timeout: 2500 })
@@ -564,16 +595,40 @@ async function isConstrujaLoggedIn(page) {
   const normalized = normalizeText(text);
   if (!normalized) return false;
 
-  // The header can render after the rest of the page. Absence of the login button is not
-  // proof of authentication; require an explicit customer/session signal instead.
-  if (/entre ou cadastre-se|entrar ou cadastrar-se/.test(normalized)) return false;
+  return !(await isConstrujaLoggedOut(page));
+}
 
-  const hasCustomerArea = /area do cliente|minha conta|meus pedidos/.test(normalized);
-  const hasCustomerData =
-    /loja:\s*\S|filial:\s*\S|credito disponivel|limite disponivel/.test(normalized) ||
-    /area do cliente.{0,300}centermak|centermak.{0,300}area do cliente/.test(normalized);
-  const hasLogout = /\b(deslogar|sair)\b/.test(normalized);
-  return hasLogout || (hasCustomerArea && hasCustomerData);
+async function isConstrujaLoggedOut(page) {
+  if (await isConstrujaLoginFormVisible(page)) return true;
+
+  const triggers = page.locator(
+    [
+      "button:has-text('Entre ou cadastre')",
+      "a:has-text('Entre ou cadastre')",
+      "[role='button']:has-text('Entre ou cadastre')",
+      "button:has-text('Cadastre-se para ver')",
+      "a:has-text('Cadastre-se para ver')",
+      "[role='button']:has-text('Cadastre-se para ver')",
+    ].join(", "),
+  );
+  const count = await triggers.count().catch(() => 0);
+  for (let index = 0; index < count; index += 1) {
+    if (
+      await triggers
+        .nth(index)
+        .isVisible()
+        .catch(() => false)
+    )
+      return true;
+  }
+
+  const text = await page
+    .locator("body")
+    .innerText({ timeout: 2500 })
+    .catch(() => "");
+  return /entre ou cadastre(?:-se)?|cadastre-se para ver (?:o )?preco|entre para ver (?:o )?preco/.test(
+    normalizeText(text),
+  );
 }
 
 async function loginMarest(page, concorrente, credentials) {
@@ -1583,9 +1638,7 @@ async function openProductWithAuthenticatedSession(page, context, statePath, map
     );
     await resetAuthState(context, page, statePath, concorrente, "login vencido no produto");
     await page.waitForTimeout(attempt * 1000);
-    await login(page, concorrente);
-    await ensurePreferencesForRead(page, concorrente);
-    await context.storageState({ path: statePath });
+    await prepareAuthenticatedSession(context, page, statePath, concorrente);
   }
 }
 
@@ -2284,9 +2337,7 @@ async function collectGroup(browser, group, options = {}) {
     // Construja sessions may expire while their storage-state file remains present.
     // Always visit the login page and positively validate that session before collecting.
     if (!existsSync(statePath) || isConstruja(group.concorrente)) {
-      await login(page, group.concorrente);
-      await ensurePreferencesForRead(page, group.concorrente);
-      await context.storageState({ path: statePath });
+      await prepareAuthenticatedSession(context, page, statePath, group.concorrente);
     }
 
     console.log(`[${group.concorrente.nome}] Iniciando ${group.mapeamentos.length} mapeamento(s).`);
@@ -2510,7 +2561,7 @@ async function waitForActionableProductSignal(page) {
 
 async function isLoginRequired(page, concorrente = null) {
   if (concorrente && isConstruja(concorrente)) {
-    return !(await isConstrujaLoggedIn(page));
+    return isConstrujaLoggedOut(page);
   }
 
   const text = await page
@@ -2749,7 +2800,7 @@ async function hasInvalidCredentialsMessage(page) {
 
 async function shouldRetryLogin(page, mapping, concorrente) {
   if (isCofema(concorrente)) return isLoginRequired(page);
-  if (isConstruja(concorrente)) return !(await isConstrujaLoggedIn(page));
+  if (isConstruja(concorrente)) return isConstrujaLoggedOut(page);
   if (isMarest(concorrente)) return !(await isMarestLoggedIn(page));
   if (await isLoginRequired(page)) return true;
 
