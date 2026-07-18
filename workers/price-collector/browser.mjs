@@ -2251,7 +2251,10 @@ async function collectGroup(browser, group, options = {}) {
           throw new Error("Login nao confirmado; pagina ainda solicita autenticacao");
         }
 
-        if (await isProductUnavailableForMapping(page, mapping, group.concorrente)) {
+        if (
+          !isConstruja(group.concorrente) &&
+          (await isProductUnavailableForMapping(page, mapping, group.concorrente))
+        ) {
           throw new Error("Produto indisponível no concorrente");
         }
 
@@ -2263,7 +2266,11 @@ async function collectGroup(browser, group, options = {}) {
           : ((await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)) ??
             (await extractPrice(page, mapping.seletor_preco, priceOptions)));
 
-        if (await isProductUnavailableForMapping(page, mapping, group.concorrente)) {
+        if (
+          price &&
+          !isConstruja(group.concorrente) &&
+          (await isProductUnavailableForMapping(page, mapping, group.concorrente))
+        ) {
           throw new Error("Produto indisponível no concorrente");
         }
 
@@ -2521,104 +2528,114 @@ async function isProductUnavailable(page) {
 }
 
 async function isProductUnavailableForMapping(page, mapping, concorrente) {
-  const availability = await expectedProductAvailability(page, mapping);
+  const availability = await expectedProductAvailability(page, mapping, concorrente);
   if (availability.unavailable) return true;
   if (availability.found) return false;
 
   return usesSearchFlow(concorrente) ? false : isProductUnavailable(page);
 }
 
-async function expectedProductAvailability(page, mapping) {
+async function expectedProductAvailability(page, mapping, concorrente) {
   const identity = productIdentity(mapping);
   if (identity.codes.length === 0 && identity.terms.length === 0) {
     return { found: false, unavailable: await isProductUnavailable(page) };
   }
 
   return page
-    .evaluate(({ codes, terms }) => {
-      const unavailableSignalPattern =
-        /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|nao\s+disponivel|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+(?:chegar|disponivel)|aviseme\s+quando\s+(?:chegar|disponivel)|produto\s+sob\s+consulta|consulte\s+(?:a\s+)?disponibilidade|aguardando\s+estoque/;
-      const pricePattern = /R\$\s*\d|\d{1,3}(?:\.\d{3})*,\d{2,3}/;
-      const buyActionPattern = /\b(adic\.?|adicionar|comprar|carrinho)\b/;
-      const normalize = (value) =>
-        String(value ?? "")
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
-          .replace(/\s+/g, " ")
-          .trim()
-          .toLowerCase();
-      const visible = (element) => {
-        const style = window.getComputedStyle(element);
-        const rect = element.getBoundingClientRect();
-        return (
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          rect.width > 0 &&
-          rect.height > 0
+    .evaluate(
+      ({ codes, terms, inferMissingOfferAsUnavailable }) => {
+        const unavailableSignalPattern =
+          /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|nao\s+disponivel|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+(?:chegar|disponivel)|aviseme\s+quando\s+(?:chegar|disponivel)|produto\s+sob\s+consulta|consulte\s+(?:a\s+)?disponibilidade|aguardando\s+estoque/;
+        const pricePattern = /R\$\s*\d|\d{1,3}(?:\.\d{3})*,\d{2,3}/;
+        const buyActionPattern = /\b(adic\.?|adicionar|comprar|carrinho)\b/;
+        const normalize = (value) =>
+          String(value ?? "")
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .toLowerCase();
+        const visible = (element) => {
+          const style = window.getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return (
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            rect.width > 0 &&
+            rect.height > 0
+          );
+        };
+        const hasCode = (text) => codes.some((code) => text.includes(code));
+        const matchedTerms = (text) => terms.filter((term) => text.includes(term));
+        const isExpectedBlock = (text) => {
+          if (codes.length > 0) return hasCode(text);
+          const matches = matchedTerms(text);
+          const numericTerms = terms.filter((term) => /^\d+(?:[,.]\d+)?[a-z]*$/.test(term));
+          const hasMeasure =
+            numericTerms.length === 0 || numericTerms.some((term) => text.includes(term));
+          return hasMeasure && matches.length >= Math.min(2, terms.length);
+        };
+
+        const nodes = [
+          ...document.querySelectorAll(
+            [
+              "article",
+              "li",
+              "tr",
+              "[class*='produto' i]",
+              "[class*='product' i]",
+              "[class*='item' i]",
+              "[class*='card' i]",
+              "[class*='col-' i]",
+              "section",
+              "main",
+              "div",
+            ].join(", "),
+          ),
+        ];
+
+        const candidates = nodes
+          .filter((node) => node instanceof HTMLElement && visible(node))
+          .map((node) => {
+            const rawText = node.innerText || node.textContent || "";
+            const text = normalize(rawText);
+            return {
+              text,
+              length: text.length,
+              hasPrice: pricePattern.test(rawText),
+              hasBuyAction: buyActionPattern.test(text),
+              unavailable: unavailableSignalPattern.test(text),
+            };
+          })
+          .filter((item) => item.length > 0 && item.length <= 2500 && isExpectedBlock(item.text))
+          .sort((a, b) => a.length - b.length)
+          .slice(0, 12);
+
+        const availableCandidate = candidates.find(
+          (item) => !item.unavailable && (item.hasPrice || item.hasBuyAction),
         );
-      };
-      const hasCode = (text) => codes.some((code) => text.includes(code));
-      const matchedTerms = (text) => terms.filter((term) => text.includes(term));
-      const isExpectedBlock = (text) => {
-        if (codes.length > 0) return hasCode(text);
-        const matches = matchedTerms(text);
-        const numericTerms = terms.filter((term) => /^\d+(?:[,.]\d+)?[a-z]*$/.test(term));
-        const hasMeasure =
-          numericTerms.length === 0 || numericTerms.some((term) => text.includes(term));
-        return hasMeasure && matches.length >= Math.min(2, terms.length);
-      };
+        if (availableCandidate) return { found: true, unavailable: false };
 
-      const nodes = [
-        ...document.querySelectorAll(
-          [
-            "article",
-            "li",
-            "tr",
-            "[class*='produto' i]",
-            "[class*='product' i]",
-            "[class*='item' i]",
-            "[class*='card' i]",
-            "[class*='col-' i]",
-            "section",
-            "main",
-            "div",
-          ].join(", "),
-        ),
-      ];
+        const unavailableCandidate = candidates.find(
+          (item) => item.unavailable && !item.hasPrice && !item.hasBuyAction,
+        );
+        if (unavailableCandidate) return { found: true, unavailable: true };
 
-      const candidates = nodes
-        .filter((node) => node instanceof HTMLElement && visible(node))
-        .map((node) => {
-          const rawText = node.innerText || node.textContent || "";
-          const text = normalize(rawText);
-          return {
-            text,
-            length: text.length,
-            hasPrice: pricePattern.test(rawText),
-            hasBuyAction: buyActionPattern.test(text),
-            unavailable: unavailableSignalPattern.test(text),
-          };
-        })
-        .filter((item) => item.length > 0 && item.length <= 2500 && isExpectedBlock(item.text))
-        .sort((a, b) => a.length - b.length)
-        .slice(0, 12);
-
-      const availableCandidate = candidates.find(
-        (item) => !item.unavailable && (item.hasPrice || item.hasBuyAction),
-      );
-      if (availableCandidate) return { found: true, unavailable: false };
-
-      const unavailableCandidate = candidates.find(
-        (item) => item.unavailable && !item.hasPrice && !item.hasBuyAction,
-      );
-      if (unavailableCandidate) return { found: true, unavailable: true };
-
-      return {
-        found: candidates.length > 0,
-        unavailable:
-          candidates.length > 0 && candidates.every((item) => !item.hasPrice && !item.hasBuyAction),
-      };
-    }, identity)
+        return {
+          found: candidates.length > 0,
+          unavailable:
+            inferMissingOfferAsUnavailable &&
+            candidates.length > 0 &&
+            candidates.every((item) => !item.hasPrice && !item.hasBuyAction),
+        };
+      },
+      {
+        ...identity,
+        // These catalogs omit availability labels when an item has no offer. Construja prices
+        // are split across DOM nodes, so a small matching node without a price proves nothing.
+        inferMissingOfferAsUnavailable: isMarest(concorrente) || isMegaleste(concorrente),
+      },
+    )
     .catch(() => ({ found: false, unavailable: false }));
 }
 
