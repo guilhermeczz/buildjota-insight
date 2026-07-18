@@ -460,15 +460,19 @@ async function waitForConstrujaLogin(page) {
 async function isConstrujaLoggedIn(page) {
   if (await isConstrujaLoginFormVisible(page)) return false;
 
-  return pageHasText(page, [
-    /area do cliente/,
-    /loja:\s*centermak/,
-    /filial:\s*construja/,
-    /minha conta/,
-    /meus pedidos/,
-    /deslogar/,
-    /credito disponivel/,
-  ]);
+  const text = await page
+    .locator("body")
+    .innerText({ timeout: 2500 })
+    .catch(() => "");
+  const normalized = normalizeText(text);
+  if (!normalized) return false;
+
+  const hasCustomerArea = /area do cliente|minha conta|meus pedidos/.test(normalized);
+  const hasCustomerData =
+    /loja:\s*\S|filial:\s*\S|credito disponivel|limite disponivel|centermak/.test(normalized);
+  const hasLogout = /\b(deslogar|sair)\b/.test(normalized);
+
+  return hasLogout || (hasCustomerArea && hasCustomerData);
 }
 
 async function loginMarest(page, concorrente, credentials) {
@@ -2134,7 +2138,7 @@ async function collectGroup(browser, group, options = {}) {
           await openProductPage(page, context, statePath, mapping, group.concorrente);
         }
 
-        if (await isLoginRequired(page)) {
+        if (await isLoginRequired(page, group.concorrente)) {
           throw new Error("Login nao confirmado; pagina ainda solicita autenticacao");
         }
 
@@ -2314,7 +2318,11 @@ async function waitForActionableProductSignal(page) {
     .catch(() => null);
 }
 
-async function isLoginRequired(page) {
+async function isLoginRequired(page, concorrente = null) {
+  if (concorrente && isConstruja(concorrente)) {
+    return !(await isConstrujaLoggedIn(page));
+  }
+
   const text = await page
     .locator("body")
     .innerText({ timeout: 5000 })
