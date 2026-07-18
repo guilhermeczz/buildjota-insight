@@ -467,40 +467,16 @@ async function isConstrujaLoggedIn(page) {
   const normalized = normalizeText(text);
   if (!normalized) return false;
 
+  // The header can render after the rest of the page. Absence of the login button is not
+  // proof of authentication; require an explicit customer/session signal instead.
+  if (/entre ou cadastre-se|entrar ou cadastrar-se/.test(normalized)) return false;
+
   const hasCustomerArea = /area do cliente|minha conta|meus pedidos/.test(normalized);
   const hasCustomerData =
     /loja:\s*\S|filial:\s*\S|credito disponivel|limite disponivel/.test(normalized) ||
     /area do cliente.{0,300}centermak|centermak.{0,300}area do cliente/.test(normalized);
   const hasLogout = /\b(deslogar|sair)\b/.test(normalized);
-  const loginTriggerVisible = await hasVisibleConstrujaLoginTrigger(page);
-
-  return hasLogout || (hasCustomerArea && hasCustomerData) || !loginTriggerVisible;
-}
-
-async function hasVisibleConstrujaLoginTrigger(page) {
-  const triggers = page.locator(
-    [
-      "button:has-text('Entre ou cadastre-se')",
-      "a:has-text('Entre ou cadastre-se')",
-      "[role='button']:has-text('Entre ou cadastre-se')",
-      "button:has-text('Entre ou Cadastre-se')",
-      "a:has-text('Entre ou Cadastre-se')",
-      "[role='button']:has-text('Entre ou Cadastre-se')",
-    ].join(", "),
-  );
-  const count = await triggers.count().catch(() => 0);
-
-  for (let index = 0; index < count; index += 1) {
-    if (
-      await triggers
-        .nth(index)
-        .isVisible()
-        .catch(() => false)
-    )
-      return true;
-  }
-
-  return false;
+  return hasLogout || (hasCustomerArea && hasCustomerData);
 }
 
 async function loginMarest(page, concorrente, credentials) {
@@ -2162,7 +2138,9 @@ async function collectGroup(browser, group, options = {}) {
       });
     }
 
-    if (!existsSync(statePath)) {
+    // Construja sessions may expire while their storage-state file remains present.
+    // Always visit the login page and positively validate that session before collecting.
+    if (!existsSync(statePath) || isConstruja(group.concorrente)) {
       await login(page, group.concorrente);
       await ensurePreferencesForRead(page, group.concorrente);
       await context.storageState({ path: statePath });
