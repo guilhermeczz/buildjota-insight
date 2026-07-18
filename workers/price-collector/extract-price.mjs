@@ -1,4 +1,7 @@
-const moneyPattern = /(?:R\$\s*)?(\d{1,3}(?:\.\d{3})*,\d{2,3})/g;
+// Price parts are frequently rendered in separate DOM nodes (currency, integer and cents).
+// Keep one shared pattern for the browser-side candidate search and the final parser.
+const moneyPatternSource = String.raw`(?:R\$\s*)?(\d{1,3}(?:\s*\.\s*\d{3})*\s*,\s*\d{2,3})`;
+const moneyPattern = new RegExp(moneyPatternSource, "g");
 const placeholderPricePattern = /R\$\s*[-–—]+(?:\s*[-–—]+|,\s*[-–—]+)*/i;
 const unavailableSignalPattern =
   /fora\s+(?:de|do)\s+estoque|sem\s+estoque|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+chegar|aviseme\s+quando\s+chegar|produto\s+sob\s+consulta/;
@@ -56,9 +59,9 @@ function parsePreferredLabeledBRL(text, options = {}) {
   const normalized = text.replace(/\s+/g, " ").trim();
   const plain = normalizeText(normalized);
   const labelPatterns = [
-    /(?:preco\s*)?(?:a vista|avista)\s*(?:r\$)?\s*(\d{1,3}(?:\.\d{3})*,\d{2,3})/i,
-    /(?:r\$)?\s*(\d{1,3}(?:\.\d{3})*,\d{2,3})\s*(?:a vista|avista)/i,
-    /(?:preco|valor|por)\s*(?:r\$)?\s*(\d{1,3}(?:\.\d{3})*,\d{2,3})/i,
+    /(?:preco\s*)?(?:a vista|avista)\s*(?:r\$)?\s*(\d{1,3}(?:\s*\.\s*\d{3})*\s*,\s*\d{2,3})/i,
+    /(?:r\$)?\s*(\d{1,3}(?:\s*\.\s*\d{3})*\s*,\s*\d{2,3})\s*(?:a vista|avista)/i,
+    /(?:preco|valor|por)\s*(?:r\$)?\s*(\d{1,3}(?:\s*\.\s*\d{3})*\s*,\s*\d{2,3})/i,
   ];
 
   for (const pattern of labelPatterns) {
@@ -92,7 +95,7 @@ function parseBRLValues(text) {
 }
 
 function parseMoney(value) {
-  const parsed = Number(String(value).replace(/\./g, "").replace(",", "."));
+  const parsed = Number(String(value).replace(/\s+/g, "").replace(/\./g, "").replace(",", "."));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
@@ -176,102 +179,105 @@ export async function extractPriceNearTerms(page, terms, options = {}) {
   if (normalizedTerms.length === 0) return null;
 
   const candidates = await page
-    .evaluate((searchTerms) => {
-      const moneyPattern = /(?:R\$\s*)?\d{1,3}(?:\.\d{3})*,\d{2,3}/;
-      const placeholderPricePattern = /R\$\s*[-–—]+(?:\s*[-–—]+|,\s*[-–—]+)*/i;
-      const unavailableSignalPattern =
-        /fora\s+(?:de|do)\s+estoque|sem\s+estoque|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+chegar|aviseme\s+quando\s+chegar|produto\s+sob\s+consulta/;
-      const normalize = (value) =>
-        String(value ?? "")
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
-          .replace(/\s+/g, " ")
-          .trim()
-          .toLowerCase();
-      const visible = (element) => {
-        const style = window.getComputedStyle(element);
-        const rect = element.getBoundingClientRect();
-        return (
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          rect.width > 0 &&
-          rect.height > 0
-        );
-      };
-      const termMatches = (text, term) => {
-        if (!/^\d+$/.test(term)) return text.includes(term);
-        return new RegExp(`(^|[^0-9])${term}([^0-9]|$)`).test(text);
-      };
-      const isOldPriceNode = (node, root) => {
-        let current = node instanceof Element ? node : node.parentElement;
-        while (current && current !== root) {
-          const style = window.getComputedStyle(current);
-          const classAndId = `${current.className ?? ""} ${current.id ?? ""}`;
-          if (/line-through/.test(style.textDecorationLine)) return true;
-          if (
-            /(preco[-_ ]?de|precoantigo|old[-_ ]?price|valor[-_ ]?de|riscado|strike)/i.test(
-              classAndId,
-            )
-          ) {
-            return true;
+    .evaluate(
+      ({ searchTerms, browserMoneyPatternSource }) => {
+        const moneyPattern = new RegExp(browserMoneyPatternSource);
+        const placeholderPricePattern = /R\$\s*[-–—]+(?:\s*[-–—]+|,\s*[-–—]+)*/i;
+        const unavailableSignalPattern =
+          /fora\s+(?:de|do)\s+estoque|sem\s+estoque|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+chegar|aviseme\s+quando\s+chegar|produto\s+sob\s+consulta/;
+        const normalize = (value) =>
+          String(value ?? "")
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .toLowerCase();
+        const visible = (element) => {
+          const style = window.getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return (
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            rect.width > 0 &&
+            rect.height > 0
+          );
+        };
+        const termMatches = (text, term) => {
+          if (!/^\d+$/.test(term)) return text.includes(term);
+          return new RegExp(`(^|[^0-9])${term}([^0-9]|$)`).test(text);
+        };
+        const isOldPriceNode = (node, root) => {
+          let current = node instanceof Element ? node : node.parentElement;
+          while (current && current !== root) {
+            const style = window.getComputedStyle(current);
+            const classAndId = `${current.className ?? ""} ${current.id ?? ""}`;
+            if (/line-through/.test(style.textDecorationLine)) return true;
+            if (
+              /(preco[-_ ]?de|precoantigo|old[-_ ]?price|valor[-_ ]?de|riscado|strike)/i.test(
+                classAndId,
+              )
+            ) {
+              return true;
+            }
+            current = current.parentElement;
           }
-          current = current.parentElement;
-        }
-        return false;
-      };
-      const currentPriceText = (element) => {
-        const parts = [];
-        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
-        while (walker.nextNode()) {
-          if (!isOldPriceNode(walker.currentNode, element)) {
-            parts.push(walker.currentNode.textContent ?? "");
+          return false;
+        };
+        const currentPriceText = (element) => {
+          const parts = [];
+          const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+          while (walker.nextNode()) {
+            if (!isOldPriceNode(walker.currentNode, element)) {
+              parts.push(walker.currentNode.textContent ?? "");
+            }
           }
-        }
-        return parts.join(" ");
-      };
+          return parts.join(" ");
+        };
 
-      const elements = [
-        ...document.querySelectorAll(
-          [
-            "article",
-            "li",
-            "tr",
-            "[class*='produto' i]",
-            "[class*='product' i]",
-            "[class*='item' i]",
-            "[class*='card' i]",
-            "[class*='col-' i]",
-            "div",
-          ].join(", "),
-        ),
-      ];
+        const elements = [
+          ...document.querySelectorAll(
+            [
+              "article",
+              "li",
+              "tr",
+              "[class*='produto' i]",
+              "[class*='product' i]",
+              "[class*='item' i]",
+              "[class*='card' i]",
+              "[class*='col-' i]",
+              "div",
+            ].join(", "),
+          ),
+        ];
 
-      return elements
-        .filter((element) => element instanceof HTMLElement && visible(element))
-        .map((element) => {
-          const text = currentPriceText(element);
-          const normalized = normalize(text);
-          const matchedTerm = searchTerms.find((term) => termMatches(normalized, term));
-          return {
-            text,
-            length: normalized.length,
-            matchedTerm: matchedTerm ?? "",
-            hasPrice: moneyPattern.test(text),
-            unavailable:
-              unavailableSignalPattern.test(normalized) || placeholderPricePattern.test(text),
-          };
-        })
-        .filter(
-          (item) => item.matchedTerm && item.hasPrice && !item.unavailable && item.length <= 2000,
-        )
-        .sort((a, b) => {
-          const termDiff = b.matchedTerm.length - a.matchedTerm.length;
-          if (termDiff !== 0) return termDiff;
-          return a.length - b.length;
-        })
-        .slice(0, 12)
-        .map((item) => item.text);
-    }, normalizedTerms)
+        return elements
+          .filter((element) => element instanceof HTMLElement && visible(element))
+          .map((element) => {
+            const text = currentPriceText(element);
+            const normalized = normalize(text);
+            const matchedTerm = searchTerms.find((term) => termMatches(normalized, term));
+            return {
+              text,
+              length: normalized.length,
+              matchedTerm: matchedTerm ?? "",
+              hasPrice: moneyPattern.test(text),
+              unavailable:
+                unavailableSignalPattern.test(normalized) || placeholderPricePattern.test(text),
+            };
+          })
+          .filter(
+            (item) => item.matchedTerm && item.hasPrice && !item.unavailable && item.length <= 2000,
+          )
+          .sort((a, b) => {
+            const termDiff = b.matchedTerm.length - a.matchedTerm.length;
+            if (termDiff !== 0) return termDiff;
+            return a.length - b.length;
+          })
+          .slice(0, 12)
+          .map((item) => item.text);
+      },
+      { searchTerms: normalizedTerms, browserMoneyPatternSource: moneyPatternSource },
+    )
     .catch(() => []);
 
   for (const text of candidates) {
