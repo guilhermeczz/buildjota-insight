@@ -408,9 +408,13 @@ async function loginConstruja(page, concorrente, credentials) {
 
 async function openConstrujaLoginModal(page) {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await dismissOverlays(page);
     if (await isConstrujaLoginFormVisible(page)) return true;
 
-    await clickFirstVisible(page, [
+    const clicked = await clickFirstVisible(page, [
+      "button:has-text('Entre ou cadastre')",
+      "a:has-text('Entre ou cadastre')",
+      "[role='button']:has-text('Entre ou cadastre')",
       "button:has-text('Entre ou cadastre-se')",
       "button:has-text('Entre ou Cadastre-se')",
       "a:has-text('Entre ou cadastre-se')",
@@ -423,12 +427,54 @@ async function openConstrujaLoginModal(page) {
       "a:has-text('Area do cliente')",
     ]);
 
+    if (!clicked) await clickConstrujaLoginByDom(page);
+
     const visible = await waitForConstrujaLoginForm(page);
     if (visible) return true;
-    await page.waitForTimeout(600);
+    if (!clicked && attempt === 2) {
+      await page
+        .reload({ waitUntil: "domcontentloaded", timeout: navigationTimeoutMs })
+        .catch(() => null);
+    }
+    await page.waitForTimeout(800);
   }
 
   return false;
+}
+
+async function clickConstrujaLoginByDom(page) {
+  return page
+    .evaluate(() => {
+      const normalize = (value) =>
+        String(value ?? "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+      const target = [...document.querySelectorAll("button, a, [role='button']")].find(
+        (node) =>
+          node instanceof HTMLElement &&
+          visible(node) &&
+          /entre ou cadastre|area do cliente|entrar/.test(
+            normalize(node.innerText || node.textContent),
+          ),
+      );
+      if (!(target instanceof HTMLElement)) return false;
+      target.click();
+      return true;
+    })
+    .catch(() => false);
 }
 
 async function isConstrujaLoginFormVisible(page) {
@@ -1543,6 +1589,29 @@ async function openProductWithAuthenticatedSession(page, context, statePath, map
   }
 }
 
+async function gotoAllowingSameDestinationRedirect(page, url) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await page.goto(url, {
+        waitUntil: "domcontentloaded",
+        timeout: navigationTimeoutMs,
+      });
+      return;
+    } catch (error) {
+      const interrupted =
+        error instanceof Error && /interrupted by another navigation/i.test(error.message);
+      if (!interrupted) throw error;
+
+      await page
+        .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
+        .catch(() => null);
+      if (page.url().replace(/\/+$/, "") === url.replace(/\/+$/, "")) return;
+      if (attempt === 3) throw error;
+      await page.waitForTimeout(attempt * 400);
+    }
+  }
+}
+
 async function openProductBySearch(page, context, statePath, mapping, concorrente) {
   const queries = searchQueriesForMapping(mapping, concorrente);
   if (queries.length === 0) {
@@ -1554,18 +1623,12 @@ async function openProductBySearch(page, context, statePath, mapping, concorrent
 
   for (const query of queries) {
     try {
-      await page.goto(searchStartUrl, {
-        waitUntil: "domcontentloaded",
-        timeout: navigationTimeoutMs,
-      });
+      await gotoAllowingSameDestinationRedirect(page, searchStartUrl);
       await dismissOverlays(page);
 
       if (await ensurePreferencesForRead(page, concorrente)) {
         await context.storageState({ path: statePath });
-        await page.goto(searchStartUrl, {
-          waitUntil: "domcontentloaded",
-          timeout: navigationTimeoutMs,
-        });
+        await gotoAllowingSameDestinationRedirect(page, searchStartUrl);
         await dismissOverlays(page);
       }
 
@@ -2275,6 +2338,12 @@ async function collectGroup(browser, group, options = {}) {
         }
 
         if (!price) {
+          if (
+            (isMarest(group.concorrente) || isMegaleste(group.concorrente)) &&
+            (await isExpectedProductPage(page, mapping))
+          ) {
+            throw new Error("Produto indisponível no concorrente");
+          }
           if (await isProductUnavailableForMapping(page, mapping, group.concorrente)) {
             throw new Error("Produto indisponível no concorrente");
           }
