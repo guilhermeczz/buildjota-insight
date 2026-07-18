@@ -469,7 +469,8 @@ async function isConstrujaLoggedIn(page) {
 
   const hasCustomerArea = /area do cliente|minha conta|meus pedidos/.test(normalized);
   const hasCustomerData =
-    /loja:\s*\S|filial:\s*\S|credito disponivel|limite disponivel|centermak/.test(normalized);
+    /loja:\s*\S|filial:\s*\S|credito disponivel|limite disponivel/.test(normalized) ||
+    /area do cliente.{0,300}centermak|centermak.{0,300}area do cliente/.test(normalized);
   const hasLogout = /\b(deslogar|sair)\b/.test(normalized);
   const loginTriggerVisible = await hasVisibleConstrujaLoginTrigger(page);
 
@@ -1262,6 +1263,10 @@ async function dismissOverlays(page) {
     const clicked =
       (await clickFirstVisible(page, [
         "button:has-text('Entendi')",
+        "a:has-text('Entendi')",
+        "[role='button']:has-text('Entendi')",
+        "input[type='button'][value*='Entendi' i]",
+        "input[type='submit'][value*='Entendi' i]",
         "#botao-aceitar-todos",
         "button:has-text('Aceitar todos')",
         "button:has-text('Aceitar')",
@@ -1274,11 +1279,29 @@ async function dismissOverlays(page) {
         "[role='dialog'] [class*='close' i]",
         "[aria-label='Close']",
         "[aria-label='Fechar']",
-      ])) || (await clickOverlayCloseByDom(page));
+      ])) ||
+      (await clickEntendiInFrames(page)) ||
+      (await clickOverlayCloseByDom(page));
 
     if (!clicked) return;
     await page.waitForTimeout(250);
   }
+}
+
+async function clickEntendiInFrames(page) {
+  for (const frame of page.frames()) {
+    if (frame === page.mainFrame()) continue;
+
+    const clicked = await clickFirstVisible(frame, [
+      "button:has-text('Entendi')",
+      "a:has-text('Entendi')",
+      "[role='button']:has-text('Entendi')",
+      "input[value*='Entendi' i]",
+    ]);
+    if (clicked) return true;
+  }
+
+  return false;
 }
 
 async function clickOverlayCloseByDom(page) {
@@ -1445,6 +1468,7 @@ async function openProductPage(page, context, statePath, mapping, concorrente) {
     waitUntil: "domcontentloaded",
     timeout: navigationTimeoutMs,
   });
+  await dismissOverlays(page);
 
   if (await ensurePreferencesForRead(page, concorrente)) {
     await context.storageState({ path: statePath });
@@ -1452,12 +1476,14 @@ async function openProductPage(page, context, statePath, mapping, concorrente) {
       waitUntil: "domcontentloaded",
       timeout: navigationTimeoutMs,
     });
+    await dismissOverlays(page);
     if (await ensurePreferencesForRead(page, concorrente)) {
       await context.storageState({ path: statePath });
     }
   }
 
   await waitForProductSignal(page);
+  await dismissOverlays(page);
   if (await ensurePreferencesForRead(page, concorrente)) {
     await context.storageState({ path: statePath });
     await waitForProductSignal(page);
