@@ -471,8 +471,35 @@ async function isConstrujaLoggedIn(page) {
   const hasCustomerData =
     /loja:\s*\S|filial:\s*\S|credito disponivel|limite disponivel|centermak/.test(normalized);
   const hasLogout = /\b(deslogar|sair)\b/.test(normalized);
+  const loginTriggerVisible = await hasVisibleConstrujaLoginTrigger(page);
 
-  return hasLogout || (hasCustomerArea && hasCustomerData);
+  return hasLogout || (hasCustomerArea && hasCustomerData) || !loginTriggerVisible;
+}
+
+async function hasVisibleConstrujaLoginTrigger(page) {
+  const triggers = page.locator(
+    [
+      "button:has-text('Entre ou cadastre-se')",
+      "a:has-text('Entre ou cadastre-se')",
+      "[role='button']:has-text('Entre ou cadastre-se')",
+      "button:has-text('Entre ou Cadastre-se')",
+      "a:has-text('Entre ou Cadastre-se')",
+      "[role='button']:has-text('Entre ou Cadastre-se')",
+    ].join(", "),
+  );
+  const count = await triggers.count().catch(() => 0);
+
+  for (let index = 0; index < count; index += 1) {
+    if (
+      await triggers
+        .nth(index)
+        .isVisible()
+        .catch(() => false)
+    )
+      return true;
+  }
+
+  return false;
 }
 
 async function loginMarest(page, concorrente, credentials) {
@@ -2200,6 +2227,11 @@ async function collectGroup(browser, group, options = {}) {
       }
     }
   } catch (error) {
+    console.error(
+      `[${group.concorrente.nome}] Falha geral antes/durante a coleta: ${
+        error instanceof Error ? error.message : "Erro desconhecido"
+      }`,
+    );
     if (existsSync(statePath)) {
       await resetAuthState(context, page, statePath, group.concorrente, "falha geral");
     }
