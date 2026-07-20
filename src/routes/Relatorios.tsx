@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  ArrowDownAZ,
   BarChart3,
   CalendarDays,
+  ChevronDown,
   Download,
   FileSpreadsheet,
   PackageSearch,
+  RotateCcw,
   X,
   TrendingDown,
   TrendingUp,
@@ -17,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
@@ -36,6 +40,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatBRL, formatPct, formatDateTime, toDateString } from "@/lib/format";
 import { apiClient } from "@/lib/api-client";
+import { compareProductNames, sortByProductName } from "@/lib/product-sort";
 
 type Familia = {
   id: string;
@@ -83,6 +88,7 @@ type Historico = {
 
 type Row = {
   id: string;
+  produtoId: string;
   produto: string;
   sku: string;
   concorrente: string;
@@ -99,6 +105,7 @@ type Row = {
 };
 
 type Periodo = "7" | "30" | "90" | "0" | "custom";
+type ProductOrder = "az" | "za";
 
 const emptyLabel = "—";
 
@@ -161,6 +168,7 @@ function buildRows(mapeamentos: Mapeamento[]): Row[] {
 
     return {
       id: m.id,
+      produtoId: m.produto_id || produto?.id || "",
       produto: produto?.nome ?? emptyLabel,
       sku: produto?.sku_interno ?? emptyLabel,
       concorrente: concorrente?.nome ?? emptyLabel,
@@ -238,6 +246,7 @@ function historicoMatchesFilters({
   familiaName,
   concorrenteFilter,
   concorrenteName,
+  selectedProductIds,
   periodo,
   dateRange,
 }: {
@@ -246,6 +255,7 @@ function historicoMatchesFilters({
   familiaName?: string;
   concorrenteFilter: string;
   concorrenteName?: string;
+  selectedProductIds: string[];
   periodo: Periodo;
   dateRange: DateRange | undefined;
 }) {
@@ -254,8 +264,10 @@ function historicoMatchesFilters({
   const familiaRowName = mapeamento?.produtos?.familias?.nome ?? "";
   const concorrenteId = mapeamento?.concorrente_id || mapeamento?.concorrentes?.id || "";
   const concorrenteRowName = mapeamento?.concorrentes?.nome ?? "";
+  const produtoId = mapeamento?.produto_id || mapeamento?.produtos?.id || "";
 
   if (historico.status !== "erro") return false;
+  if (selectedProductIds.length > 0 && !selectedProductIds.includes(produtoId)) return false;
   if (!matchesSelected(familiaFilter, familiaName, familiaId, familiaRowName)) return false;
   if (!matchesSelected(concorrenteFilter, concorrenteName, concorrenteId, concorrenteRowName)) {
     return false;
@@ -451,6 +463,8 @@ function KpiCard({
 export default function Relatorios() {
   const [familiaFilter, setFamiliaFilter] = useState("todas");
   const [concorrenteFilter, setConcorrenteFilter] = useState("todos");
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+  const [productOrder, setProductOrder] = useState<ProductOrder>("az");
   const [periodo, setPeriodo] = useState<Periodo>("30");
   const [dateRange, setDateRange] = useState<DateRange | undefined>();
   const [familias, setFamilias] = useState<Familia[]>([]);
@@ -511,13 +525,38 @@ export default function Relatorios() {
 
   const baseRows = useMemo(() => buildRows(mapeamentos), [mapeamentos]);
 
-  const filteredRows = useMemo(() => {
-    return baseRows.filter((r) => {
-      if (familiaFilter !== "todas" && r.familiaId !== familiaFilter) return false;
-      if (concorrenteFilter !== "todos" && r.concorrenteId !== concorrenteFilter) return false;
-      return isInsideDateFilter(r.ultimaAtualizacao, periodo, dateRange);
+  const productOptions = useMemo(() => {
+    const uniqueProducts = new Map<string, Produto>();
+    mapeamentos.forEach((mapeamento) => {
+      if (mapeamento.produtos?.id) uniqueProducts.set(mapeamento.produtos.id, mapeamento.produtos);
     });
-  }, [baseRows, concorrenteFilter, dateRange, familiaFilter, periodo]);
+    return sortByProductName([...uniqueProducts.values()], (produto) => produto.nome);
+  }, [mapeamentos]);
+
+  const filteredRows = useMemo(() => {
+    return baseRows
+      .filter((r) => {
+        if (selectedProductIds.length > 0 && !selectedProductIds.includes(r.produtoId))
+          return false;
+        if (familiaFilter !== "todas" && r.familiaId !== familiaFilter) return false;
+        if (concorrenteFilter !== "todos" && r.concorrenteId !== concorrenteFilter) return false;
+        return isInsideDateFilter(r.ultimaAtualizacao, periodo, dateRange);
+      })
+      .sort((a, b) => {
+        const productComparison = compareProductNames(a.produto, b.produto);
+        if (productComparison !== 0)
+          return productOrder === "az" ? productComparison : -productComparison;
+        return a.concorrente.localeCompare(b.concorrente, "pt-BR", { sensitivity: "base" });
+      });
+  }, [
+    baseRows,
+    concorrenteFilter,
+    dateRange,
+    familiaFilter,
+    periodo,
+    productOrder,
+    selectedProductIds,
+  ]);
 
   const acima = filteredRows.filter(
     (r) => r.precoConcorrente !== null && r.precoConcorrente > 0 && Number(r.dif) > 0,
@@ -538,6 +577,7 @@ export default function Relatorios() {
           familiaName: selectedFamiliaName,
           concorrenteFilter,
           concorrenteName: selectedConcorrenteName,
+          selectedProductIds,
           periodo,
           dateRange,
         }),
@@ -550,8 +590,26 @@ export default function Relatorios() {
       periodo,
       selectedConcorrenteName,
       selectedFamiliaName,
+      selectedProductIds,
     ],
   );
+
+  function toggleProduct(productId: string) {
+    setSelectedProductIds((current) =>
+      current.includes(productId)
+        ? current.filter((id) => id !== productId)
+        : [...current, productId],
+    );
+  }
+
+  function clearFilters() {
+    setFamiliaFilter("todas");
+    setConcorrenteFilter("todos");
+    setSelectedProductIds([]);
+    setProductOrder("az");
+    setPeriodo("0");
+    setDateRange(undefined);
+  }
 
   const porFamilia = Object.entries(
     filteredRows.reduce<Record<string, Row[]>>(
@@ -608,10 +666,61 @@ export default function Relatorios() {
       </div>
 
       <Card className="mb-4 shadow-sm">
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between gap-3">
           <CardTitle className="text-base">Filtros</CardTitle>
+          <Button type="button" variant="ghost" size="sm" onClick={clearFilters}>
+            <RotateCcw className="mr-1 h-4 w-4" /> Limpar filtros
+          </Button>
         </CardHeader>
-        <CardContent className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <CardContent className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button type="button" variant="outline" className="justify-between font-normal">
+                <span className="truncate">
+                  {selectedProductIds.length === 0
+                    ? "Todos os produtos"
+                    : `${selectedProductIds.length} produto(s) selecionado(s)`}
+                </span>
+                <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-2">
+              <div className="max-h-72 space-y-1 overflow-y-auto">
+                <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-2 text-sm hover:bg-accent">
+                  <Checkbox
+                    checked={selectedProductIds.length === 0}
+                    onCheckedChange={() => setSelectedProductIds([])}
+                  />
+                  <span className="font-medium">Todos os produtos</span>
+                </label>
+                {productOptions.map((produto) => (
+                  <label
+                    key={produto.id}
+                    className="flex cursor-pointer items-start gap-2 rounded-sm px-2 py-2 text-sm hover:bg-accent"
+                  >
+                    <Checkbox
+                      checked={selectedProductIds.includes(produto.id)}
+                      onCheckedChange={() => toggleProduct(produto.id)}
+                    />
+                    <span className="leading-4">{produto.nome}</span>
+                  </label>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
+          <Select
+            value={productOrder}
+            onValueChange={(value: ProductOrder) => setProductOrder(value)}
+          >
+            <SelectTrigger>
+              <ArrowDownAZ className="mr-2 h-4 w-4" />
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="az">Produtos: A–Z (ordem ConstruJota)</SelectItem>
+              <SelectItem value="za">Produtos: Z–A</SelectItem>
+            </SelectContent>
+          </Select>
           <Select value={familiaFilter} onValueChange={setFamiliaFilter}>
             <SelectTrigger>
               <SelectValue placeholder="Família" />

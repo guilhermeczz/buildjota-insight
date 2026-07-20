@@ -120,6 +120,16 @@ function usesSearchFlow(concorrente) {
   return ["BUSCA", "SKU"].includes(consultaTipo(concorrente));
 }
 
+function hasUsableProductUrl(mapping) {
+  const value = String(mapping.url_produto ?? "").trim();
+  return Boolean(value) && !/^TODO(?:_|\b)/i.test(value);
+}
+
+function shouldOpenDirectProductUrl(mapping, concorrente) {
+  if (!hasUsableProductUrl(mapping)) return false;
+  return isConstruja(concorrente) || !usesSearchFlow(concorrente);
+}
+
 function absoluteUrl(value, fallbackBase) {
   if (!value) return fallbackBase;
   try {
@@ -1585,7 +1595,7 @@ async function configureRegionSelector(page, providerName, region) {
 }
 
 async function openProductPage(page, context, statePath, mapping, concorrente) {
-  if (usesSearchFlow(concorrente)) {
+  if (!shouldOpenDirectProductUrl(mapping, concorrente) && usesSearchFlow(concorrente)) {
     await openProductBySearch(page, context, statePath, mapping, concorrente);
     return;
   }
@@ -2348,7 +2358,7 @@ async function collectGroup(browser, group, options = {}) {
       const progressLabel = `[${group.concorrente.nome}] ${index + 1}/${group.mapeamentos.length} ${productLabel}`;
 
       try {
-        if (!usesSearchFlow(group.concorrente) && !mapping.url_produto) {
+        if (!usesSearchFlow(group.concorrente) && !hasUsableProductUrl(mapping)) {
           throw new Error("URL do produto nao cadastrada");
         }
 
@@ -2375,10 +2385,12 @@ async function collectGroup(browser, group, options = {}) {
         const priceOptions = {
           referencePrice: Number(mapping.produtos.preco_atual ?? 0),
         };
-        const price = usesSearchFlow(group.concorrente)
-          ? await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)
-          : ((await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)) ??
-            (await extractPrice(page, mapping.seletor_preco, priceOptions)));
+        const price =
+          usesSearchFlow(group.concorrente) &&
+          !shouldOpenDirectProductUrl(mapping, group.concorrente)
+            ? await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)
+            : ((await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)) ??
+              (await extractPrice(page, mapping.seletor_preco, priceOptions)));
 
         if (
           price &&

@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import PageHeader from "@/components/layout/PageHeader";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -18,13 +21,16 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatBRL, formatDateTime, formatPct, toDateString, toTimestamp } from "@/lib/format";
-import { sortByProductName } from "@/lib/product-sort";
+import { compareProductNames, sortByProductName } from "@/lib/product-sort";
 import { apiClient } from "@/lib/api-client";
 import {
   ArrowDownRight,
+  ArrowDownAZ,
   ArrowRight,
   ArrowUpRight,
+  ChevronDown,
   Minus,
+  RotateCcw,
   TrendingDown,
   TrendingUp,
 } from "lucide-react";
@@ -121,7 +127,8 @@ export default function MonitoramentoPrecos() {
   const [concorrentes, setConcorrentes] = useState<Concorrente[]>([]);
   const [historico, setHistorico] = useState<Historico[]>([]);
   const [familiaFilter, setFamiliaFilter] = useState("todas");
-  const [produtoFilter, setProdutoFilter] = useState("todos");
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+  const [productOrder, setProductOrder] = useState<"az" | "za">("az");
   const [concorrenteFilter, setConcorrenteFilter] = useState("todos");
   const [trendFilter, setTrendFilter] = useState("todos");
   const [loading, setLoading] = useState(true);
@@ -231,22 +238,43 @@ export default function MonitoramentoPrecos() {
 
   function changeFamilia(value: string) {
     setFamiliaFilter(value);
-    setProdutoFilter("todos");
+    setSelectedProductIds([]);
   }
 
-  const filtered = useMemo(
-    () =>
-      rows.filter((row) => {
+  const filtered = useMemo(() => {
+    return rows
+      .filter((row) => {
         if (familiaFilter !== "todas" && row.produto?.familia_id !== familiaFilter) return false;
-        if (produtoFilter !== "todos" && row.produto?.id !== produtoFilter) return false;
+        if (selectedProductIds.length > 0 && !selectedProductIds.includes(row.produto?.id ?? ""))
+          return false;
         if (concorrenteFilter !== "todos" && row.concorrente?.id !== concorrenteFilter) {
           return false;
         }
         if (trendFilter !== "todos" && row.trend !== trendFilter) return false;
         return true;
-      }),
-    [concorrenteFilter, familiaFilter, produtoFilter, rows, trendFilter],
-  );
+      })
+      .sort((a, b) => {
+        const comparison = compareProductNames(a.produto?.nome ?? "", b.produto?.nome ?? "");
+        if (comparison !== 0) return productOrder === "az" ? comparison : -comparison;
+        return (a.concorrente?.nome ?? "").localeCompare(b.concorrente?.nome ?? "", "pt-BR");
+      });
+  }, [concorrenteFilter, familiaFilter, productOrder, rows, selectedProductIds, trendFilter]);
+
+  function toggleProduct(productId: string) {
+    setSelectedProductIds((current) =>
+      current.includes(productId)
+        ? current.filter((id) => id !== productId)
+        : [...current, productId],
+    );
+  }
+
+  function clearFilters() {
+    setFamiliaFilter("todas");
+    setSelectedProductIds([]);
+    setProductOrder("az");
+    setConcorrenteFilter("todos");
+    setTrendFilter("todos");
+  }
 
   const stats = useMemo(
     () => ({
@@ -267,7 +295,13 @@ export default function MonitoramentoPrecos() {
       />
 
       <Card className="mb-4 shadow-sm">
-        <CardContent className="grid grid-cols-1 gap-3 p-5 md:grid-cols-4">
+        <CardHeader className="flex flex-row items-center justify-between gap-3 pb-3">
+          <CardTitle className="text-base">Filtros</CardTitle>
+          <Button type="button" variant="ghost" size="sm" onClick={clearFilters}>
+            <RotateCcw className="mr-1 h-4 w-4" /> Limpar filtros
+          </Button>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
           <Select value={concorrenteFilter} onValueChange={setConcorrenteFilter}>
             <SelectTrigger>
               <SelectValue placeholder="Concorrente" />
@@ -296,17 +330,55 @@ export default function MonitoramentoPrecos() {
             </SelectContent>
           </Select>
 
-          <Select value={produtoFilter} onValueChange={setProdutoFilter}>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button type="button" variant="outline" className="justify-between font-normal">
+                <span className="truncate">
+                  {selectedProductIds.length === 0
+                    ? "Todos os produtos"
+                    : `${selectedProductIds.length} produto(s) selecionado(s)`}
+                </span>
+                <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-2">
+              <div className="max-h-72 space-y-1 overflow-y-auto">
+                <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-2 text-sm hover:bg-accent">
+                  <Checkbox
+                    checked={selectedProductIds.length === 0}
+                    onCheckedChange={() => setSelectedProductIds([])}
+                  />
+                  <span className="font-medium">Todos os produtos</span>
+                </label>
+                {produtos.map((produto) => (
+                  <label
+                    key={produto.id}
+                    className="flex cursor-pointer items-start gap-2 rounded-sm px-2 py-2 text-sm hover:bg-accent"
+                  >
+                    <Checkbox
+                      checked={selectedProductIds.includes(produto.id)}
+                      onCheckedChange={() => toggleProduct(produto.id)}
+                    />
+                    <span className="leading-4">
+                      {produto.sku_interno} - {produto.nome}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
+
+          <Select
+            value={productOrder}
+            onValueChange={(value: "az" | "za") => setProductOrder(value)}
+          >
             <SelectTrigger>
-              <SelectValue placeholder="Produto" />
+              <ArrowDownAZ className="mr-2 h-4 w-4" />
+              <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="todos">Todos os produtos</SelectItem>
-              {produtos.map((produto) => (
-                <SelectItem key={produto.id} value={produto.id}>
-                  {produto.sku_interno} - {produto.nome}
-                </SelectItem>
-              ))}
+              <SelectItem value="az">Produtos: A–Z (ordem ConstruJota)</SelectItem>
+              <SelectItem value="za">Produtos: Z–A</SelectItem>
             </SelectContent>
           </Select>
 
