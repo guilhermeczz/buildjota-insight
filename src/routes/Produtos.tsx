@@ -41,8 +41,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { formatBRL } from "@/lib/format";
 import { compareProductNames, sortByProductName } from "@/lib/product-sort";
 import { apiClient } from "@/lib/api-client";
-import { Pencil, Plus, Power, Search, Trash2 } from "lucide-react";
+import { FileSpreadsheet, Pencil, Plus, Power, Search, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
+import * as XLSX from "xlsx";
 
 type FamiliaOption = {
   id: string;
@@ -69,6 +70,16 @@ type ProdutoForm = {
   unidade: string;
   preco_atual: string;
   observacoes: string;
+};
+
+type ImportRow = {
+  rowNumber: number;
+  sku: string;
+  unidade: string;
+  nome: string;
+  familia: string;
+  preco: number | null;
+  error?: string;
 };
 
 const emptyForm: ProdutoForm = {
@@ -100,6 +111,10 @@ export default function Produtos() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [deletingLoading, setDeletingLoading] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importRows, setImportRows] = useState<ImportRow[]>([]);
+  const [importFilename, setImportFilename] = useState("");
+  const [importing, setImporting] = useState(false);
 
   async function refreshData() {
     const [familiasResult, produtosResult] = await Promise.all([
@@ -293,18 +308,173 @@ export default function Produtos() {
     toast.success("Produto excluido");
   }
 
+  function normalizeHeader(value: unknown) {
+    return String(value ?? "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+  }
+
+  function parsePrice(value: unknown) {
+    if (typeof value === "number") return Number.isFinite(value) ? value : null;
+    const text = String(value ?? "")
+      .trim()
+      .replace(/\s/g, "");
+    if (!text) return null;
+    const normalized = text.includes(",") ? text.replace(/\./g, "").replace(",", ".") : text;
+    const price = Number(normalized.replace(/[^\d.-]/g, ""));
+    return Number.isFinite(price) && price >= 0 ? price : null;
+  }
+
+  async function readSpreadsheet(file: File) {
+    try {
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
+      const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+      const data = XLSX.utils.sheet_to_json<unknown[]>(worksheet, { header: 1, defval: "" });
+      if (data.length === 0) throw new Error("Planilha vazia");
+
+      const headers = (data[0] as unknown[]).map(normalizeHeader);
+      const findColumn = (...names: string[]) =>
+        headers.findIndex((header) => names.includes(header));
+      const columns = {
+        sku: findColumn("sku interno", "sku", "sku_interno"),
+        unidade: findColumn("unidade", "un"),
+        nome: findColumn("nome", "produto"),
+        familia: findColumn("familia", "família"),
+        preco: findColumn("preco atual", "preço atual", "preco", "preço"),
+      };
+      if (Object.values(columns).some((column) => column < 0)) {
+        throw new Error("Use as colunas: SKU interno, Unidade, Nome, Família e Preço atual");
+      }
+
+      const parsed = data.slice(1).flatMap((raw, index) => {
+        const cells = raw as unknown[];
+        if (cells.every((cell) => String(cell).trim() === "")) return [];
+        const row: ImportRow = {
+          rowNumber: index + 2,
+          sku: String(cells[columns.sku] ?? "").trim(),
+          unidade: String(cells[columns.unidade] ?? "").trim(),
+          nome: String(cells[columns.nome] ?? "").trim(),
+          familia: String(cells[columns.familia] ?? "").trim(),
+          preco: parsePrice(cells[columns.preco]),
+        };
+        const missing = [
+          !row.sku && "SKU",
+          !row.nome && "nome",
+          !row.familia && "família",
+          row.preco === null && "preço",
+        ].filter(Boolean);
+        if (missing.length) row.error = `Preencha: ${missing.join(", ")}`;
+        return [row];
+      });
+
+      const skuCounts = new Map<string, number>();
+      parsed.forEach((row) => {
+        const key = normalizeHeader(row.sku);
+        if (key) skuCounts.set(key, (skuCounts.get(key) ?? 0) + 1);
+      });
+      parsed.forEach((row) => {
+        if ((skuCounts.get(normalizeHeader(row.sku)) ?? 0) > 1) {
+          row.error = row.error ? `${row.error}; SKU repetido` : "SKU repetido na planilha";
+        }
+      });
+
+      setImportFilename(file.name);
+      setImportRows(parsed);
+      setImportOpen(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Não foi possível ler a planilha");
+    }
+  }
+
+  async function importSpreadsheet() {
+    const validRows = importRows.filter((row) => !row.error && row.preco !== null);
+    if (validRows.length === 0) return;
+    setImporting(true);
+
+    const familyByName = new Map(familias.map((f) => [normalizeHeader(f.nome), f]));
+    for (const familyName of new Set(validRows.map((row) => row.familia))) {
+      const key = normalizeHeader(familyName);
+      if (familyByName.has(key)) continue;
+      const { data, error } = await apiClient
+        .from("familias")
+        .insert({ nome: familyName, descricao: "Criada pela importação de produtos", ativo: true })
+        .select("id,nome,ativo")
+        .single();
+      if (error || !data) {
+        setImporting(false);
+        toast.error(`Não foi possível cadastrar a família ${familyName}`);
+        return;
+      }
+      familyByName.set(key, data as FamiliaOption);
+    }
+
+    const productBySku = new Map(
+      list.map((produto) => [normalizeHeader(produto.sku_interno), produto]),
+    );
+    let inserted = 0;
+    let updated = 0;
+    for (const row of validRows) {
+      const payload = {
+        sku_interno: row.sku,
+        unidade: row.unidade,
+        nome: row.nome,
+        familia_id: familyByName.get(normalizeHeader(row.familia))?.id,
+        preco_atual: row.preco,
+        observacoes: "",
+      };
+      const existing = productBySku.get(normalizeHeader(row.sku));
+      const result = existing
+        ? await apiClient.from("produtos").update(payload).eq("id", existing.id)
+        : await apiClient.from("produtos").insert({ ...payload, ativo: true });
+      if (result.error) {
+        setImporting(false);
+        toast.error(`Importação interrompida no SKU ${row.sku}`);
+        await refreshData();
+        return;
+      }
+      if (existing) updated += 1;
+      else inserted += 1;
+    }
+
+    setImporting(false);
+    setImportOpen(false);
+    setImportRows([]);
+    await refreshData();
+    toast.success(`${inserted} produto(s) cadastrado(s) e ${updated} atualizado(s)`);
+  }
+
   return (
     <>
       <PageHeader
         title="Produtos ConstruJota"
         description="Catálogo interno de produtos que serão monitorados."
         actions={
-          <Button
-            onClick={openNew}
-            className="bg-primary text-primary-foreground hover:bg-primary/90"
-          >
-            <Plus className="mr-1 h-4 w-4" /> Novo produto
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" asChild>
+              <label className="cursor-pointer">
+                <Upload className="mr-1 h-4 w-4" /> Importar Excel
+                <input
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) void readSpreadsheet(file);
+                    event.target.value = "";
+                  }}
+                />
+              </label>
+            </Button>
+            <Button
+              onClick={openNew}
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              <Plus className="mr-1 h-4 w-4" /> Novo produto
+            </Button>
+          </div>
         }
       />
 
@@ -485,6 +655,79 @@ export default function Produtos() {
               className="bg-primary text-primary-foreground hover:bg-primary/90"
             >
               {saving ? "Salvando..." : "Salvar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={importOpen} onOpenChange={(value) => !importing && setImportOpen(value)}>
+        <DialogContent className="max-h-[90vh] max-w-5xl overflow-hidden">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileSpreadsheet className="h-5 w-5" /> Importar produtos
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 overflow-hidden">
+            <div className="text-sm text-muted-foreground">
+              Arquivo: <span className="font-medium text-foreground">{importFilename}</span>. SKUs
+              existentes serão atualizados e novas famílias serão cadastradas automaticamente.
+            </div>
+            <div className="flex flex-wrap gap-2 text-sm">
+              <Badge variant="secondary">{importRows.length} linha(s)</Badge>
+              <Badge className="bg-success text-success-foreground">
+                {importRows.filter((row) => !row.error).length} válida(s)
+              </Badge>
+              {importRows.some((row) => row.error) && (
+                <Badge variant="destructive">
+                  {importRows.filter((row) => row.error).length} com erro
+                </Badge>
+              )}
+            </div>
+            <div className="max-h-[55vh] overflow-auto rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Linha</TableHead>
+                    <TableHead>SKU interno</TableHead>
+                    <TableHead>Unidade</TableHead>
+                    <TableHead>Nome</TableHead>
+                    <TableHead>Família</TableHead>
+                    <TableHead>Preço atual</TableHead>
+                    <TableHead>Validação</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {importRows.map((row) => (
+                    <TableRow key={`${row.rowNumber}-${row.sku}`}>
+                      <TableCell>{row.rowNumber}</TableCell>
+                      <TableCell className="font-mono text-xs">{row.sku || "—"}</TableCell>
+                      <TableCell>{row.unidade || "—"}</TableCell>
+                      <TableCell className="min-w-64 font-medium">{row.nome || "—"}</TableCell>
+                      <TableCell>{row.familia || "—"}</TableCell>
+                      <TableCell>{row.preco === null ? "—" : formatBRL(row.preco)}</TableCell>
+                      <TableCell>
+                        {row.error ? (
+                          <span className="text-xs text-destructive">{row.error}</span>
+                        ) : (
+                          <Badge className="bg-success text-success-foreground">Válida</Badge>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setImportOpen(false)} disabled={importing}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={() => void importSpreadsheet()}
+              disabled={importing || importRows.every((row) => row.error)}
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              {importing ? "Importando..." : "Confirmar importação"}
             </Button>
           </DialogFooter>
         </DialogContent>
