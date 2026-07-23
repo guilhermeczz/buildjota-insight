@@ -54,6 +54,7 @@ import {
   Power,
   Search,
   Trash2,
+  TriangleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -281,6 +282,23 @@ export default function MapeamentosSku() {
     [produtos, selectedProdutoIds],
   ) as ProdutoOption[];
 
+  const selectedConcorrenteIds = useMemo(
+    () => (editing ? (form.concorrente_id ? [form.concorrente_id] : []) : form.concorrente_ids),
+    [editing, form.concorrente_id, form.concorrente_ids],
+  );
+
+  const activeMappingConflicts = useMemo(
+    () =>
+      list.filter(
+        (mapeamento) =>
+          mapeamento.ativo &&
+          mapeamento.id !== editing?.id &&
+          selectedProdutoIds.includes(mapeamento.produto_id) &&
+          selectedConcorrenteIds.includes(mapeamento.concorrente_id),
+      ),
+    [editing?.id, list, selectedConcorrenteIds, selectedProdutoIds],
+  );
+
   function openNew() {
     setEditing(null);
     setForm(emptyForm);
@@ -371,12 +389,15 @@ export default function MapeamentosSku() {
       : form.concorrente_ids;
     const selectedProductsForSave = selectedProdutoIds;
 
-    if (
-      selectedProductsForSave.length === 0 ||
-      selectedConcorrentes.length === 0 ||
-      (editing && !form.sku_concorrente.trim())
-    ) {
-      toast.error("Selecione produto, concorrente e preencha o código do concorrente");
+    if (selectedProductsForSave.length === 0 || selectedConcorrentes.length === 0) {
+      toast.error("Selecione ao menos um produto e um concorrente");
+      return;
+    }
+
+    if (activeMappingConflicts.length > 0) {
+      toast.error(
+        "Já existe mapeamento ativo para um ou mais produtos nos concorrentes selecionados",
+      );
       return;
     }
 
@@ -431,11 +452,6 @@ export default function MapeamentosSku() {
         };
       }),
     );
-
-    if (payloads.some((payload) => !payload.sku_concorrente)) {
-      toast.error("Preencha o código em todos os concorrentes selecionados");
-      return;
-    }
 
     setSaving(true);
     const { error } = await apiClient.from("mapeamentos_sku").insert(payloads);
@@ -858,10 +874,29 @@ export default function MapeamentosSku() {
                 </p>
               </div>
             )}
+            {activeMappingConflicts.length > 0 && (
+              <div className="space-y-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm sm:col-span-2">
+                <div className="flex items-center gap-2 font-medium text-destructive">
+                  <TriangleAlert className="h-4 w-4 shrink-0" />
+                  Já existe mapeamento ativo para:
+                </div>
+                <ul className="list-disc space-y-1 pl-6 text-muted-foreground">
+                  {activeMappingConflicts.map((mapeamento) => (
+                    <li key={mapeamento.id}>
+                      {mapeamento.produtos?.sku_interno} - {mapeamento.produtos?.nome} em{" "}
+                      {mapeamento.concorrentes?.nome}
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs text-muted-foreground">
+                  Desmarque a combinação ou desative o mapeamento existente para continuar.
+                </p>
+              </div>
+            )}
             {editing ? (
               <>
                 <div className="space-y-1.5">
-                  <Label>Cód. no concorrente</Label>
+                  <Label>Cód. no concorrente (opcional)</Label>
                   <Input
                     value={form.sku_concorrente}
                     onChange={(event) => setForm({ ...form, sku_concorrente: event.target.value })}
@@ -869,7 +904,7 @@ export default function MapeamentosSku() {
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Unidade equivalente</Label>
+                  <Label>Unidade equivalente (opcional)</Label>
                   <Input
                     value={form.unidade_equivalente}
                     onChange={(event) =>
@@ -878,7 +913,7 @@ export default function MapeamentosSku() {
                   />
                 </div>
                 <div className="space-y-1.5 sm:col-span-2">
-                  <Label>URL do produto</Label>
+                  <Label>URL do produto (opcional)</Label>
                   <Input
                     value={form.url_produto}
                     onChange={(event) => setForm({ ...form, url_produto: event.target.value })}
@@ -928,7 +963,7 @@ export default function MapeamentosSku() {
               <div className="space-y-4 sm:col-span-2">
                 <div className="rounded-md border bg-muted/30 p-3 text-sm">
                   {selectedProdutos.length * form.concorrente_ids.length} mapeamento(s) serão
-                  criados.
+                  criados. Deixe as informações vazias quando o concorrente não tiver o produto.
                 </div>
 
                 {selectedProdutos.map((produto) =>
@@ -948,7 +983,7 @@ export default function MapeamentosSku() {
                         </div>
                         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                           <div className="space-y-1.5">
-                            <Label>Cód. no concorrente</Label>
+                            <Label>Cód. no concorrente (opcional)</Label>
                             <Input
                               value={details.sku_concorrente}
                               onChange={(event) =>
@@ -958,7 +993,7 @@ export default function MapeamentosSku() {
                             />
                           </div>
                           <div className="space-y-1.5">
-                            <Label>Unidade equivalente</Label>
+                            <Label>Unidade equivalente (opcional)</Label>
                             <Input
                               value={details.unidade_equivalente}
                               onChange={(event) =>
@@ -971,7 +1006,7 @@ export default function MapeamentosSku() {
                             />
                           </div>
                           <div className="space-y-1.5 sm:col-span-2">
-                            <Label>URL do produto</Label>
+                            <Label>URL do produto (opcional)</Label>
                             <Input
                               value={details.url_produto}
                               onChange={(event) =>
@@ -1030,7 +1065,7 @@ export default function MapeamentosSku() {
             </Button>
             <Button
               onClick={save}
-              disabled={saving}
+              disabled={saving || activeMappingConflicts.length > 0}
               className="bg-primary text-primary-foreground hover:bg-primary/90"
             >
               {saving ? "Salvando..." : "Salvar mapeamento"}
