@@ -1696,7 +1696,12 @@ async function openProductBySearch(page, context, statePath, mapping, concorrent
       }
 
       const searched = await submitSiteSearch(page, query);
-      const searchHasResults = searched && (await hasSearchResultContent(page, query, mapping));
+      // MEGALESTE may navigate to a valid result without rendering the searched SKU in the
+      // intermediate page. Requiring the query text here rejects searches that worked before;
+      // the product identity is confirmed below after opening the result.
+      const searchHasResults =
+        searched &&
+        (isMegaleste(concorrente) || (await hasSearchResultContent(page, query, mapping)));
       const openedSearchPage =
         searchHasResults || (await openSearchFallback(page, query, concorrente, mapping));
       if (!openedSearchPage) {
@@ -1776,7 +1781,6 @@ function searchQueriesForMapping(mapping, concorrente) {
         supplierSku,
         ...(productName ? [`${supplierSku} ${productName}`] : []),
         ...descriptionQueries.map((description) => `${supplierSku} ${description}`),
-        ...(internalSku && internalSku !== supplierSku ? [`${supplierSku} ${internalSku}`] : []),
       ]
     : [productName, ...productVariants, internalSku];
 
