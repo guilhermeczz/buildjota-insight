@@ -126,6 +126,7 @@ function hasUsableProductUrl(mapping) {
 }
 
 function shouldOpenDirectProductUrl(mapping, concorrente) {
+  if (isMegaleste(concorrente) && cleanSearchQuery(mapping.sku_concorrente)) return true;
   if (!hasUsableProductUrl(mapping)) return false;
   return isConstruja(concorrente) || !usesSearchFlow(concorrente);
 }
