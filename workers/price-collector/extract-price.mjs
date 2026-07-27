@@ -41,16 +41,50 @@ const priceHints = [
 export function parseBRL(text, options = {}) {
   if (shouldRejectText(text, options)) return null;
 
-  const preferred = parsePreferredLabeledBRL(text, options);
-  if (preferred) return preferred;
+  if (options.preferPrazo) {
+    const prazo = parsePrazoBRL(text, options);
+    if (prazo) return prazo;
+
+    // MEGALESTE may show only its main price in the result card. It is a safe
+    // fallback only when there is no competing monetary value in that block.
+    const uniquePrices = [
+      ...new Set(parseBRLValues(text, options).filter((value) => isPlausiblePrice(value, options))),
+    ];
+    return uniquePrices.length === 1 ? uniquePrices[0] : null;
+  }
+
+  if (!options.requireCurrency) {
+    const preferred = parsePreferredLabeledBRL(text, options);
+    if (preferred) return preferred;
+  }
 
   const discounted = parseDiscountedBRL(text, options);
   if (discounted) return discounted;
 
-  const matches = parseBRLValues(text);
+  const matches = parseBRLValues(text, options);
   if (matches.length === 0) return null;
 
   return selectPrice(matches, options);
+}
+
+function parsePrazoBRL(text, options = {}) {
+  if (!text) return null;
+
+  const plain = normalizeText(String(text).replace(/\s+/g, " "));
+  const valuePattern = String.raw`(\d{1,3}(?:\s*\.\s*\d{3})*\s*,\s*\d{2,3})`;
+  const labelPattern = String.raw`(?:(?:preco|valor)\s+)?(?:a\s+)?prazo`;
+  const patterns = [
+    new RegExp(`${labelPattern}\\s*[:\\-]?\\s*(?:r\\$\\s*)?${valuePattern}`, "i"),
+    new RegExp(`(?:r\\$\\s*)?${valuePattern}\\s*[:\\-]?\\s*${labelPattern}`, "i"),
+  ];
+
+  for (const pattern of patterns) {
+    const match = plain.match(pattern);
+    const value = match ? parseMoney(match[1]) : null;
+    if (value && isPlausiblePrice(value, options)) return value;
+  }
+
+  return null;
 }
 
 function parsePreferredLabeledBRL(text, options = {}) {
@@ -79,17 +113,18 @@ function parseDiscountedBRL(text, options = {}) {
   const normalized = normalizeText(text);
   if (!/(off|desconto|promocao|promocional|por apenas|especial)/i.test(normalized)) return null;
 
-  const matches = parseBRLValues(text);
+  const matches = parseBRLValues(text, options);
   if (matches.length === 0) return null;
 
   return selectPrice(matches, { ...options, preferLast: true });
 }
 
-function parseBRLValues(text) {
+function parseBRLValues(text, options = {}) {
   if (!text) return [];
 
   const normalized = text.replace(/R\$/g, " R$").replace(/(\d)(R\$)/g, "$1 $2");
   return [...normalized.matchAll(moneyPattern)]
+    .filter((match) => !options.requireCurrency || /^\s*R\$/i.test(match[0]))
     .map((match) => parseMoney(match[1]))
     .filter((value) => value !== null);
 }
@@ -172,6 +207,10 @@ export async function extractPrice(page, selector, options = {}) {
   return parseBRL(bodyText, { ...options, preferLast: true, requireSingle: true });
 }
 
+export async function extractPriceFromLocator(page, selector, options = {}) {
+  return parseLocatorPrice(page, selector, options);
+}
+
 export async function extractPriceNearTerms(page, terms, options = {}) {
   const normalizedTerms = [...new Set((terms ?? []).map(normalizeText).filter(Boolean))]
     .filter(isUsefulSearchTerm)
@@ -180,7 +219,7 @@ export async function extractPriceNearTerms(page, terms, options = {}) {
 
   const candidates = await page
     .evaluate(
-      ({ searchTerms, browserMoneyPatternSource }) => {
+      ({ searchTerms, browserMoneyPatternSource, requireCurrency }) => {
         const moneyPattern = new RegExp(browserMoneyPatternSource);
         const placeholderPricePattern = /R\$\s*[-–—]+(?:\s*[-–—]+|,\s*[-–—]+)*/i;
         const unavailableSignalPattern =
@@ -260,7 +299,7 @@ export async function extractPriceNearTerms(page, terms, options = {}) {
               text,
               length: normalized.length,
               matchedTerm: matchedTerm ?? "",
-              hasPrice: moneyPattern.test(text),
+              hasPrice: moneyPattern.test(text) && (!requireCurrency || /R\$\s*\d/i.test(text)),
               unavailable:
                 unavailableSignalPattern.test(normalized) || placeholderPricePattern.test(text),
             };
@@ -276,12 +315,19 @@ export async function extractPriceNearTerms(page, terms, options = {}) {
           .slice(0, 12)
           .map((item) => item.text);
       },
-      { searchTerms: normalizedTerms, browserMoneyPatternSource: moneyPatternSource },
+      {
+        searchTerms: normalizedTerms,
+        browserMoneyPatternSource: moneyPatternSource,
+        requireCurrency: options.requireCurrency === true,
+      },
     )
     .catch(() => []);
 
   for (const text of candidates) {
-    const parsed = parseBRL(text, { ...options, preferLast: true });
+    const parsed = parseBRL(text, {
+      ...options,
+      preferLast: options.preferLast ?? true,
+    });
     if (parsed) return parsed;
   }
 

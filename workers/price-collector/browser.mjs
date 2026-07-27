@@ -2,7 +2,7 @@ import { chromium } from "playwright";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { credentialsFor, resolveConcorrenteKey } from "./config.mjs";
-import { extractPrice, extractPriceNearTerms } from "./extract-price.mjs";
+import { extractPrice, extractPriceFromLocator, extractPriceNearTerms } from "./extract-price.mjs";
 
 const userAgent =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36";
@@ -2116,6 +2116,126 @@ async function isExpectedProductPage(page, mapping) {
   return hasExpectedMeasure && matchedTerms.length >= Math.min(2, identity.terms.length);
 }
 
+const visibleProductDialogSelector = [
+  ".modal.show",
+  ".modal[style*='display: block' i]",
+  "[role='dialog']:visible",
+  "[aria-modal='true']:visible",
+  "[class*='modal' i]:visible",
+].join(", ");
+
+async function extractMegalestePrice(page, mapping, options) {
+  const priceOptions = { ...options, preferPrazo: true };
+  const terms = priceSearchTerms(mapping);
+
+  // The term-scoped search only accepts a block containing the expected supplier SKU.
+  const cardOrProductPrice = await extractPriceNearTerms(page, terms, priceOptions);
+  if (cardOrProductPrice) return cardOrProductPrice;
+
+  const opened = await openMegalesteProductPriceDialog(page, mapping);
+  if (!opened) return null;
+
+  const dialog = page.locator(visibleProductDialogSelector).last();
+  await dialog.waitFor({ state: "visible", timeout: quickLoadTimeoutMs }).catch(() => null);
+  const dialogText = await dialog.innerText({ timeout: quickLoadTimeoutMs }).catch(() => "");
+  const normalizedDialog = normalizeText(dialogText);
+  if (
+    /produto\s+indisponivel|fora\s+(?:de|do)\s+estoque|indisponivel|sem\s+(?:estoque|saldo)|esgotado/.test(
+      normalizedDialog,
+    )
+  ) {
+    throw new Error("Produto indisponível no concorrente");
+  }
+
+  // The dialog belongs to the exact SKU card clicked below, so it remains safely scoped even
+  // when the modal itself omits the supplier code.
+  return extractPriceFromLocator(page, visibleProductDialogSelector, priceOptions);
+}
+
+async function openMegalesteProductPriceDialog(page, mapping) {
+  const identity = productIdentity(mapping);
+  if (identity.codes.length === 0) return false;
+
+  const clicked = await page
+    .evaluate(({ codes }) => {
+      const normalize = (value) =>
+        String(value ?? "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+      const hasExactCode = (text) =>
+        codes.some((code) => {
+          const escaped = code.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "i").test(text);
+        });
+
+      const containers = [
+        ...document.querySelectorAll(
+          [
+            "article",
+            "li",
+            "tr",
+            "[class*='produto' i]",
+            "[class*='product' i]",
+            "[class*='item' i]",
+            "[class*='card' i]",
+            "[class*='col-' i]",
+          ].join(", "),
+        ),
+      ]
+        .filter((node) => node instanceof HTMLElement && visible(node))
+        .map((node) => ({ node, text: normalize(node.innerText || node.textContent || "") }))
+        .filter((item) => item.text.length <= 2500 && hasExactCode(item.text))
+        .sort((a, b) => a.text.length - b.text.length);
+
+      const product = containers[0]?.node;
+      if (!(product instanceof HTMLElement)) return false;
+
+      const targets = [
+        ...product.querySelectorAll(
+          [
+            "button[aria-label*='ampli' i]",
+            "button[title*='ampli' i]",
+            "button[aria-label*='visual' i]",
+            "button[title*='visual' i]",
+            "[class*='lupa' i]",
+            "[class*='zoom' i]",
+            "a:has(img)",
+            "button:has(img)",
+            "img",
+          ].join(", "),
+        ),
+      ].filter((node) => node instanceof HTMLElement && visible(node));
+
+      const target = targets[0];
+      if (!(target instanceof HTMLElement)) return false;
+      const clickable = target.closest("button, a, [role='button']") ?? target;
+      clickable.click();
+      return true;
+    }, identity)
+    .catch(() => false);
+
+  if (!clicked) return false;
+  await page.waitForTimeout(400);
+  return page
+    .locator(visibleProductDialogSelector)
+    .last()
+    .isVisible()
+    .catch(() => false);
+}
+
 async function pageHasText(page, patterns) {
   const text = await page
     .locator("body")
@@ -2389,10 +2509,12 @@ async function collectGroup(browser, group, options = {}) {
 
         const priceOptions = {
           referencePrice: Number(mapping.produtos.preco_atual ?? 0),
+          ...(isConstruja(group.concorrente) ? { requireCurrency: true, preferLast: false } : {}),
         };
-        const price =
-          usesSearchFlow(group.concorrente) &&
-          !shouldOpenDirectProductUrl(mapping, group.concorrente)
+        const price = isMegaleste(group.concorrente)
+          ? await extractMegalestePrice(page, mapping, priceOptions)
+          : usesSearchFlow(group.concorrente) &&
+              !shouldOpenDirectProductUrl(mapping, group.concorrente)
             ? await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)
             : ((await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)) ??
               (await extractPrice(page, mapping.seletor_preco, priceOptions)));

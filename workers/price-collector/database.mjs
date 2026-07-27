@@ -211,6 +211,10 @@ export async function fetchActiveMappings(_client, filters = {}) {
     values.push(filters.mapeamentoId);
     clauses.push(`m.id = $${values.length}`);
   }
+  if (filters.skuConcorrente) {
+    values.push(String(filters.skuConcorrente).trim());
+    clauses.push(`trim(m.sku_concorrente) = $${values.length}`);
+  }
   if (filters.produtoId) {
     values.push(filters.produtoId);
     clauses.push(`m.produto_id = $${values.length}`);

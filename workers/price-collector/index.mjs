@@ -28,6 +28,7 @@ const originArg = argValue("--origin");
 const produtoId = argValue("--produto-id");
 const familiaId = argValue("--familia-id");
 const mapeamentoId = argValue("--mapeamento-id");
+const skuConcorrente = argValue("--sku-concorrente");
 const concorrente = argValue("--concorrente");
 const agendaId = argValue("--agenda-id");
 const failedSince = argValue("--failed-since");
@@ -74,6 +75,7 @@ function summarize(resultados) {
 
 function filterLabel() {
   if (mapeamentoId) return " Filtro: mapeamento.";
+  if (skuConcorrente) return ` Filtro: SKU concorrente ${skuConcorrente}.`;
   if (produtoId) return " Filtro: produto.";
   if (familiaId) return " Filtro: familia.";
   if (concorrente) return ` Filtro: concorrente ${concorrente}.`;
@@ -100,6 +102,7 @@ async function main() {
       produtoId,
       familiaId,
       mapeamentoId,
+      skuConcorrente,
       concorrente,
       failedOnly,
       failedSince,
