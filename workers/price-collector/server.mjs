@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { resolve } from "node:path";
 import { loadWorkerEnv } from "./env.mjs";
+import { isInsideScheduleWindow } from "./schedule.mjs";
 
 loadWorkerEnv();
 
@@ -21,6 +22,10 @@ const workerDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(workerDir, "../..");
 const workerEntry = resolve(workerDir, "index.mjs");
 const scheduleTimezone = process.env.SCHEDULE_TIMEZONE ?? "America/Sao_Paulo";
+const scheduleGraceMinutes = Math.max(
+  0,
+  Math.min(60, Number(process.env.SCHEDULE_GRACE_MINUTES ?? 1) || 0),
+);
 
 function ensureSchemaOnce() {
   runtimeSchemaPromise ??= ensureRuntimeSchema().catch((error) => {
@@ -159,7 +164,7 @@ async function fetchDueSchedule() {
     const horario = String(row.horario).slice(0, 5);
     const dias = Array.isArray(row.dias_semana) ? row.dias_semana.map(Number) : [];
     if (!dias.includes(current.weekday)) return false;
-    if (horario > current.time) return false;
+    if (!isInsideScheduleWindow(horario, current.time, scheduleGraceMinutes)) return false;
     return !hasRunForScheduledTime(row, current, horario);
   });
 }
@@ -243,6 +248,7 @@ const server = createServer(async (req, res) => {
       running,
       currentRun,
       scheduleTimezone,
+      scheduleGraceMinutes,
       local: localParts(new Date()),
     });
     return;
@@ -322,6 +328,7 @@ const server = createServer(async (req, res) => {
 server.listen(port, "0.0.0.0", () => {
   console.log(`Worker trigger ouvindo em http://0.0.0.0:${port}`);
   console.log(`Agenda de coleta ativa no fuso ${scheduleTimezone}.`);
+  console.log(`Tolerancia da agenda: ${scheduleGraceMinutes} minuto(s).`);
   console.log(`Horario local da agenda: ${JSON.stringify(localParts(new Date()))}.`);
   setInterval(() => {
     runDueSchedule().catch((error) => {

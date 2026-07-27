@@ -265,7 +265,10 @@ Regras da agenda:
 - precisa ter `horario` preenchido;
 - o dia atual precisa estar em `dias_semana`;
 - `radar-worker` precisa estar online;
-- se uma coleta estiver rodando, a proxima espera a vez.
+- precisa estar no minuto configurado ou na tolerancia definida por
+  `SCHEDULE_GRACE_MINUTES` (padrao: 1 minuto);
+- se uma coleta estiver rodando durante toda a janela, a proxima e ignorada para nao executar
+  fora do horario.
 
 ## 12. Configuracao recomendada da agenda
 
