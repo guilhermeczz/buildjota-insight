@@ -15,11 +15,17 @@
 curl -s -X POST http://127.0.0.1:8787/run -H "content-type: application/json" -d '{}'
 ```
 
-- Cron da coleta diaria configurado para 06:00:
+- A agenda automatica agora e controlada pela tela **Agenda de Coleta**. O processo
+  `radar-worker` consulta essa agenda a cada minuto.
+- O cron antigo das 06:00 deve ser removido da VM para nao criar uma segunda coleta:
 
-```cron
-0 6 * * * curl -s -X POST http://127.0.0.1:8787/run -H "content-type: application/json" -d '{}' >> /home/guilherme/Projeto-Gui/buildjota-insight/worker-cron.log 2>&1
+```bash
+crontab -l
+crontab -e
 ```
+
+Remova a linha que faz `POST http://127.0.0.1:8787/run` às 06:00. Mantenha o PM2
+`radar-worker` ativo, pois ele e o responsavel por executar o horario cadastrado no sistema.
 
 - Dominio No-IP criado:
 

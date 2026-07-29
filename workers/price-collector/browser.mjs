@@ -1607,18 +1607,12 @@ async function openProductPage(page, context, statePath, mapping, concorrente) {
     console.log(`[CONSTRUJA] Abrindo produto na mesma sessao: ${productUrl}`);
   }
 
-  await page.goto(productUrl, {
-    waitUntil: "domcontentloaded",
-    timeout: navigationTimeoutMs,
-  });
+  await gotoProductPage(page, productUrl, concorrente);
   await dismissOverlays(page);
 
   if (await ensurePreferencesForRead(page, concorrente)) {
     await context.storageState({ path: statePath });
-    await page.goto(productUrl, {
-      waitUntil: "domcontentloaded",
-      timeout: navigationTimeoutMs,
-    });
+    await gotoProductPage(page, productUrl, concorrente);
     await dismissOverlays(page);
     if (await ensurePreferencesForRead(page, concorrente)) {
       await context.storageState({ path: statePath });
@@ -1632,6 +1626,28 @@ async function openProductPage(page, context, statePath, mapping, concorrente) {
     await waitForProductSignal(page);
   }
   if (productSettleMs > 0) await page.waitForTimeout(productSettleMs);
+}
+
+async function gotoProductPage(page, productUrl, concorrente) {
+  if (!isConstruja(concorrente)) {
+    await page.goto(productUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: navigationTimeoutMs,
+    });
+    return;
+  }
+
+  // A Construja can keep third-party scripts/connections pending long after the product
+  // document has started arriving. Waiting for DOMContentLoaded made valid pages fail after
+  // 18 seconds. "commit" still requires a real HTTP response; the existing product-signal
+  // wait below then confirms that useful page content was rendered.
+  await page.goto(productUrl, {
+    waitUntil: "commit",
+    timeout: navigationTimeoutMs,
+  });
+  await page
+    .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
+    .catch(() => null);
 }
 
 async function openProductWithAuthenticatedSession(page, context, statePath, mapping, concorrente) {
