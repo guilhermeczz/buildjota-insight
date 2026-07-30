@@ -9,6 +9,19 @@ const userAgent =
 const authStateDir = join(process.cwd(), ".worker-auth");
 const blockHeavyAssets = process.env.WORKER_BLOCK_HEAVY_ASSETS !== "false";
 const navigationTimeoutMs = envNumber("WORKER_NAVIGATION_TIMEOUT_MS", 18000, 5000, 60000);
+const construjaNavigationTimeoutMs = envNumber(
+  "WORKER_CONSTRUJA_NAVIGATION_TIMEOUT_MS",
+  45000,
+  15000,
+  90000,
+);
+const construjaNavigationAttempts = envNumber("WORKER_CONSTRUJA_NAVIGATION_ATTEMPTS", 3, 1, 5);
+const construjaPriceSignalTimeoutMs = envNumber(
+  "WORKER_CONSTRUJA_PRICE_SIGNAL_TIMEOUT_MS",
+  12000,
+  3000,
+  30000,
+);
 const quickLoadTimeoutMs = envNumber("WORKER_QUICK_LOAD_TIMEOUT_MS", 3500, 1000, 15000);
 const actionTimeoutMs = envNumber("WORKER_ACTION_TIMEOUT_MS", 5000, 1000, 15000);
 const productSignalTimeoutMs = envNumber("WORKER_PRICE_SIGNAL_TIMEOUT_MS", 4500, 1000, 15000);
@@ -1620,6 +1633,7 @@ async function openProductPage(page, context, statePath, mapping, concorrente) {
   }
 
   await waitForProductSignal(page);
+  if (isConstruja(concorrente)) await waitForConstrujaPriceSignal(page);
   await dismissOverlays(page);
   if (await ensurePreferencesForRead(page, concorrente)) {
     await context.storageState({ path: statePath });
@@ -1637,17 +1651,58 @@ async function gotoProductPage(page, productUrl, concorrente) {
     return;
   }
 
-  // A Construja can keep third-party scripts/connections pending long after the product
-  // document has started arriving. Waiting for DOMContentLoaded made valid pages fail after
-  // 18 seconds. "commit" still requires a real HTTP response; the existing product-signal
-  // wait below then confirms that useful page content was rendered.
-  await page.goto(productUrl, {
-    waitUntil: "commit",
-    timeout: navigationTimeoutMs,
-  });
-  await page
-    .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
-    .catch(() => null);
+  // Construja occasionally leaves a navigation without even committing a response. Give this
+  // origin more time than the other catalogs and recover the page before retrying, otherwise
+  // the next product inherits the stalled request and a whole batch fails in sequence.
+  let lastError = null;
+  for (let attempt = 1; attempt <= construjaNavigationAttempts; attempt += 1) {
+    try {
+      await page.goto(productUrl, {
+        waitUntil: "commit",
+        timeout: construjaNavigationTimeoutMs,
+      });
+      await page
+        .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
+        .catch(() => null);
+      return;
+    } catch (error) {
+      lastError = error;
+
+      // The timeout can race with a usable committed document. Keep it when content exists.
+      const usableDocument =
+        sameUrlIgnoringQuery(page.url(), productUrl) &&
+        (await page
+          .locator("body")
+          .evaluate((body) => (body.innerText || body.textContent || "").trim().length > 40)
+          .catch(() => false));
+      if (usableDocument) return;
+      if (attempt === construjaNavigationAttempts) break;
+
+      console.log(
+        `[CONSTRUJA] Produto nao respondeu; nova tentativa ` +
+          `(${attempt + 1}/${construjaNavigationAttempts}).`,
+      );
+      await page
+        .goto("about:blank", { waitUntil: "commit", timeout: quickLoadTimeoutMs })
+        .catch(() => null);
+      await page.waitForTimeout(attempt * 1000);
+    }
+  }
+
+  throw lastError ?? new Error("Pagina da CONSTRUJA nao respondeu");
+}
+
+function sameUrlIgnoringQuery(currentUrl, expectedUrl) {
+  try {
+    const current = new URL(currentUrl);
+    const expected = new URL(expectedUrl);
+    return (
+      current.origin === expected.origin &&
+      current.pathname.replace(/\/+$/, "") === expected.pathname.replace(/\/+$/, "")
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function openProductWithAuthenticatedSession(page, context, statePath, mapping, concorrente) {
@@ -2689,6 +2744,20 @@ async function waitForProductSignal(page) {
         );
       },
       { timeout: productSignalTimeoutMs },
+    )
+    .catch(() => null);
+}
+
+async function waitForConstrujaPriceSignal(page) {
+  await page
+    .waitForFunction(
+      () => {
+        const text = document.body?.innerText ?? "";
+        return /R\$\s*\d|indisponivel|indisponível|fora de estoque|sem estoque|esgotado|entre ou cadastre|cadastre-se para ver/i.test(
+          text,
+        );
+      },
+      { timeout: construjaPriceSignalTimeoutMs },
     )
     .catch(() => null);
 }
