@@ -9,13 +9,19 @@ export function timeToMinutes(value) {
   return hour * 60 + minute;
 }
 
-export function isInsideScheduleWindow(scheduledTime, currentTime, graceMinutes = 1) {
+export function hasScheduleTimeArrived(scheduledTime, currentTime) {
   const scheduled = timeToMinutes(scheduledTime);
   const current = timeToMinutes(currentTime);
   if (scheduled === null || current === null) return false;
 
-  const grace = Math.max(0, Math.min(60, Number(graceMinutes) || 0));
-  const delay = current - scheduled;
+  return current >= scheduled;
+}
 
-  return delay >= 0 && delay <= grace;
+export function isScheduleDue({ scheduledTime, weekdays, lastRun }, current) {
+  const normalizedWeekdays = Array.isArray(weekdays) ? weekdays.map(Number) : [];
+  if (!normalizedWeekdays.includes(Number(current?.weekday))) return false;
+  if (!hasScheduleTimeArrived(scheduledTime, current?.time)) return false;
+  if (!lastRun || lastRun.date !== current?.date) return true;
+
+  return lastRun.time < String(scheduledTime).slice(0, 5);
 }

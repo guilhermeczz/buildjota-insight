@@ -45,9 +45,6 @@ WORKER_PRICE_SIGNAL_TIMEOUT_MS=4500
 WORKER_PRODUCT_SETTLE_MS=350
 WORKER_ACTION_TIMEOUT_MS=5000
 
-# Opcional. A coleta agendada so pode iniciar no minuto configurado ou dentro
-# desta tolerancia. O padrao e 1 minuto; use 0 para exigir o minuto exato.
-SCHEDULE_GRACE_MINUTES=1
 ```
 
 ## Como rodar
@@ -119,7 +116,7 @@ O painel chama a API principal em `/api/worker/run`. A API encaminha a chamada i
 ## Agenda automatica
 
 O mesmo processo `npm run worker:server` tambem consulta a tabela `agenda_coletas` a cada minuto.
-Quando uma familia estiver ativa, no dia correto e dentro da janela do horario configurado, ele executa:
+Quando uma familia estiver ativa, no dia correto e a partir do horario configurado, ele executa:
 
 ```bash
 node workers/price-collector/index.mjs --familia-id=<id> --scheduled
@@ -127,8 +124,9 @@ node workers/price-collector/index.mjs --familia-id=<id> --scheduled
 
 Configure os horarios pela tela **Agenda de Coleta**. O limite "Paralelo" controla quantos
 concorrentes podem ser lidos ao mesmo tempo, de 1 a 4. Em VPS de 8 GB, comece com 1.
-Se o worker estiver desligado ou ocupado durante toda a janela, a coleta daquele horario e
-ignorada em vez de ser iniciada horas depois.
+Se o worker estiver ocupado no horario, a coleta permanece pendente e inicia assim que o robo
+ficar livre. Se o processo for reiniciado mais tarde no mesmo dia, ele recupera as agendas daquele
+dia que ainda nao foram executadas. Cada agenda roda no maximo uma vez por dia e horario salvo.
 
 Para execucoes manuais, o padrao e `WORKER_CONCURRENCY=2`. Isso le dois concorrentes por vez,
 mantendo o consumo baixo sem deixar uma leitura pequena demorar demais.

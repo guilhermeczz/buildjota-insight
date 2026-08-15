@@ -414,9 +414,9 @@ export default function AgendaColetas() {
           </div>
 
           <div className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
-            O worker verifica a agenda a cada minuto. A coleta inicia no horario configurado, com
-            tolerancia maxima de 1 minuto. Se o robo estiver ocupado durante essa janela, a coleta
-            nao sera iniciada fora do horario.
+            O worker verifica a agenda a cada minuto. No dia selecionado, cada coleta fica pendente
+            a partir do horario configurado e inicia assim que o robo estiver livre. A mesma agenda
+            nao e executada duas vezes no mesmo dia.
           </div>
         </CardContent>
       </Card>
