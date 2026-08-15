@@ -2,18 +2,19 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 export function loadWorkerEnv() {
+  const externallyConfigured = new Set(Object.keys(process.env));
   for (const envPath of [
     resolve(process.cwd(), ".env.local"),
     resolve(process.cwd(), ".env.worker"),
     resolve(process.cwd(), ".env.worker.local"),
   ]) {
-    loadEnvFile(envPath);
+    loadEnvFile(envPath, externallyConfigured);
   }
 
   process.env.DATABASE_URL ??= process.env.POSTGRES_URL;
 }
 
-function loadEnvFile(envPath) {
+function loadEnvFile(envPath, externallyConfigured) {
   if (!existsSync(envPath)) return;
   const content = readFileSync(envPath, "utf8");
 
@@ -28,7 +29,7 @@ function loadEnvFile(envPath) {
     const rawValue = trimmed.slice(separator + 1).trim();
     const value = rawValue.replace(/^["']|["']$/g, "");
 
-    if (key) {
+    if (key && !externallyConfigured.has(key)) {
       process.env[key] = value;
     }
   }

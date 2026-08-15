@@ -33,6 +33,7 @@ const concorrente = argValue("--concorrente");
 const agendaId = argValue("--agenda-id");
 const failedSince = argValue("--failed-since");
 const failedUntil = argValue("--failed-until");
+const cofemaFixture = argValue("--cofema-fixture");
 const concurrency = Math.max(
   1,
   Math.min(4, Number(argValue("--concurrency") || process.env.WORKER_CONCURRENCY || 2)),
@@ -84,6 +85,11 @@ function filterLabel() {
 }
 
 async function main() {
+  if (cofemaFixture) {
+    await runCofemaFixture(cofemaFixture);
+    return;
+  }
+
   const startedAt = new Date();
   const origem = scheduled ? "agendado" : originArg || "worker";
   const database = createDatabaseClient();
@@ -183,6 +189,55 @@ async function main() {
       await markExecutionFailed(execution, error);
     }
     throw error;
+  }
+}
+
+async function runCofemaFixture(mode) {
+  const fixtureUrls = {
+    direct:
+      "https://novo.cofema.com.br/page/produto/410409-otto-baumgart-bianco-900g-sache-122854-substituto-para-o-codigo-408287",
+    localized:
+      "https://novo.cofema.com.br/br/page/produto/410409-otto-baumgart-bianco-900g-sache-122854-substituto-para-o-codigo-408287",
+    legacy: "https://www.cofema.com.br/produto/410409-otto-baumgart-bianco-900g-sache-122854",
+    missing: "",
+  };
+  if (!Object.hasOwn(fixtureUrls, mode)) {
+    throw new Error(
+      `Fixture COFEMA desconhecido: ${mode}. Use direct, localized, legacy ou missing.`,
+    );
+  }
+
+  const mapping = {
+    id: mapeamentoId || `cofema-fixture-${mode}`,
+    sku_concorrente: "410409",
+    url_produto: fixtureUrls[mode],
+    unidade_equivalente: "900G",
+    seletor_preco: null,
+    produtos: {
+      sku_interno: "COFEMA-FIXTURE-410409",
+      nome: "OTTO BAUMGART BIANCO 900G SACHE 122854",
+      preco_atual: 32.33,
+    },
+  };
+  const concorrenteFixture = {
+    id: "cofema-fixture",
+    nome: "COFEMA",
+    site_url: "https://novo.cofema.com.br",
+    login_url: "https://novo.cofema.com.br/",
+    tipo_consulta: "SKU",
+  };
+  const resultados = await collectPricesByBrowser(
+    [{ concorrente: concorrenteFixture, mapeamentos: [mapping] }],
+    { headed, concurrency: 1 },
+  );
+  console.log(JSON.stringify(resultados, null, 2));
+  console.log("Fixture COFEMA: nenhum dado foi gravado no banco.");
+
+  const result = resultados[0];
+  if (result?.status !== "sucesso" || Number(result.preco_concorrente) !== 32.33) {
+    throw new Error(
+      `Fixture COFEMA ${mode} falhou: ${result?.mensagem_erro ?? "resultado inesperado"}`,
+    );
   }
 }
 

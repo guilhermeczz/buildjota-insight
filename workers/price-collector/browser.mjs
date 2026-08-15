@@ -1,12 +1,18 @@
 import { chromium } from "playwright";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { credentialsFor, resolveConcorrenteKey } from "./config.mjs";
-import { extractPrice, extractPriceFromLocator, extractPriceNearTerms } from "./extract-price.mjs";
+import {
+  extractPrice,
+  extractPriceFromLocator,
+  extractPriceNearTerms,
+  parseBRL,
+} from "./extract-price.mjs";
 
 const userAgent =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36";
 const authStateDir = join(process.cwd(), ".worker-auth");
+const diagnosticsDir = join(process.cwd(), ".worker-diagnostics");
 const blockHeavyAssets = process.env.WORKER_BLOCK_HEAVY_ASSETS !== "false";
 const navigationTimeoutMs = envNumber("WORKER_NAVIGATION_TIMEOUT_MS", 18000, 5000, 60000);
 const construjaNavigationTimeoutMs = envNumber(
@@ -29,7 +35,7 @@ const productSettleMs = envNumber("WORKER_PRODUCT_SETTLE_MS", 350, 0, 3000);
 const loginSettleMs = envNumber("WORKER_LOGIN_SETTLE_MS", 1200, 0, 5000);
 const cofemaBaseUrl = process.env.COFEMA_BASE_URL ?? "https://novo.cofema.com.br";
 const cofemaLoginUrl = process.env.COFEMA_LOGIN_URL ?? "/";
-const cofemaUnidade = process.env.COFEMA_UNIDADE ?? "SUMARE";
+const cofemaUnidade = String(process.env.COFEMA_UNIDADE ?? "").trim();
 const marestRegiao = process.env.MAREST_REGIAO ?? "SP";
 const megalesteRegiao = process.env.MEGALESTE_REGIAO ?? "SP";
 
@@ -37,6 +43,14 @@ function envNumber(name, fallback, min, max) {
   const value = Number(process.env[name] ?? fallback);
   if (!Number.isFinite(value)) return fallback;
   return Math.max(min, Math.min(max, value));
+}
+
+function cofemaUserAgentForBrowser(browser) {
+  const major = String(browser.version()).match(/^\d+/)?.[0] ?? "149";
+  return (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+    `(KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`
+  );
 }
 
 function storageStatePath(concorrenteNome) {
@@ -92,19 +106,17 @@ async function prepareAuthenticatedSession(context, page, statePath, concorrente
 }
 
 function hasInvalidCredentialsError(error) {
-  return error instanceof Error && /Credenciais invalidas/i.test(error.message);
+  return (
+    error instanceof Error && /Credenciais invalidas|credenciais recusadas/i.test(error.message)
+  );
 }
 
 function isAuthStateError(error) {
   if (!(error instanceof Error)) return false;
 
-  return /Credenciais invalidas|Credenciais nao configuradas|Formulario de login|Login nao confirmado|Configuracao de unidade|Regiao .* nao selecionada/i.test(
+  return /Credenciais invalidas|credenciais recusadas|Credenciais nao configuradas|formulario de login|Login nao confirmado|menu Area do Cliente|unidade configurada|Configuracao de unidade|Regiao .* nao selecionada/i.test(
     error.message,
   );
-}
-
-function allowsPublicPriceRead(concorrente) {
-  return false;
 }
 
 function isCofema(concorrente) {
@@ -139,6 +151,7 @@ function hasUsableProductUrl(mapping) {
 }
 
 function shouldOpenDirectProductUrl(mapping, concorrente) {
+  if (isCofema(concorrente)) return isNewCofemaProductUrl(mapping.url_produto);
   if (isMegaleste(concorrente) && cleanSearchQuery(mapping.sku_concorrente)) return true;
   if (!hasUsableProductUrl(mapping)) return false;
   return isConstruja(concorrente) || !usesSearchFlow(concorrente);
@@ -153,15 +166,29 @@ function absoluteUrl(value, fallbackBase) {
   }
 }
 
-function cofemaUrl(value = "/", fallbackBase = cofemaBaseUrl) {
-  const url = new URL(value || "/", fallbackBase || cofemaBaseUrl);
+function cofemaUrl(value = "/") {
+  const base = new URL(cofemaBaseUrl);
 
-  if (/cofema\.com\.br$/i.test(url.hostname)) {
-    url.protocol = "https:";
-    url.hostname = new URL(cofemaBaseUrl).hostname;
+  try {
+    const url = new URL(value || "/", base);
+    return url.origin === base.origin ? url.toString() : new URL("/", base).toString();
+  } catch {
+    return new URL("/", base).toString();
   }
+}
 
-  return url.toString();
+function isNewCofemaProductUrl(value) {
+  if (!value || /^TODO(?:_|\b)/i.test(String(value).trim())) return false;
+
+  try {
+    const url = new URL(value, cofemaBaseUrl);
+    const base = new URL(cofemaBaseUrl);
+    return (
+      url.origin === base.origin && /^\/(?:[a-z]{2}\/)?page\/produto\/[^/]+/i.test(url.pathname)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function construjaUrl(value, concorrente) {
@@ -330,14 +357,6 @@ async function login(page, concorrente) {
   );
 
   if (!loginFilled || !passwordFilled) {
-    if (isCofema(concorrente)) {
-      await ensurePreferencesForRead(page, concorrente).catch(() => false);
-      console.log(
-        "[COFEMA] Formulario de login nao identificado; tentando leitura com sessao/unidade atual.",
-      );
-      return;
-    }
-
     throw new Error(`Formulario de login nao identificado em ${concorrente.nome}`);
   }
 
@@ -1067,22 +1086,30 @@ async function loginCofema(page, concorrente, credentials) {
 
   await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs });
   await page.waitForLoadState("load", { timeout: quickLoadTimeoutMs }).catch(() => null);
+  await dismissCofemaNotice(page, { waitForAppearance: true });
   await dismissOverlays(page);
 
   if (await isCofemaLoggedIn(page)) {
     await ensurePreferencesForRead(page, concorrente);
+    console.log("[COFEMA] Sessao existente validada pelo cabecalho autenticado.");
     return;
   }
-  await clearCofemaLocalAuth(page);
 
-  const opened = await openCofemaLoginModal(page);
-  if (!opened) {
-    throw new Error("Formulario de login da COFEMA nao abriu");
-  }
+  await page
+    .context()
+    .clearCookies()
+    .catch(() => null);
+  await clearCofemaLocalAuth(page);
+  await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs });
+  await dismissCofemaNotice(page, { waitForAppearance: true });
+
+  await openCofemaLoginModal(page);
 
   const loginFilled = await fillFirstVisible(
     page,
     [
+      "[role='dialog'][aria-labelledby] #codigo",
+      "[role='dialog'] input[autocomplete='username']",
       "[role='dialog'] input[placeholder*='código' i]",
       "[role='dialog'] input[placeholder*='codigo' i]",
       "[role='dialog'] input[placeholder*='CPF' i]",
@@ -1111,6 +1138,8 @@ async function loginCofema(page, concorrente, credentials) {
   const passwordFilled = await fillFirstVisible(
     page,
     [
+      "[role='dialog'][aria-labelledby] #senha",
+      "[role='dialog'] input[autocomplete='current-password']",
       "[role='dialog'] input[type='password']",
       "[role='dialog'] input[placeholder*='senha' i]",
       ".modal input[type='password']",
@@ -1125,39 +1154,50 @@ async function loginCofema(page, concorrente, credentials) {
   );
 
   if (!loginFilled || !passwordFilled) {
-    throw new Error("Campos de login da COFEMA nao foram identificados");
+    throw new Error("COFEMA: formulario de login nao encontrado");
   }
 
-  const clicked = await clickFirstVisible(page, [
-    "[role='dialog'] button:has-text('Entrar')",
-    "[role='dialog'] button[type='submit']",
-    ".modal button:has-text('Entrar')",
-    ".modal button[type='submit']",
-    "#dialog-model .btLogin",
-    "#dialog-model button[type='submit']",
-    "#dialog-model input[type='submit']",
-    "#dialog-model button:has-text('Entrar')",
-    "#dialog-model button:has-text('Acessar')",
-    ".modal.show .btLogin",
-  ]);
+  const submit = page
+    .getByRole("dialog", { name: /login do cliente/i })
+    .getByRole("button", { name: /^entrar$/i });
+  const authResponsePromise = page
+    .waitForResponse(
+      (response) =>
+        /\/api\/auth(?:$|\?)/i.test(response.url()) && response.request().method() === "POST",
+      { timeout: actionTimeoutMs * 2 },
+    )
+    .catch(() => null);
 
-  if (!clicked) {
-    await page.keyboard.press("Enter");
+  if (!(await submit.isVisible().catch(() => false))) {
+    throw new Error("COFEMA: formulario de login nao encontrado");
+  }
+  await submit.click({ timeout: actionTimeoutMs });
+  const authResponse = await authResponsePromise;
+  if (authResponse) {
+    console.log(`[COFEMA] Resposta da autenticacao: HTTP ${authResponse.status()}.`);
+  }
+  if (authResponse && [400, 401, 403].includes(authResponse.status())) {
+    throw new Error("COFEMA: credenciais recusadas");
   }
 
   const logged = await waitForCofemaLogin(page);
   if (await hasInvalidCredentialsMessage(page)) {
-    throw new Error("Credenciais invalidas em COFEMA");
+    throw new Error("COFEMA: credenciais recusadas");
   }
   if (!logged) {
-    throw new Error("Login nao confirmado em COFEMA");
+    throw new Error("COFEMA: login nao confirmado");
   }
 
   await ensurePreferencesForRead(page, concorrente);
+  console.log("[COFEMA] Login confirmado pelo cabecalho autenticado.");
 }
 
 async function openCofemaLoginModal(page) {
+  let menuOpened = false;
+  let areaClicked = false;
+
   for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await dismissCofemaNotice(page);
     if (await isCofemaLoginFormVisible(page)) return true;
 
     const clicked =
@@ -1177,11 +1217,12 @@ async function openCofemaLoginModal(page) {
         ".ContainerLogonAjax a[data-logon='1']",
         "a[data-logon='1']",
         "button[data-logon='1']",
-      ])) || (await clickCofemaLoginByDom());
+      ])) || (await clickCofemaLoginByDom(page));
 
     if (clicked) {
+      menuOpened = true;
       await page.waitForTimeout(350);
-      await clickCofemaAreaCliente(page);
+      areaClicked = (await clickCofemaAreaCliente(page)) || areaClicked;
     }
 
     const visible = await waitForCofemaLoginForm(page);
@@ -1190,7 +1231,10 @@ async function openCofemaLoginModal(page) {
     await page.waitForTimeout(600);
   }
 
-  return false;
+  if (!menuOpened || !areaClicked) {
+    throw new Error("COFEMA: menu Area do Cliente nao abriu");
+  }
+  throw new Error("COFEMA: formulario de login nao encontrado");
 }
 
 async function isCofemaLoginFormVisible(page) {
@@ -1314,43 +1358,19 @@ async function clickCofemaLoginByDom(page) {
 async function isCofemaLoggedIn(page) {
   if (await isCofemaLoginFormVisible(page)) return false;
 
-  const userValue = await page
-    .locator("input[name='user']")
-    .first()
-    .getAttribute("value", { timeout: 1000 })
-    .catch(() => "");
+  const loggedOutControl = page.getByRole("button", { name: /entre ou cadastre-se/i });
+  if (await loggedOutControl.isVisible().catch(() => false)) return false;
 
-  if (userValue === "true") return true;
-
-  const hasStoredAuth = await page
-    .evaluate(() => {
-      const hasAuthEntry = (storage) => {
-        if (!storage) return false;
-        return Object.entries(storage).some(([key, value]) => {
-          const name = String(key ?? "");
-          const content = String(value ?? "");
-          return (
-            /token|jwt|auth|cliente|customer|session|usuario|user/i.test(name) &&
-            content &&
-            !/^(false|null|undefined|\{\}|\[\])$/i.test(content)
-          );
-        });
-      };
-
-      return hasAuthEntry(window.localStorage) || hasAuthEntry(window.sessionStorage);
-    })
-    .catch(() => false);
-
-  if (hasStoredAuth) return true;
-
-  return pageHasText(page, [
-    /minha conta/,
-    /meus pedidos/,
-    /sair/,
-    /ola[, ]/,
-    /ol[aá][, ]/,
-    /bem vindo/,
-  ]);
+  const accountControl = page
+    .locator(
+      "header button[aria-haspopup='menu']:has(svg.lucide-user):visible, " +
+        "header button[aria-haspopup='menu'][title*=' - ']:visible",
+    )
+    .first();
+  const locationControl = cofemaLocationControl(page);
+  const accountVisible = await accountControl.isVisible().catch(() => false);
+  const locationVisible = await locationControl.isVisible().catch(() => false);
+  return accountVisible && locationVisible;
 }
 
 async function clearCofemaLocalAuth(page) {
@@ -1377,9 +1397,7 @@ async function waitForCofemaLogin(page) {
       .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
       .catch(() => null);
     if (await isCofemaLoggedIn(page)) return true;
-
-    const modalHasPassword = await isCofemaLoginFormVisible(page);
-    if (!modalHasPassword && (await isCofemaLoggedIn(page))) return true;
+    if (await hasInvalidCredentialsMessage(page)) return false;
 
     await page.waitForTimeout(750);
   }
@@ -1408,6 +1426,40 @@ async function openLoginSurface(page) {
   ]);
 
   await page.waitForTimeout(500);
+}
+
+async function dismissCofemaNotice(page, options = {}) {
+  if (options.waitForAppearance) {
+    await page.waitForTimeout(900);
+  }
+
+  const notice = page
+    .getByRole("dialog")
+    .filter({ hasText: /NOVIDADE SITE/i })
+    .first();
+  if (!(await notice.isVisible().catch(() => false))) return false;
+
+  const closeControls = [
+    notice.getByRole("button", { name: /^fechar$/i }).first(),
+    notice.locator("button[aria-label='Fechar' i], button[aria-label='Close' i]").first(),
+    notice
+      .locator("button")
+      .filter({ hasText: /^[x×]$/i })
+      .first(),
+  ];
+
+  for (const control of closeControls) {
+    if (!(await control.isVisible().catch(() => false))) continue;
+    const clicked = await control.click({ timeout: actionTimeoutMs }).then(
+      () => true,
+      () => false,
+    );
+    if (!clicked) continue;
+    await notice.waitFor({ state: "hidden", timeout: actionTimeoutMs }).catch(() => null);
+    if (!(await notice.isVisible().catch(() => false))) return true;
+  }
+
+  throw new Error("COFEMA: modal de comunicado nao pode ser fechado");
 }
 
 async function dismissOverlays(page) {
@@ -1524,56 +1576,86 @@ async function ensureConcorrentePreferences(page, concorrente) {
 }
 
 async function ensurePreferencesForRead(page, concorrente) {
-  try {
-    return await ensureConcorrentePreferences(page, concorrente);
-  } catch (error) {
-    if (!allowsPublicPriceRead(concorrente)) throw error;
-
-    console.log(
-      `[${concorrente.nome}] Preferencia do site nao confirmou; seguindo leitura publica.`,
-    );
-    await closeVisibleDialog(page).catch(() => false);
-    return false;
-  }
+  return ensureConcorrentePreferences(page, concorrente);
 }
 
 async function configureCofema(page) {
-  if (!(await isCofemaPromptVisible(page))) return false;
+  const current = await cofemaLocationText(page);
+  if (!current) throw new Error("COFEMA: login nao confirmado");
 
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    const selected = await selectVisibleOption(page, cofemaUnidade);
-    await page.waitForTimeout(350);
-    if (!selected) {
-      console.log(
-        `[COFEMA] Unidade ${cofemaUnidade} nao encontrada no seletor; tentativa ${attempt}.`,
-      );
-    }
+  if (!cofemaUnidade) {
+    console.log(`[COFEMA] Unidade ativa mantida (${current}).`);
+    return false;
+  }
 
-    const clicked = await confirmCofemaSettings(page);
-    if (!clicked) {
-      throw new Error("Configuracao de unidade da COFEMA nao confirmada");
-    }
+  if (normalizeText(current) === normalizeText(cofemaUnidade)) {
+    console.log(`[COFEMA] Unidade configurada ja esta ativa (${current}).`);
+    return false;
+  }
 
-    await page
-      .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
-      .catch(() => null);
-    await page.waitForTimeout(1200);
+  const control = cofemaLocationControl(page);
+  if (!(await control.isVisible().catch(() => false))) {
+    throw new Error("COFEMA: unidade configurada nao encontrada");
+  }
+  await control.click({ timeout: actionTimeoutMs });
+  await page.waitForTimeout(250);
 
-    if (!(await isCofemaPromptVisible(page))) {
-      console.log(`[COFEMA] Configuracoes confirmadas (${cofemaUnidade}).`);
+  const selected = await page
+    .evaluate((expected) => {
+      const normalize = (value) =>
+        String(value ?? "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+      const target = [...document.querySelectorAll("[role='menuitem']")].find((item) => {
+        const style = window.getComputedStyle(item);
+        const rect = item.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0 &&
+          normalize(item.textContent) === normalize(expected)
+        );
+      });
+      if (!(target instanceof HTMLElement)) return false;
+      target.click();
       return true;
-    }
+    }, cofemaUnidade)
+    .catch(() => false);
 
-    if (await pageHasText(page, [new RegExp(`unidade:?\\s*${escapeRegex(cofemaUnidade)}`, "i")])) {
-      const closed = await closeVisibleDialog(page);
-      if (closed && !(await isCofemaPromptVisible(page))) {
-        console.log(`[COFEMA] Unidade ${cofemaUnidade} ja estava ativa; modal fechada.`);
-        return true;
-      }
+  if (!selected) throw new Error("COFEMA: unidade configurada nao encontrada");
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await page.waitForTimeout(300);
+    const active = await cofemaLocationText(page);
+    if (active && normalizeText(active) === normalizeText(cofemaUnidade)) {
+      console.log(`[COFEMA] Unidade ativa confirmada (${active}).`);
+      return true;
     }
   }
 
-  throw new Error("Configuracao de unidade da COFEMA permaneceu aberta");
+  throw new Error("COFEMA: unidade configurada nao encontrada");
+}
+
+function cofemaLocationControl(page) {
+  return page
+    .locator(
+      "header button[aria-haspopup='menu']:has(svg.lucide-building-2):visible, " +
+        "header button[aria-haspopup='menu']:has(svg.lucide-building2):visible",
+    )
+    .first();
+}
+
+async function cofemaLocationText(page) {
+  const control = cofemaLocationControl(page);
+  await control.waitFor({ state: "visible", timeout: quickLoadTimeoutMs }).catch(() => null);
+  if (!(await control.isVisible().catch(() => false))) return "";
+  return String(await control.innerText().catch(() => ""))
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 async function configureRegionSelector(page, providerName, region) {
@@ -1609,6 +1691,11 @@ async function configureRegionSelector(page, providerName, region) {
 }
 
 async function openProductPage(page, context, statePath, mapping, concorrente) {
+  if (isCofema(concorrente) && !shouldOpenDirectProductUrl(mapping, concorrente)) {
+    await openProductBySearch(page, context, statePath, mapping, concorrente);
+    return;
+  }
+
   if (!shouldOpenDirectProductUrl(mapping, concorrente) && usesSearchFlow(concorrente)) {
     await openProductBySearch(page, context, statePath, mapping, concorrente);
     return;
@@ -1640,6 +1727,11 @@ async function openProductPage(page, context, statePath, mapping, concorrente) {
     await waitForProductSignal(page);
   }
   if (productSettleMs > 0) await page.waitForTimeout(productSettleMs);
+
+  if (isCofema(concorrente) && !(await isExpectedProductPage(page, mapping, concorrente))) {
+    console.log("[COFEMA] URL direta nao confirmou o produto; iniciando busca por identidade.");
+    await openProductBySearch(page, context, statePath, mapping, concorrente);
+  }
 }
 
 async function gotoProductPage(page, productUrl, concorrente) {
@@ -1773,7 +1865,8 @@ async function openProductBySearch(page, context, statePath, mapping, concorrent
       // the product identity is confirmed below after opening the result.
       const searchHasResults =
         searched &&
-        (isMegaleste(concorrente) || (await hasSearchResultContent(page, query, mapping)));
+        (isMegaleste(concorrente) ||
+          (await hasSearchResultContent(page, query, mapping, concorrente)));
       const openedSearchPage =
         searchHasResults || (await openSearchFallback(page, query, concorrente, mapping));
       if (!openedSearchPage) {
@@ -1783,8 +1876,8 @@ async function openProductBySearch(page, context, statePath, mapping, concorrent
 
       await waitForProductSignal(page);
 
-      if (!(await isExpectedProductPage(page, mapping))) {
-        await clickBestSearchResult(page, mapping);
+      if (!(await isExpectedProductPage(page, mapping, concorrente))) {
+        await clickBestSearchResult(page, mapping, concorrente);
         await waitForProductSignal(page);
       }
 
@@ -1795,12 +1888,20 @@ async function openProductBySearch(page, context, statePath, mapping, concorrent
 
       if (productSettleMs > 0) await page.waitForTimeout(productSettleMs);
 
-      if (await isExpectedProductPage(page, mapping)) return;
+      if (await isExpectedProductPage(page, mapping, concorrente)) return;
 
       lastError = new Error(`Produto nao confirmado na busca por "${query}"`);
     } catch (error) {
       lastError = error;
     }
+  }
+
+  if (isCofema(concorrente)) {
+    throw new Error(
+      lastError instanceof Error
+        ? `COFEMA: produto nao corresponde ao mapeamento (${lastError.message})`
+        : "COFEMA: produto nao corresponde ao mapeamento",
+    );
   }
 
   throw new Error(
@@ -1826,7 +1927,7 @@ async function openSearchFallback(page, query, concorrente, mapping) {
       }
 
       await waitForProductSignal(page);
-      if (await hasSearchResultContent(page, query, mapping)) return true;
+      if (await hasSearchResultContent(page, query, mapping, concorrente)) return true;
     } catch (error) {
       lastError = error;
     }
@@ -1847,6 +1948,16 @@ function searchQueriesForMapping(mapping, concorrente) {
   const productVariants = productNameVariants(mapping.produtos?.nome).map(cleanSearchQuery);
   const internalSku = cleanSearchQuery(mapping.produtos?.sku_interno);
 
+  if (isCofema(concorrente)) {
+    const urlCode = cofemaProductCodeFromUrl(mapping.url_produto);
+    const nameCodes = [...String(mapping.produtos?.nome ?? "").matchAll(/\b\d{5,14}\b/g)].map(
+      (match) => match[0],
+    );
+    return [supplierSku, urlCode, ...nameCodes, productName, ...productVariants]
+      .map(cleanSearchQuery)
+      .filter((query, index, queries) => query.length >= 2 && queries.indexOf(query) === index);
+  }
+
   const descriptionQueries = [productName, ...productVariants].filter(Boolean);
   const rawQueries = supplierSku
     ? [
@@ -1865,7 +1976,22 @@ function cleanSearchQuery(value) {
     .trim();
 }
 
+function cofemaProductCodeFromUrl(value) {
+  try {
+    const pathname = new URL(value, cofemaBaseUrl).pathname;
+    return (
+      pathname.match(/\/(?:page\/)?produto\/(\d{3,})/i)?.[1] ??
+      pathname.match(/\/(\d{3,})(?:[-/]|$)/)?.[1] ??
+      ""
+    );
+  } catch {
+    return "";
+  }
+}
+
 function searchStartUrlForMapping(mapping, concorrente) {
+  if (isCofema(concorrente)) return cofemaUrl("/");
+
   const fallback = isCofema(concorrente)
     ? cofemaUrl(concorrente.site_url || "/")
     : isConstruja(concorrente)
@@ -1902,6 +2028,7 @@ function searchUrlFallbacks(query, concorrente) {
   }
 
   return [
+    ...(isCofema(concorrente) ? [absoluteUrl(`/page/busca?q=${encoded}`, base)] : []),
     absoluteUrl(`/busca?q=${encoded}`, base),
     absoluteUrl(`/search?q=${encoded}`, base),
     absoluteUrl(`/?q=${encoded}`, base),
@@ -2050,8 +2177,8 @@ async function hasSearchChanged(page, beforeUrl, query) {
   return matches >= Math.min(2, queryParts.length);
 }
 
-async function hasSearchResultContent(page, query, mapping) {
-  if (await isExpectedProductPage(page, mapping)) return true;
+async function hasSearchResultContent(page, query, mapping, concorrente = null) {
+  if (await isExpectedProductPage(page, mapping, concorrente)) return true;
 
   const text = await page
     .locator("body")
@@ -2085,7 +2212,81 @@ async function clickSearchSubmit(page) {
   ]);
 }
 
-async function clickBestSearchResult(page, mapping) {
+async function clickConfirmedCofemaSearchResult(page, mapping) {
+  const identity = productIdentity(mapping);
+  const candidates = await page
+    .locator("a[href]")
+    .evaluateAll((links, { codes, terms }) => {
+      const normalize = (value) =>
+        String(value ?? "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+      const byHref = new Map();
+
+      for (const link of links) {
+        const href = link.getAttribute("href") ?? "";
+        if (!/\/(?:[a-z]{2}\/)?page\/produto\//i.test(href)) continue;
+
+        let root = link.parentElement;
+        while (root?.parentElement) {
+          const text = normalize(root.innerText || root.textContent);
+          if (text.length >= 40 && text.length <= 1600) break;
+          root = root.parentElement;
+        }
+        const text = normalize(
+          `${link.getAttribute("aria-label") ?? ""} ${href} ${root?.innerText ?? ""}`,
+        );
+        const codeMatch = codes.some((code) => text.includes(code));
+        const matchedTerms = terms.filter((term) => text.includes(term));
+        const measureTerms = terms.filter((term) => /\d/.test(term));
+        const hasMeasure =
+          measureTerms.length === 0 || measureTerms.some((term) => text.includes(term));
+        const strongNameMatch =
+          terms.length >= 2 &&
+          hasMeasure &&
+          matchedTerms.length >= Math.min(3, Math.ceil(terms.length * 0.6));
+
+        if (codeMatch || strongNameMatch) {
+          byHref.set(href, { href, score: (codeMatch ? 100 : 0) + matchedTerms.length });
+        }
+      }
+
+      return [...byHref.values()].sort((a, b) => b.score - a.score);
+    }, identity)
+    .catch(() => []);
+
+  if (candidates.length === 0) return false;
+  if (candidates.length > 1) {
+    throw new Error("COFEMA: produto ambiguo ou nao confirmado");
+  }
+
+  const href = candidates[0].href;
+  const clicked = await page
+    .locator("a[href]")
+    .evaluateAll((links, expectedHref) => {
+      const target = links.find((link) => link.getAttribute("href") === expectedHref);
+      if (!(target instanceof HTMLElement)) return false;
+      target.click();
+      return true;
+    }, href)
+    .catch(() => false);
+  if (!clicked) return false;
+
+  await page
+    .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
+    .catch(() => null);
+  await page.waitForTimeout(500);
+  return true;
+}
+
+async function clickBestSearchResult(page, mapping, concorrente = null) {
+  if (concorrente && isCofema(concorrente)) {
+    return clickConfirmedCofemaSearchResult(page, mapping);
+  }
+
   const identity = productIdentity(mapping);
   if (identity.codes.length === 0 && identity.terms.length === 0) return false;
 
@@ -2166,7 +2367,11 @@ async function clickBestSearchResult(page, mapping) {
   return true;
 }
 
-async function isExpectedProductPage(page, mapping) {
+async function isExpectedProductPage(page, mapping, concorrente = null) {
+  if (concorrente && isCofema(concorrente)) {
+    return isExpectedCofemaProductPage(page, mapping);
+  }
+
   const identity = productIdentity(mapping);
   if (identity.codes.length === 0 && identity.terms.length === 0) return true;
 
@@ -2187,6 +2392,53 @@ async function isExpectedProductPage(page, mapping) {
   return hasExpectedMeasure && matchedTerms.length >= Math.min(2, identity.terms.length);
 }
 
+async function isExpectedCofemaProductPage(page, mapping) {
+  const pathname = new URL(page.url()).pathname;
+  if (!/^\/(?:[a-z]{2}\/)?page\/produto\//i.test(pathname)) return false;
+
+  const observed = await page
+    .locator("main")
+    .evaluate((main) => {
+      const text = String(main.innerText || main.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim();
+      const normalized = text
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase();
+      return {
+        name: main.querySelector("h1")?.textContent?.trim() ?? "",
+        mainCode: normalized.match(/codigo:\s*([a-z0-9._/-]+)/i)?.[1] ?? "",
+        supplierReference:
+          normalized.match(/referencia do fornecedor:\s*([a-z0-9._/-]+)/i)?.[1] ?? "",
+        barcode: normalized.match(/codigo barras:\s*([a-z0-9._/-]+)/i)?.[1] ?? "",
+      };
+    })
+    .catch(() => null);
+  if (!observed?.name || !observed.mainCode) return false;
+
+  const urlCode = cofemaProductCodeFromUrl(page.url());
+  if (urlCode && normalizeText(urlCode) !== normalizeText(observed.mainCode)) return false;
+
+  const identity = productIdentity(mapping);
+  const observedCodes = [observed.mainCode, observed.supplierReference, observed.barcode].map(
+    normalizeText,
+  );
+  const codeMatch = identity.codes.some((code) => observedCodes.includes(normalizeText(code)));
+
+  const normalizedName = normalizeText(observed.name);
+  const matchedTerms = identity.terms.filter((term) => normalizedName.includes(term));
+  const measureTerms = identity.terms.filter((term) => /\d/.test(term));
+  const hasMeasure =
+    measureTerms.length === 0 || measureTerms.some((term) => normalizedName.includes(term));
+  const strongNameMatch =
+    identity.terms.length >= 2 &&
+    hasMeasure &&
+    matchedTerms.length >= Math.min(3, Math.ceil(identity.terms.length * 0.6));
+
+  return codeMatch || strongNameMatch;
+}
+
 const visibleProductDialogSelector = [
   ".modal.show",
   ".modal[style*='display: block' i]",
@@ -2194,6 +2446,39 @@ const visibleProductDialogSelector = [
   "[aria-modal='true']:visible",
   "[class*='modal' i]:visible",
 ].join(", ");
+
+async function extractCofemaPrice(page, mapping, options) {
+  if (!(await isExpectedCofemaProductPage(page, mapping))) {
+    throw new Error("COFEMA: produto nao corresponde ao mapeamento");
+  }
+
+  const priceText = await page
+    .locator("main h1")
+    .first()
+    .evaluate((heading) => {
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+      const productSummary = heading.closest("div.space-y-2");
+      const price = productSummary?.querySelector(".produto-preco .produto-preco-row");
+      return price instanceof HTMLElement && visible(price) ? price.innerText : "";
+    })
+    .catch(() => "");
+
+  return parseBRL(priceText, {
+    ...options,
+    requireCurrency: true,
+    requireSingle: true,
+    preferLast: false,
+  });
+}
 
 async function extractMegalestePrice(page, mapping, options) {
   const priceOptions = { ...options, preferPrazo: true };
@@ -2332,167 +2617,48 @@ async function clickExactText(page, pattern) {
   return true;
 }
 
-async function isCofemaPromptVisible(page) {
-  return (
-    (await pageHasText(page, [/definir configuracoes/])) ||
-    (await page
-      .locator("button:has-text('Definir configura'), .modal:has-text('Definir configura')")
-      .first()
-      .isVisible()
-      .catch(() => false))
-  );
-}
-
-async function confirmCofemaSettings(page) {
-  const selectors = [
-    ".modal.show button:has-text('Definir configura')",
-    ".modal button:has-text('Definir configura')",
-    "[role='dialog'] button:has-text('Definir configura')",
-    "button:has-text('Definir configura')",
-    "input[type='submit'][value*='Definir']",
-    ".modal.show button.btn-primary",
-    ".modal button.btn-primary",
-  ];
-
-  for (const selector of selectors) {
-    const locator = page.locator(selector).first();
-    const visible = await locator.isVisible().catch(() => false);
-    if (!visible) continue;
-
-    const clicked = await locator.click({ timeout: actionTimeoutMs, force: true }).then(
-      () => true,
-      () => false,
-    );
-    if (clicked) return true;
-  }
-
-  if (await clickCofemaDefineButton(page)) return true;
-
-  const focused = await page
-    .locator(
-      ".modal.show button:has-text('Definir configura'), button:has-text('Definir configura')",
-    )
-    .first()
-    .focus({ timeout: actionTimeoutMs })
-    .then(
-      () => true,
-      () => false,
-    );
-  if (focused) {
-    await page.keyboard.press("Enter");
-    return true;
-  }
-
-  return false;
-}
-
-async function clickCofemaDefineButton(page) {
-  const clicked = await page
-    .evaluate(() => {
-      const normalize = (value) =>
-        String(value ?? "")
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
-          .replace(/\s+/g, " ")
-          .trim()
-          .toLowerCase();
-
-      const candidates = [...document.querySelectorAll("button, input[type='submit'], a")];
-      const target = candidates.find((node) => {
-        const element = node instanceof HTMLElement ? node : null;
-        if (!element) return false;
-        const style = window.getComputedStyle(element);
-        const visible =
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          element.getBoundingClientRect().width > 0 &&
-          element.getBoundingClientRect().height > 0;
-        const label =
-          element instanceof HTMLInputElement
-            ? element.value
-            : element.innerText || element.textContent;
-        return visible && normalize(label).includes("definir configuracoes");
-      });
-
-      if (!target) return false;
-      target.click();
-      return true;
-    })
-    .catch(() => false);
-
-  if (!clicked) return false;
-
-  await page
-    .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
-    .catch(() => null);
-  return true;
-}
-
-async function closeVisibleDialog(page) {
-  return clickFirstVisible(page, [
-    ".modal.show button.close",
-    ".modal.show [data-dismiss='modal']",
-    ".modal.show [aria-label='Close']",
-    ".modal.show [aria-label='Fechar']",
-    ".modal button.close",
-    ".modal [data-dismiss='modal']",
-    ".modal [aria-label='Close']",
-    ".modal [aria-label='Fechar']",
-  ]);
-}
-
-async function selectVisibleOption(page, optionText) {
-  const target = normalizeText(optionText);
-  const selects = page.locator("select");
-  const count = await selects.count().catch(() => 0);
-
-  for (let index = 0; index < count; index += 1) {
-    const select = selects.nth(index);
-    const visible = await select.isVisible().catch(() => false);
-    if (!visible) continue;
-
-    const option = await select
-      .locator("option")
-      .evaluateAll((nodes, targetText) => {
-        const normalize = (value) =>
-          String(value ?? "")
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .toLowerCase();
-
-        return nodes
-          .map((node) => ({ value: node.value, text: node.textContent ?? "" }))
-          .find(
-            (item) =>
-              normalize(item.value).includes(targetText) ||
-              normalize(item.text).includes(targetText),
-          );
-      }, target)
-      .catch(() => null);
-
-    if (!option?.value) continue;
-
-    await select.selectOption(option.value, { timeout: actionTimeoutMs });
-    await select.dispatchEvent("input").catch(() => null);
-    await select.dispatchEvent("change").catch(() => null);
-    return true;
-  }
-
-  return false;
-}
-
 function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function captureCofemaFailureDiagnostics(page, mapping = null) {
+  mkdirSync(diagnosticsDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const mappingLabel = String(mapping?.id ?? "session").replace(/[^a-z0-9-]+/gi, "-");
+  const prefix = join(diagnosticsDir, `cofema-${mappingLabel}-${timestamp}`);
+
+  await page
+    .locator("input[type='password'], #codigo, input[autocomplete='username']")
+    .evaluateAll((inputs) => {
+      for (const input of inputs) {
+        if (!(input instanceof HTMLInputElement)) continue;
+        input.value = "";
+        input.setAttribute("value", "");
+      }
+    })
+    .catch(() => null);
+
+  await page.screenshot({ path: `${prefix}.png`, fullPage: true }).catch(() => null);
+  let html = await page.content().catch(() => "");
+  for (const secret of [process.env.COFEMA_LOGIN, process.env.COFEMA_PASSWORD]) {
+    if (secret) html = html.replaceAll(secret, "[REDACTED]");
+  }
+  html = html.replace(
+    /(<input\b[^>]*(?:type=["']password["']|id=["']codigo["'])[^>]*\bvalue=)["'][^"']*["']/gi,
+    '$1"[REDACTED]"',
+  );
+  writeFileSync(`${prefix}.html`, html, "utf8");
+  console.log(`[COFEMA] Diagnostico de falha salvo em ${diagnosticsDir}.`);
 }
 
 export async function collectPricesByBrowser(groups, options = {}) {
   mkdirSync(authStateDir, { recursive: true });
   const concurrency = Math.max(1, Math.min(4, Number(options.concurrency ?? 1)));
+  const includesCofema = groups.some((group) => isCofema(group.concorrente));
 
   const browser = await chromium.launch({
     headless: !options.headed,
+    ...(includesCofema ? { args: ["--disable-blink-features=AutomationControlled"] } : {}),
   });
 
   const resultados = [];
@@ -2518,11 +2684,16 @@ export async function collectPricesByBrowser(groups, options = {}) {
 async function collectGroup(browser, group, options = {}) {
   const statePath = storageStatePath(group.concorrente.nome);
   const context = await browser.newContext({
-    userAgent,
+    userAgent: isCofema(group.concorrente) ? cofemaUserAgentForBrowser(browser) : userAgent,
     locale: "pt-BR",
     timezoneId: "America/Sao_Paulo",
     storageState: existsSync(statePath) ? statePath : undefined,
   });
+  if (isCofema(group.concorrente)) {
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    });
+  }
   const page = await context.newPage();
   page.setDefaultTimeout(actionTimeoutMs);
   page.setDefaultNavigationTimeout(navigationTimeoutMs);
@@ -2542,7 +2713,7 @@ async function collectGroup(browser, group, options = {}) {
 
     // Construja sessions may expire while their storage-state file remains present.
     // Always visit the login page and positively validate that session before collecting.
-    if (!existsSync(statePath) || isConstruja(group.concorrente)) {
+    if (!existsSync(statePath) || isConstruja(group.concorrente) || isCofema(group.concorrente)) {
       await prepareAuthenticatedSession(context, page, statePath, group.concorrente);
     }
 
@@ -2554,7 +2725,11 @@ async function collectGroup(browser, group, options = {}) {
       const progressLabel = `[${group.concorrente.nome}] ${index + 1}/${group.mapeamentos.length} ${productLabel}`;
 
       try {
-        if (!usesSearchFlow(group.concorrente) && !hasUsableProductUrl(mapping)) {
+        if (
+          !isCofema(group.concorrente) &&
+          !usesSearchFlow(group.concorrente) &&
+          !hasUsableProductUrl(mapping)
+        ) {
           throw new Error("URL do produto nao cadastrada");
         }
 
@@ -2568,7 +2743,18 @@ async function collectGroup(browser, group, options = {}) {
         );
 
         if (await isLoginRequired(page, group.concorrente)) {
-          throw new Error("Login nao confirmado; pagina ainda solicita autenticacao");
+          throw new Error(
+            isCofema(group.concorrente)
+              ? "COFEMA: login nao confirmado"
+              : "Login nao confirmado; pagina ainda solicita autenticacao",
+          );
+        }
+
+        if (
+          isCofema(group.concorrente) &&
+          !(await isExpectedProductPage(page, mapping, group.concorrente))
+        ) {
+          throw new Error("COFEMA: produto nao corresponde ao mapeamento");
         }
 
         if (
@@ -2582,13 +2768,15 @@ async function collectGroup(browser, group, options = {}) {
           referencePrice: Number(mapping.produtos.preco_atual ?? 0),
           ...(isConstruja(group.concorrente) ? { requireCurrency: true, preferLast: false } : {}),
         };
-        const price = isMegaleste(group.concorrente)
-          ? await extractMegalestePrice(page, mapping, priceOptions)
-          : usesSearchFlow(group.concorrente) &&
-              !shouldOpenDirectProductUrl(mapping, group.concorrente)
-            ? await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)
-            : ((await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)) ??
-              (await extractPrice(page, mapping.seletor_preco, priceOptions)));
+        const price = isCofema(group.concorrente)
+          ? await extractCofemaPrice(page, mapping, priceOptions)
+          : isMegaleste(group.concorrente)
+            ? await extractMegalestePrice(page, mapping, priceOptions)
+            : usesSearchFlow(group.concorrente) &&
+                !shouldOpenDirectProductUrl(mapping, group.concorrente)
+              ? await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)
+              : ((await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)) ??
+                (await extractPrice(page, mapping.seletor_preco, priceOptions)));
 
         if (
           price &&
@@ -2608,7 +2796,11 @@ async function collectGroup(browser, group, options = {}) {
           if (await isProductUnavailableForMapping(page, mapping, group.concorrente)) {
             throw new Error("Produto indisponível no concorrente");
           }
-          throw new Error("Preco nao encontrado na pagina");
+          throw new Error(
+            isCofema(group.concorrente)
+              ? "COFEMA: preco principal nao encontrado"
+              : "Preco nao encontrado na pagina",
+          );
         }
 
         resultados.push({
@@ -2621,6 +2813,9 @@ async function collectGroup(browser, group, options = {}) {
           `${progressLabel}: sucesso em ${Math.round((Date.now() - itemStartedAt) / 1000)}s.`,
         );
       } catch (error) {
+        if (isCofema(group.concorrente)) {
+          await captureCofemaFailureDiagnostics(page, mapping).catch(() => null);
+        }
         if (isAuthStateError(error) && existsSync(statePath)) {
           await resetAuthState(
             context,
@@ -2651,6 +2846,9 @@ async function collectGroup(browser, group, options = {}) {
         error instanceof Error ? error.message : "Erro desconhecido"
       }`,
     );
+    if (isCofema(group.concorrente)) {
+      await captureCofemaFailureDiagnostics(page).catch(() => null);
+    }
     if (existsSync(statePath)) {
       await resetAuthState(context, page, statePath, group.concorrente, "falha geral");
     }
@@ -2784,6 +2982,10 @@ async function waitForActionableProductSignal(page) {
 }
 
 async function isLoginRequired(page, concorrente = null) {
+  if (concorrente && isCofema(concorrente)) {
+    return !(await isCofemaLoggedIn(page));
+  }
+
   if (concorrente && isConstruja(concorrente)) {
     return isConstrujaLoggedOut(page);
   }
@@ -3023,7 +3225,7 @@ async function hasInvalidCredentialsMessage(page) {
 }
 
 async function shouldRetryLogin(page, mapping, concorrente) {
-  if (isCofema(concorrente)) return isLoginRequired(page);
+  if (isCofema(concorrente)) return !(await isCofemaLoggedIn(page));
   if (isConstruja(concorrente)) return isConstrujaLoggedOut(page);
   if (isMarest(concorrente)) return !(await isMarestLoggedIn(page));
   if (await isLoginRequired(page)) return true;

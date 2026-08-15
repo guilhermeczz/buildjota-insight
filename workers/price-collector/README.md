@@ -13,6 +13,8 @@ DATABASE_URL=postgres://radar:senha@localhost:5432/radar_construjota
 
 COFEMA_LOGIN=
 COFEMA_PASSWORD=
+COFEMA_BASE_URL=https://novo.cofema.com.br
+COFEMA_LOGIN_URL=/
 CONSTRUJA_LOGIN=
 CONSTRUJA_PASSWORD=
 MAREST_LOGIN=
@@ -20,8 +22,9 @@ MAREST_PASSWORD=
 MEGALESTE_LOGIN=
 MEGALESTE_PASSWORD=
 
-# Opcional. Preferencias pos-login dos fornecedores.
-COFEMA_UNIDADE=SUMARE
+# Opcional. Vazio mantem a unidade que a conta autenticada ja apresenta.
+# Se preenchido, o worker so continua depois de confirmar a opcao no cabecalho.
+COFEMA_UNIDADE=
 MAREST_REGIAO=SP
 MEGALESTE_REGIAO=SP
 
@@ -64,6 +67,43 @@ Para rodar visivel no navegador:
 ```bash
 npm run worker:prices:headed
 ```
+
+Para isolar um unico mapeamento sem gravar no banco:
+
+```bash
+npm run worker:prices:headed -- --dry-run --mapeamento-id=<id>
+```
+
+### COFEMA
+
+A COFEMA exige login confirmado antes de qualquer preco ser aceito. O worker valida a sessao
+salva visitando a home e procurando os controles de cliente e unidade no cabecalho; a mera
+existencia de `.worker-auth/cofema.json` nao e considerada autenticacao. Se a sessao venceu,
+cookies e storage da COFEMA sao limpos e o login e repetido uma vez.
+
+URLs de produto no novo dominio sao abertas diretamente. Se a URL estiver ausente, pertencer ao
+site antigo, retornar uma pagina invalida ou nao confirmar a identidade, o worker pesquisa por
+SKU/codigo, referencia do fornecedor e nome. URLs recebidas com `/br/page/produto/...` sao
+preservadas; no site observado em agosto de 2026, a busca atualmente gera a forma canonica
+`/page/produto/...`, por isso uma URL `/br/...` que retorne 404 segue automaticamente para a busca.
+
+`COFEMA_UNIDADE` e opcional. Sem ela, a unidade ja ativa no cabecalho (por exemplo, `Sao Paulo`)
+e mantida. Quando configurada, o menu de unidade so e aberto se o rotulo atual for diferente, e a
+coleta para com erro se a opcao nao existir ou nao puder ser confirmada.
+
+Se o PostgreSQL local nao estiver disponivel, o fluxo real do navegador pode ser exercitado sem
+consultar nem gravar no banco. Os modos cobrem URL direta, URL localizada `/br`, URL legada e URL
+ausente:
+
+```bash
+npm run worker:prices:headed -- --dry-run --cofema-fixture=direct --mapeamento-id=cofema-fixture-direct
+npm run worker:prices:headed -- --dry-run --cofema-fixture=localized
+npm run worker:prices:headed -- --dry-run --cofema-fixture=legacy
+npm run worker:prices:headed -- --dry-run --cofema-fixture=missing
+```
+
+Em falhas, screenshot e HTML higienizado sao salvos em `.worker-diagnostics/`, que e ignorada pelo
+Git. Credenciais, cookies e arquivos de sessao nao devem ser versionados.
 
 ## Acionamento manual pelo painel
 

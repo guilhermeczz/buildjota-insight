@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 export function loadServerEnv() {
+  const externallyConfigured = new Set(Object.keys(process.env));
   for (const envPath of [
     resolve(process.cwd(), ".env"),
     resolve(process.cwd(), ".env.local"),
@@ -21,7 +22,7 @@ export function loadServerEnv() {
       const rawValue = trimmed.slice(separator + 1).trim();
       const value = rawValue.replace(/^["']|["']$/g, "");
 
-      if (key) {
+      if (key && !externallyConfigured.has(key)) {
         process.env[key] = value;
       }
     }
