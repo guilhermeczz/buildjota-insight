@@ -3,13 +3,6 @@ import PageHeader from "@/components/layout/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import {
   Table,
@@ -20,12 +13,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatDateTime, toDateString, toTimestamp } from "@/lib/format";
-import { compareProductNames, sortByProductName } from "@/lib/product-sort";
 import { apiClient } from "@/lib/api-client";
-import { Activity, Loader2, Play, RefreshCw, RotateCcw } from "lucide-react";
+import { Activity, CalendarClock, Loader2, RefreshCw } from "lucide-react";
+import { Link } from "react-router-dom";
 import { toast } from "sonner";
 
-const WORKER_REQUEST_TIMEOUT_MS = 12000;
 const WORKER_HEALTH_INTERVAL_MS = 5000;
 const RECENT_PENDING_EXECUTION_MS = 2 * 60 * 1000;
 
@@ -47,25 +39,6 @@ type Familia = {
   nome: string;
 };
 
-type Produto = {
-  id: string;
-  nome: string;
-  sku_interno: string;
-  familia_id: string | null;
-};
-
-type Mapeamento = {
-  id: string;
-  sku_concorrente: string;
-  produtos?: {
-    nome: string;
-    sku_interno: string;
-  } | null;
-  concorrentes?: {
-    nome: string;
-  } | null;
-};
-
 type HistoricoExecucao = {
   coletado_em: string;
   mapeamentos_sku?: {
@@ -75,12 +48,11 @@ type HistoricoExecucao = {
   } | null;
 };
 
-type Scope = "" | "todos" | "familia" | "produto" | "mapeamento";
 type StatusFilter = "todos" | Execucao["status"];
 
 type WorkerRun = {
   id: string;
-  kind: "manual" | "refazer-erros" | "agendado" | string;
+  kind: "agendado" | string;
   startedAt: string;
   updatedAt?: string;
   message?: string;
@@ -124,44 +96,8 @@ function workerRequestHeaders() {
   };
 }
 
-async function requestWorkerRun(triggerUrl: string, body: Record<string, unknown>) {
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), WORKER_REQUEST_TIMEOUT_MS);
-
-  try {
-    const response = await fetch(triggerUrl, {
-      method: "POST",
-      headers: workerRequestHeaders(),
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-
-    const result = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      throw new Error(result.error ?? "Falha ao executar a coleta");
-    }
-
-    return result;
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error(
-        "O servidor do worker nao respondeu. Verifique se npm run worker:server esta rodando.",
-      );
-    }
-
-    throw error;
-  } finally {
-    window.clearTimeout(timeoutId);
-  }
-}
-
-function workerHealthUrl(triggerUrl: string) {
-  return triggerUrl.replace(/\/run\/?$/, "/health");
-}
-
-async function requestWorkerHealth(triggerUrl: string) {
-  const response = await fetch(workerHealthUrl(triggerUrl), {
+async function requestWorkerHealth(healthUrl: string) {
+  const response = await fetch(healthUrl, {
     method: "GET",
     headers: workerRequestHeaders(),
   });
@@ -172,36 +108,26 @@ async function requestWorkerHealth(triggerUrl: string) {
 export default function ExecucoesRobo() {
   const [execucoes, setExecucoes] = useState<Execucao[]>([]);
   const [familias, setFamilias] = useState<Familia[]>([]);
-  const [produtos, setProdutos] = useState<Produto[]>([]);
-  const [mapeamentos, setMapeamentos] = useState<Mapeamento[]>([]);
   const [historicosExecucao, setHistoricosExecucao] = useState<HistoricoExecucao[]>([]);
-  const [pendingExecucao, setPendingExecucao] = useState<Execucao | null>(null);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("todos");
   const [familiaFilter, setFamiliaFilter] = useState("todos");
-  const [manualOpen, setManualOpen] = useState(false);
-  const [scope, setScope] = useState<Scope>("");
-  const [familiaId, setFamiliaId] = useState("");
-  const [produtoId, setProdutoId] = useState("");
-  const [mapeamentoId, setMapeamentoId] = useState("");
-  const [retryingErrors, setRetryingErrors] = useState(false);
-  const [running, setRunning] = useState(false);
   const [workerHealth, setWorkerHealth] = useState<WorkerHealth | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
 
   const apiBaseUrl = String(import.meta.env.VITE_API_URL ?? "").replace(/\/+$/, "");
-  const triggerUrl = `${apiBaseUrl}/api/worker/run`;
+  const healthUrl = `${apiBaseUrl}/api/worker/health`;
 
   const refreshWorkerHealth = useCallback(async () => {
     setHealthLoading(true);
     try {
-      setWorkerHealth(await requestWorkerHealth(triggerUrl));
+      setWorkerHealth(await requestWorkerHealth(healthUrl));
     } catch {
       setWorkerHealth(null);
     } finally {
       setHealthLoading(false);
     }
-  }, [triggerUrl]);
+  }, [healthUrl]);
 
   async function refreshExecucoes() {
     const [execucoesResult, historicosResult] = await Promise.all([
@@ -245,26 +171,17 @@ export default function ExecucoesRobo() {
       tempo_execucao_segundos: Number(execucao.tempo_execucao_segundos ?? 0),
     }));
     setExecucoes(nextExecucoes);
-    setPendingExecucao((current) => {
-      if (!current) return null;
-      const currentStartedAt = toTimestamp(current.iniciado_em);
-      const hasRealExecution = nextExecucoes.some(
-        (execucao) => toTimestamp(execucao.iniciado_em) >= currentStartedAt,
-      );
-      return hasRealExecution ? null : current;
-    });
     setLoading(false);
   }
 
   useEffect(() => {
     void refreshExecucoes();
-    void loadManualOptions();
+    void loadFamilies();
     void refreshWorkerHealth();
   }, [refreshWorkerHealth]);
 
   useEffect(() => {
     const hasPendingExecution =
-      pendingExecucao !== null ||
       workerHealth?.running === true ||
       execucoes.some((execucao) => execucao.status === "pendente" || !execucao.finalizado_em);
 
@@ -276,7 +193,7 @@ export default function ExecucoesRobo() {
     );
 
     return () => window.clearInterval(interval);
-  }, [execucoes, pendingExecucao, workerHealth?.running]);
+  }, [execucoes, workerHealth?.running]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -286,143 +203,19 @@ export default function ExecucoesRobo() {
     return () => window.clearInterval(interval);
   }, [refreshWorkerHealth]);
 
-  async function loadManualOptions() {
-    const [familiasResult, produtosResult, mapeamentosResult] = await Promise.all([
-      apiClient.from("familias").select("id,nome").eq("ativo", true).order("nome"),
-      apiClient
-        .from("produtos")
-        .select("id,nome,sku_interno,familia_id")
-        .eq("ativo", true)
-        .order("nome"),
-      apiClient
-        .from("mapeamentos_sku")
-        .select("id,sku_concorrente,produtos(nome,sku_interno),concorrentes(nome)")
-        .eq("ativo", true)
-        .order("created_at", { ascending: true }),
-    ]);
+  async function loadFamilies() {
+    const result = await apiClient
+      .from("familias")
+      .select("id,nome")
+      .eq("ativo", true)
+      .order("nome");
 
-    if (familiasResult.error || produtosResult.error || mapeamentosResult.error) {
-      toast.error("Não foi possível carregar os filtros de execução manual");
+    if (result.error) {
+      toast.error("Não foi possível carregar as famílias");
       return;
     }
 
-    setFamilias((familiasResult.data ?? []) as Familia[]);
-    setProdutos(
-      sortByProductName((produtosResult.data ?? []) as Produto[], (produto) => produto.nome),
-    );
-    setMapeamentos(
-      ((mapeamentosResult.data ?? []) as Mapeamento[]).sort((a, b) => {
-        const productCompare = compareProductNames(a.produtos?.nome ?? "", b.produtos?.nome ?? "");
-        if (productCompare !== 0) return productCompare;
-        return (a.concorrentes?.nome ?? "").localeCompare(b.concorrentes?.nome ?? "", "pt-BR");
-      }),
-    );
-  }
-
-  function openManualDialog() {
-    setScope("");
-    setFamiliaId("");
-    setProdutoId("");
-    setMapeamentoId("");
-    setManualOpen(true);
-  }
-
-  async function runManualCollection() {
-    if (!scope) {
-      toast.error("Selecione como deseja executar a coleta");
-      return;
-    }
-
-    if (scope === "familia" && !familiaId) {
-      toast.error("Selecione uma família");
-      return;
-    }
-
-    if (scope === "produto" && !produtoId) {
-      toast.error("Selecione um produto");
-      return;
-    }
-
-    if (scope === "mapeamento" && !mapeamentoId) {
-      toast.error("Selecione um mapeamento");
-      return;
-    }
-
-    const body =
-      scope === "familia"
-        ? { familiaId }
-        : scope === "produto"
-          ? { produtoId }
-          : scope === "mapeamento"
-            ? { mapeamentoId }
-            : {};
-
-    setRunning(true);
-
-    try {
-      const result = await requestWorkerRun(triggerUrl, body);
-      const currentRun = result.currentRun as WorkerRun | undefined;
-
-      const startedAt = currentRun?.startedAt ?? new Date().toISOString();
-      setPendingExecucao({
-        id: currentRun?.id ?? `manual-${Date.now()}`,
-        status: "pendente",
-        origem: "manual",
-        iniciado_em: startedAt,
-        finalizado_em: null,
-        total_processados: 0,
-        total_sucesso: 0,
-        total_erro: 0,
-        mensagem: "Buscando preços nos concorrentes...",
-        tempo_execucao_segundos: 0,
-      });
-      toast.success("Coleta manual iniciada");
-      setManualOpen(false);
-      await refreshExecucoes();
-      await refreshWorkerHealth();
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "Não foi possível chamar o worker. Verifique se npm run worker:server está rodando.",
-      );
-    } finally {
-      setRunning(false);
-    }
-  }
-
-  async function retryFailedMappings() {
-    setRetryingErrors(true);
-
-    try {
-      const body: Record<string, unknown> = { failedOnly: true };
-      const result = await requestWorkerRun(triggerUrl, body);
-      const currentRun = result.currentRun as WorkerRun | undefined;
-
-      setPendingExecucao({
-        id: currentRun?.id ?? `retry-${Date.now()}`,
-        status: "pendente",
-        origem: "manual",
-        iniciado_em: currentRun?.startedAt ?? new Date().toISOString(),
-        finalizado_em: null,
-        total_processados: 0,
-        total_sucesso: 0,
-        total_erro: 0,
-        mensagem: "Refazendo coletas com erro...",
-        tempo_execucao_segundos: 0,
-      });
-      toast.success("Reprocessamento dos erros iniciado");
-      await refreshWorkerHealth();
-      await refreshExecucoes();
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "Não foi possível chamar o worker. Verifique se npm run worker:server está rodando.",
-      );
-    } finally {
-      setRetryingErrors(false);
-    }
+    setFamilias((result.data ?? []) as Familia[]);
   }
 
   function familiasDaExecucao(execucao: Execucao) {
@@ -445,7 +238,7 @@ export default function ExecucoesRobo() {
       ? ({
           id: workerHealth.currentRun.id,
           status: "pendente",
-          origem: workerHealth.currentRun.kind === "agendado" ? "agendado" : "manual",
+          origem: "agendado",
           iniciado_em: toDateString(workerHealth.currentRun.startedAt),
           finalizado_em: null,
           total_processados: 0,
@@ -471,11 +264,8 @@ export default function ExecucoesRobo() {
   }
 
   const dbCurrentExecution = execucoes.find(isActiveDbExecution) ?? null;
-  const syntheticExecution = pendingExecucao ?? (!dbCurrentExecution ? healthExecution : null);
-  const currentExecution = pendingExecucao ?? dbCurrentExecution ?? healthExecution ?? null;
-  const latestFailedExecution =
-    execucoes.find((execucao) => execucao.status === "erro" || execucao.status === "parcial") ??
-    null;
+  const syntheticExecution = !dbCurrentExecution ? healthExecution : null;
+  const currentExecution = dbCurrentExecution ?? healthExecution ?? null;
   const visibleExecucoes = (
     syntheticExecution ? [syntheticExecution, ...execucoes] : execucoes
   ).filter((execucao) => {
@@ -504,16 +294,7 @@ export default function ExecucoesRobo() {
     <>
       <PageHeader
         title="Execuções do Robô"
-        description="Histórico das execuções registradas pelo worker de coleta de preços."
-        actions={
-          <Button
-            onClick={openManualDialog}
-            disabled={workerBusy || running || retryingErrors}
-            className="bg-primary text-primary-foreground hover:bg-primary/90"
-          >
-            <Play className="mr-1 h-4 w-4" /> Executar coleta manual
-          </Button>
-        }
+        description="Histórico das coletas iniciadas exclusivamente pelas agendas configuradas."
       />
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
@@ -565,20 +346,19 @@ export default function ExecucoesRobo() {
                     <TableHead>Erros</TableHead>
                     <TableHead>Tempo</TableHead>
                     <TableHead>Mensagem</TableHead>
-                    <TableHead className="text-right">Ações</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {loading && (
                     <TableRow>
-                      <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
+                      <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
                         Carregando execuções...
                       </TableCell>
                     </TableRow>
                   )}
                   {!loading && visibleExecucoes.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
+                      <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
                         Nenhuma execução encontrada.
                       </TableCell>
                     </TableRow>
@@ -603,19 +383,6 @@ export default function ExecucoesRobo() {
                       </TableCell>
                       <TableCell className="max-w-xs truncate text-sm text-muted-foreground">
                         {execucao.mensagem || "-"}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {(execucao.status === "erro" || execucao.status === "parcial") && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => retryFailedMappings()}
-                            disabled={workerBusy || retryingErrors}
-                          >
-                            <RotateCcw className="mr-1 h-4 w-4" />
-                            Refazer erros
-                          </Button>
-                        )}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -718,136 +485,17 @@ export default function ExecucoesRobo() {
               </div>
             )}
 
-            <div className="space-y-2">
-              <Button
-                className="w-full"
-                onClick={openManualDialog}
-                disabled={workerBusy || running || retryingErrors}
-              >
-                <Play className="mr-1 h-4 w-4" /> Nova coleta manual
-              </Button>
-              <Button
-                className="w-full"
-                variant="outline"
-                onClick={() => retryFailedMappings()}
-                disabled={workerBusy || retryingErrors || !latestFailedExecution}
-              >
-                {retryingErrors ? (
-                  <Loader2 className="mr-1 h-4 w-4 animate-spin" />
-                ) : (
-                  <RotateCcw className="mr-1 h-4 w-4" />
-                )}
-                Refazer erros
+            <div className="space-y-3 rounded-md border p-3 text-sm text-muted-foreground">
+              <p>As coletas são iniciadas somente nos dias e horários definidos na agenda.</p>
+              <Button asChild className="w-full" variant="outline">
+                <Link to="/agenda-coletas">
+                  <CalendarClock className="mr-1 h-4 w-4" /> Configurar agenda
+                </Link>
               </Button>
             </div>
           </CardContent>
         </Card>
       </div>
-
-      <Dialog open={manualOpen} onOpenChange={setManualOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Executar coleta manual</DialogTitle>
-          </DialogHeader>
-
-          <div className="space-y-4">
-            <div className="space-y-1.5">
-              <Label>Escopo da coleta</Label>
-              <select
-                value={scope}
-                onChange={(event) => {
-                  setScope(event.target.value as Scope);
-                  setFamiliaId("");
-                  setProdutoId("");
-                  setMapeamentoId("");
-                }}
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none transition-colors focus:ring-1 focus:ring-ring"
-              >
-                <option value="" disabled>
-                  Selecione uma opcao
-                </option>
-                <option value="todos">Todos os produtos</option>
-                <option value="familia">Uma família</option>
-                <option value="produto">Um produto específico</option>
-                <option value="mapeamento">Um mapeamento específico</option>
-              </select>
-            </div>
-
-            {scope === "familia" && (
-              <div className="space-y-1.5">
-                <Label>Família</Label>
-                <select
-                  value={familiaId}
-                  onChange={(event) => setFamiliaId(event.target.value)}
-                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none transition-colors focus:ring-1 focus:ring-ring"
-                >
-                  <option value="" disabled>
-                    Selecione uma família
-                  </option>
-                  {familias.map((familia) => (
-                    <option key={familia.id} value={familia.id}>
-                      {familia.nome}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            {scope === "produto" && (
-              <div className="space-y-1.5">
-                <Label>Produto</Label>
-                <select
-                  value={produtoId}
-                  onChange={(event) => setProdutoId(event.target.value)}
-                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none transition-colors focus:ring-1 focus:ring-ring"
-                >
-                  <option value="" disabled>
-                    Selecione um produto
-                  </option>
-                  {produtos.map((produto) => (
-                    <option key={produto.id} value={produto.id}>
-                      {produto.sku_interno} - {produto.nome}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            {scope === "mapeamento" && (
-              <div className="space-y-1.5">
-                <Label>Mapeamento</Label>
-                <select
-                  value={mapeamentoId}
-                  onChange={(event) => setMapeamentoId(event.target.value)}
-                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm outline-none transition-colors focus:ring-1 focus:ring-ring"
-                >
-                  <option value="" disabled>
-                    Selecione um mapeamento
-                  </option>
-                  {mapeamentos.map((mapeamento) => (
-                    <option key={mapeamento.id} value={mapeamento.id}>
-                      {mapeamento.produtos?.sku_interno ?? "-"} -{" "}
-                      {mapeamento.produtos?.nome ?? "Produto"} /{" "}
-                      {mapeamento.concorrentes?.nome ?? "Concorrente"} -{" "}
-                      {mapeamento.sku_concorrente}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setManualOpen(false)} disabled={running}>
-              Cancelar
-            </Button>
-            <Button onClick={runManualCollection} disabled={running}>
-              {running && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
-              {running ? "Iniciando..." : "Executar"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </>
   );
 }

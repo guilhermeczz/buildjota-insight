@@ -5,6 +5,10 @@ const moneyPattern = new RegExp(moneyPatternSource, "g");
 const placeholderPricePattern = /R\$\s*[-–—]+(?:\s*[-–—]+|,\s*[-–—]+)*/i;
 const unavailableSignalPattern =
   /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|nao\s+disponivel|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+(?:chegar|disponivel)|aviseme\s+quando\s+(?:chegar|disponivel)|produto\s+sob\s+consulta|consulte\s+(?:a\s+)?disponibilidade|aguardando\s+estoque/;
+const construjaTitleSelector = "h2[class*='Produto_nomeProduto__']";
+const construjaSkuSelector = "span[class*='Produto_codigoProduto__'] strong";
+const construjaPriceSelector =
+  ".stepPreco .stepPrecoContent [class*='Produto_precoProdutoContainer__']";
 
 const priceHints = [
   { selector: "[itemprop='price']", preferLast: false },
@@ -209,6 +213,213 @@ export async function extractPrice(page, selector, options = {}) {
 
 export async function extractPriceFromLocator(page, selector, options = {}) {
   return parseLocatorPrice(page, selector, options);
+}
+
+export async function extractConstrujaPrice(page, mapping, options = {}) {
+  const result = await inspectConstrujaPrice(page, mapping, options);
+  if (typeof options.onResult === "function") options.onResult(result);
+  return result.price;
+}
+
+export async function inspectConstrujaPrice(page, mapping, options = {}) {
+  const expectedSku = String(mapping?.sku_concorrente ?? "").trim();
+  const expectedTitle = String(mapping?.produtos?.nome ?? "").trim();
+  const pageUrl = page.url();
+  const baseResult = {
+    price: null,
+    error: "",
+    url: pageUrl,
+    expectedSku,
+    observedSku: "",
+    title: "",
+    selector: construjaPriceSelector,
+    rawText: "",
+    productConfirmed: false,
+    priceVisible: false,
+    mainPriceCount: 0,
+  };
+  const failed = (error, details = {}) => ({ ...baseResult, ...details, error });
+  const waitTimeoutMs = Number.isFinite(Number(options.waitTimeoutMs))
+    ? Math.max(0, Number(options.waitTimeoutMs))
+    : 5000;
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(pageUrl);
+  } catch {
+    return failed("CONSTRUJA: URL nao corresponde a uma pagina de produto");
+  }
+
+  const urlSku = decodeURIComponent(
+    parsedUrl.pathname.match(/^\/produto\/([^/]+)(?:\/|$)/i)?.[1] ?? "",
+  );
+  if (!/(^|\.)construja\.com\.br$/i.test(parsedUrl.hostname) || !urlSku) {
+    return failed("CONSTRUJA: URL nao corresponde a uma pagina de produto");
+  }
+  if (!expectedSku || urlSku !== expectedSku) {
+    return failed("CONSTRUJA: produto nao corresponde ao SKU solicitado");
+  }
+
+  await page
+    .locator(construjaTitleSelector)
+    .first()
+    .waitFor({ state: "visible", timeout: waitTimeoutMs })
+    .catch(() => null);
+  await page
+    .locator(construjaPriceSelector)
+    .first()
+    .waitFor({ state: "visible", timeout: waitTimeoutMs })
+    .catch(() => null);
+
+  const product = await page
+    .evaluate(
+      ({ titleSelector, skuSelector, priceSelector }) => {
+        const oldPricePattern =
+          /preco(?:antigo|anterior|semdesconto)|valor(?:antigo|anterior)|oldprice|priceold|riscado|strike/i;
+        const isVisible = (element) => {
+          if (!(element instanceof HTMLElement)) return false;
+          const rect = element.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) return false;
+
+          let current = element;
+          while (current) {
+            const style = window.getComputedStyle(current);
+            if (
+              style.display === "none" ||
+              style.visibility === "hidden" ||
+              Number(style.opacity || 1) === 0 ||
+              current.getAttribute("aria-hidden") === "true" ||
+              current.hidden
+            ) {
+              return false;
+            }
+            current = current.parentElement;
+          }
+          return true;
+        };
+        const isOldPriceNode = (node, boundary) => {
+          let current = node instanceof Element ? node : node.parentElement;
+          while (current && current !== boundary.parentElement) {
+            const style = window.getComputedStyle(current);
+            const classAndId = `${current.className ?? ""} ${current.id ?? ""}`.replace(
+              /[^a-z0-9]/gi,
+              "",
+            );
+            if (["DEL", "S", "STRIKE"].includes(current.tagName)) return true;
+            if (/line-through/.test(style.textDecorationLine)) return true;
+            if (oldPricePattern.test(classAndId)) return true;
+            if (current === boundary) break;
+            current = current.parentElement;
+          }
+          return false;
+        };
+        const visibleCurrentText = (element) => {
+          const parts = [];
+          const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+          while (walker.nextNode()) {
+            const parent = walker.currentNode.parentElement;
+            if (parent && isVisible(parent) && !isOldPriceNode(walker.currentNode, element)) {
+              parts.push(walker.currentNode.textContent ?? "");
+            }
+          }
+          return parts.join(" ").replace(/\s+/g, " ").trim();
+        };
+
+        const headings = [...document.querySelectorAll(titleSelector)].filter(isVisible);
+        const summaries = headings
+          .map((heading) => {
+            const header = heading.closest(".stepHeader");
+            const root = header?.parentElement;
+            if (!(root instanceof HTMLElement) || !root.querySelector(".stepPreco")) return null;
+
+            const skuElement = header.querySelector(skuSelector);
+            const priceElements = [...root.querySelectorAll(priceSelector)].filter(
+              (element) => isVisible(element) && !isOldPriceNode(element, element),
+            );
+
+            return {
+              title: (heading.innerText || heading.textContent || "").replace(/\s+/g, " ").trim(),
+              observedSku: (skuElement?.textContent ?? "").replace(/\s+/g, " ").trim(),
+              prices: priceElements.map((element) => ({
+                rawText: visibleCurrentText(element),
+                visible: true,
+              })),
+            };
+          })
+          .filter(Boolean);
+
+        return summaries;
+      },
+      {
+        titleSelector: construjaTitleSelector,
+        skuSelector: construjaSkuSelector,
+        priceSelector: construjaPriceSelector,
+      },
+    )
+    .catch(() => []);
+
+  if (product.length !== 1) {
+    return failed(
+      product.length > 1
+        ? "CONSTRUJA: identificacao principal do produto ambigua"
+        : "CONSTRUJA: bloco principal do produto nao encontrado",
+    );
+  }
+
+  const [{ title, observedSku, prices }] = product;
+  const identity = { title, observedSku };
+  if (observedSku !== expectedSku) {
+    return failed("CONSTRUJA: produto nao corresponde ao SKU solicitado", identity);
+  }
+  if (!construjaTitleMatches(title, expectedTitle)) {
+    return failed("CONSTRUJA: titulo principal nao corresponde ao produto mapeado", identity);
+  }
+
+  const visiblePrices = prices.filter((candidate) => candidate.visible && candidate.rawText);
+  const details = {
+    ...identity,
+    rawText: visiblePrices.map((candidate) => candidate.rawText).join(" | "),
+    productConfirmed: true,
+    priceVisible: visiblePrices.length > 0,
+    mainPriceCount: visiblePrices.length,
+  };
+  if (visiblePrices.length === 0) {
+    return failed("CONSTRUJA: preco principal nao encontrado", details);
+  }
+  if (visiblePrices.length !== 1) {
+    return failed("CONSTRUJA: preco principal ambiguo", details);
+  }
+
+  const parsedPrices = visiblePrices.map((candidate) => {
+    const values = parseBRLValues(candidate.rawText, { requireCurrency: true }).filter((value) =>
+      isPlausiblePrice(value),
+    );
+    return values.length === 1 ? values[0] : null;
+  });
+  if (parsedPrices.some((price) => price === null)) {
+    const currencyCount = visiblePrices.reduce(
+      (total, candidate) => total + (candidate.rawText.match(/R\$/gi)?.length ?? 0),
+      0,
+    );
+    return failed(
+      currencyCount > 1
+        ? "CONSTRUJA: preco principal ambiguo"
+        : "CONSTRUJA: preco principal em formato nao reconhecido",
+      details,
+    );
+  }
+
+  const uniquePrices = [...new Set(parsedPrices)];
+  if (uniquePrices.length !== 1) {
+    return failed("CONSTRUJA: preco principal ambiguo", details);
+  }
+
+  return {
+    ...baseResult,
+    ...details,
+    price: uniquePrices[0],
+    error: "",
+  };
 }
 
 export async function extractPriceNearTerms(page, terms, options = {}) {
@@ -526,6 +737,31 @@ function normalizeText(value) {
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+function construjaTitleMatches(actualTitle, expectedTitle) {
+  const actual = normalizeText(String(actualTitle ?? ""))
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  const expected = normalizeText(String(expectedTitle ?? ""))
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  if (!actual || !expected) return false;
+  if (actual === expected) return true;
+  if (actual.includes(expected) || expected.includes(actual)) {
+    return (
+      Math.min(actual.length, expected.length) / Math.max(actual.length, expected.length) >= 0.75
+    );
+  }
+
+  const ignored = new Set(["a", "as", "o", "os", "de", "da", "das", "do", "dos", "e", "para"]);
+  const expectedTerms = [...new Set(expected.split(" ").filter((term) => !ignored.has(term)))];
+  const actualTerms = new Set(actual.split(" ").filter((term) => !ignored.has(term)));
+  const numericTerms = expectedTerms.filter((term) => /\d/.test(term));
+  if (numericTerms.some((term) => !actualTerms.has(term))) return false;
+
+  const matched = expectedTerms.filter((term) => actualTerms.has(term)).length;
+  return matched >= Math.max(2, Math.ceil(expectedTerms.length * 0.7));
 }
 
 function selectorCandidates(selector) {

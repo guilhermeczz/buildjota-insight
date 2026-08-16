@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { credentialsFor, resolveConcorrenteKey } from "./config.mjs";
 import {
+  extractConstrujaPrice,
   extractPrice,
   extractPriceFromLocator,
   extractPriceNearTerms,
@@ -2651,6 +2652,84 @@ async function captureCofemaFailureDiagnostics(page, mapping = null) {
   console.log(`[COFEMA] Diagnostico de falha salvo em ${diagnosticsDir}.`);
 }
 
+async function captureConstrujaFailureDiagnostics(page, mapping = null) {
+  mkdirSync(diagnosticsDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const mappingLabel = String(mapping?.id ?? "session").replace(/[^a-z0-9-]+/gi, "-");
+  const prefix = join(diagnosticsDir, `construja-${mappingLabel}-${timestamp}`);
+  const secrets = [process.env.CONSTRUJA_LOGIN, process.env.CONSTRUJA_PASSWORD].filter(Boolean);
+
+  const pageSanitized = await page
+    .evaluate(
+      ({ values }) => {
+        const redact = (value) => {
+          let result = String(value ?? "");
+          for (const secret of values) result = result.replaceAll(secret, "[REDACTED]");
+          return result;
+        };
+
+        document.querySelectorAll("input, textarea").forEach((field) => {
+          if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) {
+            field.value = "";
+            field.setAttribute("value", "[REDACTED]");
+          }
+        });
+
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+          const node = walker.currentNode;
+          node.textContent = redact(node.textContent);
+        }
+
+        document.querySelectorAll("*").forEach((element) => {
+          for (const attribute of [...element.attributes]) {
+            if (/(?:token|authorization|password|senha|cookie)/i.test(attribute.name)) {
+              element.setAttribute(attribute.name, "[REDACTED]");
+            } else {
+              element.setAttribute(attribute.name, redact(attribute.value));
+            }
+          }
+        });
+        return true;
+      },
+      { values: secrets },
+    )
+    .catch(() => false);
+
+  if (!pageSanitized) {
+    console.error("[CONSTRUJA] Diagnostico descartado porque a sanitizacao da pagina falhou.");
+    return;
+  }
+
+  await page.screenshot({ path: `${prefix}.png`, fullPage: true }).catch(() => null);
+  let html = await page
+    .evaluate(() => {
+      const clone = document.documentElement.cloneNode(true);
+      clone.querySelectorAll("script, noscript").forEach((element) => element.remove());
+      clone.querySelectorAll("input, textarea").forEach((field) => {
+        field.setAttribute("value", "[REDACTED]");
+        field.textContent = "";
+      });
+      clone.querySelectorAll("*").forEach((element) => {
+        for (const attribute of [...element.attributes]) {
+          if (/(?:token|authorization|password|senha|cookie)/i.test(attribute.name)) {
+            element.setAttribute(attribute.name, "[REDACTED]");
+          }
+        }
+      });
+      return `<!doctype html>\n${clone.outerHTML}`;
+    })
+    .catch(() => "");
+
+  for (const secret of secrets) html = html.replaceAll(secret, "[REDACTED]");
+  html = html.replace(
+    /((?:access|refresh|auth|csrf)[_-]?token|authorization|cookie)(\s*[=:]\s*)["']?[^"'\s<]+/gi,
+    "$1$2[REDACTED]",
+  );
+  writeFileSync(`${prefix}.html`, html, "utf8");
+  console.log(`[CONSTRUJA] Diagnostico sanitizado de falha salvo em ${diagnosticsDir}.`);
+}
+
 export async function collectPricesByBrowser(groups, options = {}) {
   mkdirSync(authStateDir, { recursive: true });
   const concurrency = Math.max(1, Math.min(4, Number(options.concurrency ?? 1)));
@@ -2766,17 +2845,37 @@ async function collectGroup(browser, group, options = {}) {
 
         const priceOptions = {
           referencePrice: Number(mapping.produtos.preco_atual ?? 0),
-          ...(isConstruja(group.concorrente) ? { requireCurrency: true, preferLast: false } : {}),
         };
+        let construjaPriceResult = null;
         const price = isCofema(group.concorrente)
           ? await extractCofemaPrice(page, mapping, priceOptions)
-          : isMegaleste(group.concorrente)
-            ? await extractMegalestePrice(page, mapping, priceOptions)
-            : usesSearchFlow(group.concorrente) &&
-                !shouldOpenDirectProductUrl(mapping, group.concorrente)
-              ? await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)
-              : ((await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)) ??
-                (await extractPrice(page, mapping.seletor_preco, priceOptions)));
+          : isConstruja(group.concorrente)
+            ? await extractConstrujaPrice(page, mapping, {
+                onResult: (result) => {
+                  construjaPriceResult = result;
+                },
+              })
+            : isMegaleste(group.concorrente)
+              ? await extractMegalestePrice(page, mapping, priceOptions)
+              : usesSearchFlow(group.concorrente) &&
+                  !shouldOpenDirectProductUrl(mapping, group.concorrente)
+                ? await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)
+                : ((await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)) ??
+                  (await extractPrice(page, mapping.seletor_preco, priceOptions)));
+
+        if (isConstruja(group.concorrente)) {
+          if (!price || !construjaPriceResult?.productConfirmed) {
+            throw new Error(
+              construjaPriceResult?.error || "CONSTRUJA: preco principal nao encontrado",
+            );
+          }
+          console.log(`[CONSTRUJA] URL confirmada: ${construjaPriceResult.url}`);
+          console.log(`[CONSTRUJA] SKU confirmado: ${construjaPriceResult.observedSku}`);
+          console.log(
+            `[CONSTRUJA] Preco principal: seletor=${construjaPriceResult.selector}; ` +
+              `texto bruto=${JSON.stringify(construjaPriceResult.rawText)}; valor=${price}.`,
+          );
+        }
 
         if (
           price &&
@@ -2808,6 +2907,15 @@ async function collectGroup(browser, group, options = {}) {
           preco_construjota: Number(mapping.produtos.preco_atual ?? 0),
           preco_concorrente: price,
           status: "sucesso",
+          ...(isConstruja(group.concorrente)
+            ? {
+                concorrente: "CONSTRUJA",
+                produto_confirmado: construjaPriceResult?.productConfirmed === true,
+                preco_principal_confirmado:
+                  construjaPriceResult?.priceVisible === true &&
+                  construjaPriceResult?.mainPriceCount === 1,
+              }
+            : {}),
         });
         console.log(
           `${progressLabel}: sucesso em ${Math.round((Date.now() - itemStartedAt) / 1000)}s.`,
@@ -2815,6 +2923,9 @@ async function collectGroup(browser, group, options = {}) {
       } catch (error) {
         if (isCofema(group.concorrente)) {
           await captureCofemaFailureDiagnostics(page, mapping).catch(() => null);
+        }
+        if (isConstruja(group.concorrente)) {
+          await captureConstrujaFailureDiagnostics(page, mapping).catch(() => null);
         }
         if (isAuthStateError(error) && existsSync(statePath)) {
           await resetAuthState(
@@ -2832,6 +2943,9 @@ async function collectGroup(browser, group, options = {}) {
           preco_concorrente: null,
           status: "erro",
           mensagem_erro: error instanceof Error ? error.message : "Erro desconhecido",
+          ...(isConstruja(group.concorrente)
+            ? { concorrente: "CONSTRUJA", preservar_ultimo_preco: true }
+            : {}),
         });
         console.log(
           `${progressLabel}: erro em ${Math.round((Date.now() - itemStartedAt) / 1000)}s - ${
@@ -2849,6 +2963,9 @@ async function collectGroup(browser, group, options = {}) {
     if (isCofema(group.concorrente)) {
       await captureCofemaFailureDiagnostics(page).catch(() => null);
     }
+    if (isConstruja(group.concorrente)) {
+      await captureConstrujaFailureDiagnostics(page).catch(() => null);
+    }
     if (existsSync(statePath)) {
       await resetAuthState(context, page, statePath, group.concorrente, "falha geral");
     }
@@ -2860,6 +2977,9 @@ async function collectGroup(browser, group, options = {}) {
         preco_concorrente: null,
         status: "erro",
         mensagem_erro: error instanceof Error ? error.message : "Erro desconhecido",
+        ...(isConstruja(group.concorrente)
+          ? { concorrente: "CONSTRUJA", preservar_ultimo_preco: true }
+          : {}),
       });
     }
   } finally {

@@ -16,7 +16,9 @@
     "worker:prices:dry": "node workers/price-collector/index.mjs --dry-run",
     "worker:prices:headed": "node workers/price-collector/index.mjs --headed",
     "worker:server": "node workers/price-collector/server.mjs",
-    "test:schedule": "node --test workers/price-collector/schedule.test.mjs"
+    "test:prices": "node --test workers/price-collector/extract-price.test.mjs workers/price-collector/database.test.mjs",
+    "test:schedule": "node --test workers/price-collector/schedule.test.mjs",
+    "test:worker": "node --test workers/price-collector/schedule.test.mjs workers/price-collector/execution-policy.test.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

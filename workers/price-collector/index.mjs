@@ -1,4 +1,5 @@
 import { loadWorkerEnv } from "./env.mjs";
+import { assertExecutionAllowed } from "./execution-policy.mjs";
 
 loadWorkerEnv();
 
@@ -24,7 +25,6 @@ const dryRun = args.has("--dry-run");
 const headed = args.has("--headed");
 const failedOnly = args.has("--failed-only");
 const scheduled = args.has("--scheduled");
-const originArg = argValue("--origin");
 const produtoId = argValue("--produto-id");
 const familiaId = argValue("--familia-id");
 const mapeamentoId = argValue("--mapeamento-id");
@@ -85,22 +85,28 @@ function filterLabel() {
 }
 
 async function main() {
+  assertExecutionAllowed({
+    scheduled,
+    dispatchedByScheduler: process.env.WORKER_SCHEDULE_DISPATCH === "1",
+    agendaId,
+    familiaId,
+    dryRun,
+  });
+
   if (cofemaFixture) {
     await runCofemaFixture(cofemaFixture);
     return;
   }
 
   const startedAt = new Date();
-  const origem = scheduled ? "agendado" : originArg || "worker";
+  const origem = "agendado";
   const database = createDatabaseClient();
   await ensureRuntimeSchema();
   const execution = dryRun
     ? null
     : await createExecution(0, {
         origem,
-        mensagem: failedOnly
-          ? "Preparando reprocessamento dos erros..."
-          : "Preparando coleta manual...",
+        mensagem: "Preparando coleta agendada...",
       });
 
   try {

@@ -367,6 +367,32 @@ export async function updateExecutionProgress(executionId, message) {
   );
 }
 
+export function normalizeResultForPersistence(item) {
+  const precoInformado = Number(item.preco_concorrente);
+  const isConstruja = item.concorrente === "CONSTRUJA";
+  const construjaConfirmed =
+    !isConstruja || (item.produto_confirmado === true && item.preco_principal_confirmado === true);
+  const sucesso =
+    item.status === "sucesso" &&
+    construjaConfirmed &&
+    Number.isFinite(precoInformado) &&
+    precoInformado > 0;
+
+  return {
+    sucesso,
+    status: sucesso ? "sucesso" : "erro",
+    precoConcorrente: sucesso ? precoInformado : null,
+    mensagemErro:
+      item.mensagem_erro ??
+      (sucesso
+        ? null
+        : isConstruja && !construjaConfirmed
+          ? "CONSTRUJA: validacao final do produto ou preco principal falhou"
+          : "Preco valido nao encontrado"),
+    preservarUltimoPreco: item.preservar_ultimo_preco === true || (isConstruja && !sucesso),
+  };
+}
+
 export async function registerResults(resultados, mensagem, options = {}) {
   const startedAt = options.startedAt ? new Date(options.startedAt) : new Date();
   const origem = options.origem ?? "worker";
@@ -388,17 +414,15 @@ export async function registerResults(resultados, mensagem, options = {}) {
     let totalErro = 0;
 
     for (const item of resultados) {
-      const precoInformado = Number(item.preco_concorrente);
-      const sucesso =
-        item.status === "sucesso" && Number.isFinite(precoInformado) && precoInformado > 0;
-      const statusItem = sucesso ? "sucesso" : "erro";
+      const normalized = normalizeResultForPersistence(item);
+      const { sucesso, precoConcorrente } = normalized;
+      const statusItem = normalized.status;
       if (sucesso) totalSucesso += 1;
       if (!sucesso) totalErro += 1;
 
-      const precoConcorrente = sucesso ? precoInformado : null;
       const diferencaValor =
         sucesso && precoConcorrente !== null
-          ? Number((Number(item.preco_construjota) - Number(item.preco_concorrente)).toFixed(3))
+          ? Number((Number(item.preco_construjota) - precoConcorrente).toFixed(3))
           : null;
       const diferencaPercentual =
         sucesso && precoConcorrente !== null && precoConcorrente > 0
@@ -416,15 +440,16 @@ export async function registerResults(resultados, mensagem, options = {}) {
           diferencaValor,
           diferencaPercentual,
           statusItem,
-          item.mensagem_erro ?? (sucesso ? null : "Preco valido nao encontrado"),
+          normalized.mensagemErro,
         ],
       );
 
       await client.query(
         `update mapeamentos_sku
-         set ultimo_preco = $1, ultima_atualizacao = now(), status_coleta = $2
+         set ultimo_preco = case when $4 then ultimo_preco else $1 end,
+             ultima_atualizacao = now(), status_coleta = $2
          where id = $3`,
-        [precoConcorrente, statusItem, item.mapeamento_id],
+        [precoConcorrente, statusItem, item.mapeamento_id, normalized.preservarUltimoPreco],
       );
     }
 

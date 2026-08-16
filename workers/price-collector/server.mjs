@@ -72,7 +72,7 @@ function runWorkerWithArgs(extraArgs, runInfo = currentRun) {
     const child = spawn(process.execPath, [workerEntry, ...extraArgs], {
       cwd: projectRoot,
       shell: false,
-      env: process.env,
+      env: { ...process.env, WORKER_SCHEDULE_DISPATCH: "1" },
     });
 
     let stdout = "";
@@ -210,19 +210,6 @@ async function runDueSchedule() {
   }
 }
 
-async function readJsonBody(req) {
-  const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  const raw = Buffer.concat(chunks).toString("utf8");
-  if (!raw) return {};
-
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
-}
-
 const server = createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     sendJson(res, 200, { ok: true });
@@ -240,74 +227,16 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (req.method !== "POST" || req.url !== "/run") {
+  if (req.url === "/run") {
+    sendJson(res, 403, {
+      error: "Coleta manual desativada. Configure a execucao na Agenda de Coleta.",
+    });
+    return;
+  }
+
+  if (req.method !== "GET") {
     sendJson(res, 404, { error: "Not found" });
     return;
-  }
-
-  if (running) {
-    sendJson(res, 409, { error: "Uma coleta ja esta em andamento." });
-    return;
-  }
-
-  try {
-    await ensureSchemaOnce();
-    if (running) {
-      sendJson(res, 409, { error: "Uma coleta ja esta em andamento." });
-      return;
-    }
-
-    running = true;
-    const body = await readJsonBody(req);
-    const args = [];
-
-    if (typeof body.produtoId === "string" && body.produtoId) {
-      args.push(`--produto-id=${body.produtoId}`);
-    }
-
-    if (typeof body.familiaId === "string" && body.familiaId) {
-      args.push(`--familia-id=${body.familiaId}`);
-    }
-
-    if (typeof body.mapeamentoId === "string" && body.mapeamentoId) {
-      args.push(`--mapeamento-id=${body.mapeamentoId}`);
-    }
-
-    if (body.failedOnly === true) {
-      args.push("--failed-only");
-    }
-
-    if (body.failedOnly !== true && typeof body.failedSince === "string" && body.failedSince) {
-      args.push(`--failed-since=${body.failedSince}`);
-    }
-
-    if (body.failedOnly !== true && typeof body.failedUntil === "string" && body.failedUntil) {
-      args.push(`--failed-until=${body.failedUntil}`);
-    }
-
-    args.push("--origin=manual");
-
-    currentRun = createRunInfo(
-      body.failedOnly === true ? "refazer-erros" : "manual",
-      args,
-      body.failedOnly === true ? "Refazendo coletas com erro..." : "Coleta manual iniciada.",
-    );
-
-    sendJson(res, 202, { ok: true, status: "buscando", currentRun });
-
-    runWorkerWithArgs(args, currentRun)
-      .catch((error) => {
-        console.error(error instanceof Error ? error.message : error);
-      })
-      .finally(() => {
-        running = false;
-        currentRun = null;
-      });
-  } catch (error) {
-    running = false;
-    sendJson(res, 500, {
-      error: error instanceof Error ? error.message : "Falha ao executar o worker.",
-    });
   }
 });
 

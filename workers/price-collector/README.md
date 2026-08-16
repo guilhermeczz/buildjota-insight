@@ -49,20 +49,17 @@ WORKER_ACTION_TIMEOUT_MS=5000
 
 ## Como rodar
 
-```bash
-npm run worker:prices
-```
-
-Para validar sem gravar no banco:
+As coletas com gravacao sao iniciadas exclusivamente pelo agendador. Para validar o worker sem
+gravar no banco:
 
 ```bash
 npm run worker:prices:dry
 ```
 
-Para rodar visivel no navegador:
+Para validar com o navegador visivel:
 
 ```bash
-npm run worker:prices:headed
+npm run worker:prices:headed -- --dry-run
 ```
 
 Para isolar um unico mapeamento sem gravar no banco:
@@ -102,7 +99,7 @@ npm run worker:prices:headed -- --dry-run --cofema-fixture=missing
 Em falhas, screenshot e HTML higienizado sao salvos em `.worker-diagnostics/`, que e ignorada pelo
 Git. Credenciais, cookies e arquivos de sessao nao devem ser versionados.
 
-## Acionamento manual pelo painel
+## Servidor do agendador
 
 Deixe este processo rodando no servidor/local:
 
@@ -110,8 +107,8 @@ Deixe este processo rodando no servidor/local:
 npm run worker:server
 ```
 
-O painel chama a API principal em `/api/worker/run`. A API encaminha a chamada internamente para
-`WORKER_INTERNAL_URL` (por padrao `http://127.0.0.1:8787`), sem expor a porta do worker ao navegador.
+O endpoint manual `/api/worker/run` fica bloqueado. A API usa apenas `/api/worker/health` para
+mostrar o estado do worker no painel. O processo consulta as agendas diretamente no banco.
 
 ## Agenda automatica
 
@@ -119,7 +116,7 @@ O mesmo processo `npm run worker:server` tambem consulta a tabela `agenda_coleta
 Quando uma familia estiver ativa, no dia correto e a partir do horario configurado, ele executa:
 
 ```bash
-node workers/price-collector/index.mjs --familia-id=<id> --scheduled
+node workers/price-collector/index.mjs --familia-id=<id> --agenda-id=<id> --scheduled
 ```
 
 Configure os horarios pela tela **Agenda de Coleta**. O limite "Paralelo" controla quantos
@@ -127,9 +124,6 @@ concorrentes podem ser lidos ao mesmo tempo, de 1 a 4. Em VPS de 8 GB, comece co
 Se o worker estiver ocupado no horario, a coleta permanece pendente e inicia assim que o robo
 ficar livre. Se o processo for reiniciado mais tarde no mesmo dia, ele recupera as agendas daquele
 dia que ainda nao foram executadas. Cada agenda roda no maximo uma vez por dia e horario salvo.
-
-Para execucoes manuais, o padrao e `WORKER_CONCURRENCY=2`. Isso le dois concorrentes por vez,
-mantendo o consumo baixo sem deixar uma leitura pequena demorar demais.
 
 ## Como o worker decide o preco
 

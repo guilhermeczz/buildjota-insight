@@ -4,7 +4,7 @@ import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { loadServerEnv } from "./env.mjs";
-import { query, transaction } from "./db.mjs";
+import { query } from "./db.mjs";
 import {
   createToken,
   hashPassword,
@@ -183,102 +183,31 @@ async function handleAdminUsers(req, res) {
 async function handleRegisterCollection(req, res) {
   const user = await requireUser(req, res);
   if (!user) return;
-  await ensureRuntimeSchemaOnce();
-  const body = await readJson(req);
-  const resultados = Array.isArray(body.resultados) ? body.resultados : [];
-  const startedAt = new Date();
-
-  const result = await transaction(async (client) => {
-    const execucao = await client.query(
-      "insert into execucoes_robo (status,origem,iniciado_em,total_processados) values ('pendente',$1,$2,$3) returning id",
-      [body.origem ?? "worker", startedAt.toISOString(), resultados.length],
-    );
-
-    let totalSucesso = 0;
-    let totalErro = 0;
-
-    for (const item of resultados) {
-      const precoInformado = Number(item.preco_concorrente);
-      const sucesso =
-        item.status === "sucesso" && Number.isFinite(precoInformado) && precoInformado > 0;
-      const statusItem = sucesso ? "sucesso" : "erro";
-      if (sucesso) totalSucesso += 1;
-      if (!sucesso) totalErro += 1;
-
-      const precoConcorrente = sucesso ? precoInformado : null;
-      const diferencaValor =
-        sucesso && precoConcorrente !== null
-          ? Number((Number(item.preco_construjota) - Number(item.preco_concorrente)).toFixed(3))
-          : null;
-      const diferencaPercentual =
-        sucesso && precoConcorrente !== null && precoConcorrente > 0
-          ? Number(((Number(diferencaValor) / precoConcorrente) * 100).toFixed(4))
-          : null;
-
-      await client.query(
-        `insert into historico_precos
-          (mapeamento_id,preco_construjota,preco_concorrente,diferenca_valor,diferenca_percentual,status,mensagem_erro,coletado_em)
-         values ($1,$2,$3,$4,$5,$6,$7,now())`,
-        [
-          item.mapeamento_id,
-          item.preco_construjota ?? 0,
-          precoConcorrente,
-          diferencaValor,
-          diferencaPercentual,
-          statusItem,
-          item.mensagem_erro ?? (sucesso ? null : "Preco valido nao encontrado"),
-        ],
-      );
-
-      await client.query(
-        `update mapeamentos_sku
-         set ultimo_preco = $1, ultima_atualizacao = now(), status_coleta = $2
-         where id = $3`,
-        [precoConcorrente, statusItem, item.mapeamento_id],
-      );
-    }
-
-    const finishedAt = new Date();
-    const status = totalErro === 0 ? "sucesso" : totalSucesso === 0 ? "erro" : "parcial";
-    await client.query(
-      `update execucoes_robo
-       set status = $1, finalizado_em = $2, total_sucesso = $3, total_erro = $4,
-           mensagem = $5, tempo_execucao_segundos = $6
-       where id = $7`,
-      [
-        status,
-        finishedAt.toISOString(),
-        totalSucesso,
-        totalErro,
-        body.mensagem ?? "Coleta registrada",
-        Math.round((finishedAt.getTime() - startedAt.getTime()) / 1000),
-        execucao.rows[0].id,
-      ],
-    );
-
-    return { id: execucao.rows[0].id, status, total_sucesso: totalSucesso, total_erro: totalErro };
+  return sendJson(res, 403, {
+    error: "Registro externo desativado. As coletas sao executadas somente pelas agendas.",
   });
-
-  return sendJson(res, 200, result);
 }
 
 async function handleWorkerProxy(req, res, path) {
   const user = await requireUser(req, res);
   if (!user) return;
 
-  const endpoint = path === "/api/worker/health" ? "/health" : "/run";
-  const method = endpoint === "/health" ? "GET" : "POST";
+  if (path === "/api/worker/run") {
+    return sendJson(res, 403, {
+      error: "Coleta manual desativada. Configure a execucao na Agenda de Coleta.",
+    });
+  }
+
+  const endpoint = "/health";
+  const method = "GET";
 
   if (req.method !== method) {
     return sendJson(res, 405, { error: "Metodo nao permitido." });
   }
 
   try {
-    const body = method === "POST" ? await readJson(req) : undefined;
     const response = await fetch(`${workerInternalUrl}${endpoint}`, {
       method,
-      headers: method === "POST" ? { "content-type": "application/json" } : undefined,
-      body: method === "POST" ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(15_000),
     });
     const result = await response.json().catch(() => ({}));
