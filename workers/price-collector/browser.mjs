@@ -7,6 +7,7 @@ import {
   inspectConstrujaPrice,
   inspectMarestPrice,
   inspectMegalestePrice,
+  construjaRateLimitRetrySeconds,
   isConstrujaLoginWallText,
   isConfirmedPriceEvidence,
   persistenceFieldsForPriceEvidence,
@@ -31,6 +32,19 @@ const construjaPriceSignalTimeoutMs = envNumber(
   3000,
   30000,
 );
+const construjaProductIntervalMs = envNumber(
+  "WORKER_CONSTRUJA_PRODUCT_INTERVAL_MS",
+  6500,
+  0,
+  60000,
+);
+const construjaRateLimitMaxWaitSeconds = envNumber(
+  "WORKER_CONSTRUJA_RATE_LIMIT_MAX_WAIT_SECONDS",
+  900,
+  0,
+  3600,
+);
+const construjaRateLimitRetries = envNumber("WORKER_CONSTRUJA_RATE_LIMIT_RETRIES", 2, 0, 5);
 const quickLoadTimeoutMs = envNumber("WORKER_QUICK_LOAD_TIMEOUT_MS", 3500, 1000, 15000);
 const actionTimeoutMs = envNumber("WORKER_ACTION_TIMEOUT_MS", 5000, 1000, 15000);
 const productSignalTimeoutMs = envNumber("WORKER_PRICE_SIGNAL_TIMEOUT_MS", 4500, 1000, 15000);
@@ -159,6 +173,7 @@ function hasUsableProductUrl(mapping) {
 
 function shouldOpenDirectProductUrl(mapping, concorrente) {
   if (isCofema(concorrente)) return isNewCofemaProductUrl(mapping.url_produto);
+  if (isMarest(concorrente) && mapping.sku_concorrente) return true;
   if (isMegaleste(concorrente)) return false;
   if (!hasUsableProductUrl(mapping)) return false;
   return isConstruja(concorrente) || !usesSearchFlow(concorrente);
@@ -221,6 +236,11 @@ function productUrlForMapping(mapping, concorrente) {
 
   if (isConstruja(concorrente)) {
     return construjaUrl(mapping.url_produto || concorrente.site_url, concorrente);
+  }
+
+  if (isMarest(concorrente) && mapping.sku_concorrente) {
+    const sku = encodeURIComponent(String(mapping.sku_concorrente).trim());
+    return absoluteUrl(`/product?sku=${sku}&nome=${sku}`, concorrente.site_url);
   }
 
   if (isMegaleste(concorrente) && mapping.sku_concorrente) {
@@ -1740,7 +1760,10 @@ async function openProductPage(page, context, statePath, mapping, concorrente) {
   }
 
   await waitForProductSignal(page);
-  if (isConstruja(concorrente)) await waitForConstrujaPriceSignal(page);
+  if (isConstruja(concorrente)) {
+    await waitForConstrujaPriceSignal(page);
+    await recoverConstrujaRateLimit(page, productUrl, concorrente);
+  }
   await dismissOverlays(page);
   if (await ensurePreferencesForRead(page, concorrente)) {
     await saveAuthState(context, statePath);
@@ -1751,6 +1774,47 @@ async function openProductPage(page, context, statePath, mapping, concorrente) {
   if (isCofema(concorrente) && !(await isExpectedProductPage(page, mapping, concorrente))) {
     console.log("[COFEMA] URL direta nao confirmou o produto; iniciando busca por identidade.");
     await openProductBySearch(page, context, statePath, mapping, concorrente);
+  }
+}
+
+async function recoverConstrujaRateLimit(page, productUrl, concorrente) {
+  for (let attempt = 0; attempt <= construjaRateLimitRetries; attempt += 1) {
+    const bodyText = await page
+      .locator("body")
+      .innerText({ timeout: 2500 })
+      .catch(() => "");
+    const retrySeconds = construjaRateLimitRetrySeconds(bodyText);
+    if (retrySeconds === null) return;
+
+    if (attempt === construjaRateLimitRetries || retrySeconds > construjaRateLimitMaxWaitSeconds) {
+      throw new Error(
+        `CONSTRUJA: limite temporario de requisicoes; tente novamente em ${retrySeconds}s`,
+      );
+    }
+
+    const waitSeconds = retrySeconds + 2;
+    console.log(
+      `[CONSTRUJA] Limite temporario informado pelo site; aguardando ${waitSeconds}s ` +
+        `antes de repetir o mesmo produto (${attempt + 1}/${construjaRateLimitRetries}).`,
+    );
+    await waitWithProgress(page, waitSeconds * 1000, "CONSTRUJA");
+    await gotoProductPage(page, productUrl, concorrente);
+    await waitForProductSignal(page);
+    await waitForConstrujaPriceSignal(page);
+  }
+}
+
+async function waitWithProgress(page, totalMs, providerName) {
+  let remainingMs = totalMs;
+  while (remainingMs > 0) {
+    const chunkMs = Math.min(remainingMs, 60000);
+    await page.waitForTimeout(chunkMs);
+    remainingMs -= chunkMs;
+    if (remainingMs > 0) {
+      console.log(
+        `[${providerName}] Pausa solicitada pelo site: faltam ${Math.ceil(remainingMs / 1000)}s.`,
+      );
+    }
   }
 }
 
@@ -2037,6 +2101,10 @@ function searchStartUrlForMapping(mapping, concorrente) {
 
   if (usesSearchFlow(concorrente) && isMegaleste(concorrente)) {
     return absoluteUrl("/c/busca", fallback);
+  }
+
+  if (usesSearchFlow(concorrente) && isMarest(concorrente)) {
+    return absoluteUrl("/home", fallback);
   }
 
   if (usesSearchFlow(concorrente)) return fallback;
@@ -2721,6 +2789,7 @@ async function collectGroup(browser, group, options = {}) {
   page.setDefaultTimeout(actionTimeoutMs);
   page.setDefaultNavigationTimeout(navigationTimeoutMs);
   const resultados = [];
+  let lastConstrujaProductStartedAt = 0;
 
   try {
     if (blockHeavyAssets) {
@@ -2757,6 +2826,12 @@ async function collectGroup(browser, group, options = {}) {
         }
 
         await reportProgress(options, `Lendo ${progressLabel}`);
+        if (isConstruja(group.concorrente) && lastConstrujaProductStartedAt > 0) {
+          const elapsedMs = Date.now() - lastConstrujaProductStartedAt;
+          const remainingMs = Math.max(0, construjaProductIntervalMs - elapsedMs);
+          if (remainingMs > 0) await page.waitForTimeout(remainingMs);
+        }
+        if (isConstruja(group.concorrente)) lastConstrujaProductStartedAt = Date.now();
         await openProductWithAuthenticatedSession(
           page,
           context,
@@ -2914,6 +2989,7 @@ async function waitForConstrujaPriceSignal(page) {
     .waitForFunction(
       () => {
         const text = document.body?.innerText ?? "";
+        if (/muitas requisi/i.test(text)) return true;
         return /R\$\s*\d|indisponivel|indisponível|fora de estoque|sem estoque|esgotado|entre ou cadastre|cadastre-se para ver/i.test(
           text,
         );

@@ -14,7 +14,7 @@ const marestRootSelector = "[class*='ProductRowContainer-sc-']";
 const marestPriceSelector =
   "[class*='BuyInformation-sc-'] [class*='PriceContainer-sc-'] p.prod-price";
 const megalesteRootSelector = ".product-line[data-id]";
-const megalestePriceSelector = ":scope > span.price";
+const megalestePriceSelector = ":scope > .price";
 
 export function isConfirmedPriceEvidence(result) {
   const price = Number(result?.price);
@@ -50,6 +50,15 @@ export function isConstrujaLoginWallText(value) {
   return /(?:faca login ou |entre ou )?cadastre(?:-se)? para ver (?:o |os )?precos?|entre para ver (?:o |os )?precos?/.test(
     text,
   );
+}
+
+export function construjaRateLimitRetrySeconds(value) {
+  const match = normalizeText(value).match(
+    /muitas requisicoes(?: efetuadas)?(?: nesse recurso)?\.? tente novamente em (\d+) segundos?/,
+  );
+  if (!match) return null;
+  const seconds = Number(match[1]);
+  return Number.isInteger(seconds) && seconds >= 0 ? seconds : null;
 }
 
 export function parseBRL(text, options = {}) {
@@ -509,6 +518,8 @@ export async function inspectMegalestePrice(page, mapping, options = {}) {
   const products = await page
     .evaluate(
       ({ expectedSku, rootSelector, priceSelector }) => {
+        const oldPricePattern =
+          /preco(?:antigo|anterior|semdesconto)|valor(?:antigo|anterior)|oldprice|priceold|riscado|strike/i;
         const isVisible = (element) => {
           if (!(element instanceof HTMLElement)) return false;
           const rect = element.getBoundingClientRect();
@@ -529,6 +540,33 @@ export async function inspectMegalestePrice(page, mapping, options = {}) {
           }
           return true;
         };
+        const isOldPriceNode = (node, boundary) => {
+          let current = node instanceof Element ? node : node.parentElement;
+          while (current && current !== boundary.parentElement) {
+            const style = getComputedStyle(current);
+            const classAndId = `${current.className ?? ""} ${current.id ?? ""}`.replace(
+              /[^a-z0-9]/gi,
+              "",
+            );
+            if (["DEL", "S", "STRIKE"].includes(current.tagName)) return true;
+            if (/line-through/.test(style.textDecorationLine)) return true;
+            if (oldPricePattern.test(classAndId)) return true;
+            if (current === boundary) break;
+            current = current.parentElement;
+          }
+          return false;
+        };
+        const currentText = (element) => {
+          const parts = [];
+          const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+          while (walker.nextNode()) {
+            const parent = walker.currentNode.parentElement;
+            if (parent && isVisible(parent) && !isOldPriceNode(walker.currentNode, element)) {
+              parts.push(walker.currentNode.textContent ?? "");
+            }
+          }
+          return parts.join(" ").replace(/\s+/g, " ").trim();
+        };
         return [...document.querySelectorAll(rootSelector)]
           .filter(
             (root) =>
@@ -537,9 +575,7 @@ export async function inspectMegalestePrice(page, mapping, options = {}) {
           .map((root) => {
             const heading = [...root.querySelectorAll(".product-content h4")].find(isVisible);
             const skuText = [...root.querySelectorAll(".product-content small")].find(isVisible);
-            const prices = [...root.querySelectorAll(priceSelector)].filter(
-              (element) => isVisible(element) && !element.querySelector("s, del, strike"),
-            );
+            const prices = [...root.querySelectorAll(priceSelector)].filter(isVisible);
             const text = String(root.innerText || root.textContent || "")
               .normalize("NFD")
               .replace(/[\u0300-\u036f]/g, "")
@@ -563,9 +599,7 @@ export async function inspectMegalestePrice(page, mapping, options = {}) {
                   text,
                 ),
               prices: prices.map((element) => ({
-                rawText: String(element.innerText || element.textContent || "")
-                  .replace(/\s+/g, " ")
-                  .trim(),
+                rawText: currentText(element),
                 visible: true,
               })),
             };
@@ -649,6 +683,11 @@ export async function inspectConstrujaPrice(page, mapping, options = {}) {
     .first()
     .waitFor({ state: "visible", timeout: waitTimeoutMs })
     .catch(() => null);
+  const pageAlerts = await page
+    .locator("[role='alert']")
+    .allInnerTexts()
+    .then((values) => values.join(" "))
+    .catch(() => "");
 
   const product = await page
     .evaluate(
@@ -760,6 +799,17 @@ export async function inspectConstrujaPrice(page, mapping, options = {}) {
       productConfirmed: true,
       priceScopeConfirmed,
     });
+  }
+  const rateLimitSeconds = construjaRateLimitRetrySeconds(`${productText} ${pageAlerts}`);
+  if (rateLimitSeconds !== null) {
+    return failed(
+      `CONSTRUJA: limite temporario de requisicoes; tente novamente em ${rateLimitSeconds}s`,
+      {
+        ...identity,
+        productConfirmed: true,
+        priceScopeConfirmed,
+      },
+    );
   }
   return finalizeSingleMainPrice(baseResult, {
     ...identity,

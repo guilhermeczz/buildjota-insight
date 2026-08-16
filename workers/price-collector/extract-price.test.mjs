@@ -3,6 +3,7 @@ import test from "node:test";
 import { chromium } from "playwright";
 
 import {
+  construjaRateLimitRetrySeconds,
   extractConstrujaPrice,
   extractPriceNearTerms,
   inspectCofemaPrice,
@@ -293,6 +294,34 @@ test("Construja identifies the plural login wall instead of reporting a missing 
   );
 });
 
+test("Construja identifies a temporary API rate limit instead of reporting a missing price", async () => {
+  assert.equal(
+    construjaRateLimitRetrySeconds(
+      "Muitas requisições efetuadas nesse recurso. Tente novamente em 483 segundos.",
+    ),
+    483,
+  );
+
+  await withConstrujaFixture(
+    {
+      sku: "185620",
+      priceMarkup: "<div>Obtendo preço atualizado</div>",
+      relatedMarkup:
+        '<div role="alert">Muitas requisições efetuadas nesse recurso. Tente novamente em 483 segundos.</div>',
+    },
+    async (page) => {
+      const result = await inspectConstrujaPrice(
+        page,
+        { sku_concorrente: "185620", produtos: { nome: "TÍTULO DIFERENTE" } },
+        { waitTimeoutMs: 50 },
+      );
+      assert.equal(result.price, null);
+      assert.equal(result.productConfirmed, true);
+      assert.match(result.error, /limite temporario.*483s/i);
+    },
+  );
+});
+
 test("Construja never falls back to a related price while the main price is absent", async () => {
   await withConstrujaFixture(
     {
@@ -488,6 +517,29 @@ test("Megaleste uses only the current price in the exact SKU card", async () => 
     assert.equal(isConfirmedPriceEvidence(result), true);
     assert.equal(result.observedSku, "335029");
   });
+});
+
+test("Megaleste reads the current promotional price inside the direct price container", async () => {
+  const url = "https://www.megaleste.com.br/c/busca?q=355666";
+  const mapping = {
+    sku_concorrente: "355666",
+    produtos: { nome: "TEK BOND ARALDITE HOBBY 16G" },
+  };
+  await withHtmlFixture(
+    url,
+    `<!doctype html><html><body>${megalesteCard({
+      sku: "355666",
+      title: "ARALDITE TEKBOND HOBBY 16GR 10 MIN.",
+      priceMarkup:
+        '<div class="price"><strike>R$ 17,820</strike><span class="text-danger font-weight-bold">R$ 16,590</span></div>',
+    })}</body></html>`,
+    async (page) => {
+      const result = await inspectMegalestePrice(page, mapping);
+      assert.equal(result.rawText, "R$ 16,590");
+      assert.equal(result.price, 16.59);
+      assert.equal(isConfirmedPriceEvidence(result), true);
+    },
+  );
 });
 
 test("Megaleste ignores hidden duplicates but rejects two visible current prices", async () => {

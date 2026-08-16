@@ -40,6 +40,10 @@ WORKER_NAVIGATION_TIMEOUT_MS=18000
 WORKER_CONSTRUJA_NAVIGATION_TIMEOUT_MS=45000
 WORKER_CONSTRUJA_NAVIGATION_ATTEMPTS=3
 WORKER_CONSTRUJA_PRICE_SIGNAL_TIMEOUT_MS=12000
+# Mantem um intervalo minimo entre produtos e respeita o tempo de espera informado pela API 429.
+WORKER_CONSTRUJA_PRODUCT_INTERVAL_MS=6500
+WORKER_CONSTRUJA_RATE_LIMIT_MAX_WAIT_SECONDS=900
+WORKER_CONSTRUJA_RATE_LIMIT_RETRIES=2
 WORKER_QUICK_LOAD_TIMEOUT_MS=3500
 WORKER_PRICE_SIGNAL_TIMEOUT_MS=4500
 WORKER_PRODUCT_SETTLE_MS=350
@@ -131,8 +135,9 @@ Cada concorrente usa um extrator dedicado e limitado ao produto confirmado:
 
 - COFEMA: resumo principal que contem `main h1` e `.produto-preco .produto-preco-row`.
 - CONSTRUJA: `.stepPreco .stepPrecoContent` da URL e do codigo esperados.
-- MAREST: bloco de compra da pagina `/product?sku=...`, junto ao codigo e titulo principais.
-- MEGALESTE: cartao `.product-line[data-id="SKU"]` retornado pela busca exata.
+- MAREST: rota direta `/product?sku=SKU`, validada pelo codigo exibido, e seu bloco de compra.
+- MEGALESTE: cartao `.product-line[data-id="SKU"]` e seu filho direto `.price`; valores riscados
+  dentro desse bloco sao antigos e o unico valor visivel restante e o vigente.
 
 O worker nao escolhe preco pelo primeiro/ultimo valor da pagina, por menor/maior valor nem por
 proximidade do preco interno. A identidade e confirmada exclusivamente pelo mapeamento cadastrado,
