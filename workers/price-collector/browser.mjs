@@ -2233,9 +2233,12 @@ async function clickSearchSubmit(page) {
 
 async function clickConfirmedCofemaSearchResult(page, mapping) {
   const identity = productIdentity(mapping);
+  identity.codes = [
+    ...new Set([...identity.codes, cofemaProductCodeFromUrl(mapping.url_produto)].filter(Boolean)),
+  ];
   const candidates = await page
     .locator("a[href]")
-    .evaluateAll((links, { codes, terms }) => {
+    .evaluateAll((links, { codes }) => {
       const normalize = (value) =>
         String(value ?? "")
           .normalize("NFD")
@@ -2259,18 +2262,7 @@ async function clickConfirmedCofemaSearchResult(page, mapping) {
           `${link.getAttribute("aria-label") ?? ""} ${href} ${root?.innerText ?? ""}`,
         );
         const codeMatch = codes.some((code) => text.includes(code));
-        const matchedTerms = terms.filter((term) => text.includes(term));
-        const measureTerms = terms.filter((term) => /\d/.test(term));
-        const hasMeasure =
-          measureTerms.length === 0 || measureTerms.some((term) => text.includes(term));
-        const strongNameMatch =
-          terms.length >= 2 &&
-          hasMeasure &&
-          matchedTerms.length >= Math.min(3, Math.ceil(terms.length * 0.6));
-
-        if (codeMatch || strongNameMatch) {
-          byHref.set(href, { href, score: (codeMatch ? 100 : 0) + matchedTerms.length });
-        }
+        if (codeMatch) byHref.set(href, { href, score: 100 });
       }
 
       return [...byHref.values()].sort((a, b) => b.score - a.score);
@@ -2404,10 +2396,10 @@ async function clickBestSearchResult(page, mapping, concorrente = null) {
   }
 
   const identity = productIdentity(mapping);
-  if (identity.codes.length === 0 && identity.terms.length === 0) return false;
+  if (identity.codes.length === 0) return false;
 
   const clicked = await page
-    .evaluate(({ codes, terms }) => {
+    .evaluate(({ codes }) => {
       const normalize = (value) =>
         String(value ?? "")
           .normalize("NFD")
@@ -2427,11 +2419,6 @@ async function clickBestSearchResult(page, mapping, concorrente = null) {
       };
 
       const hasCode = (text) => codes.some((code) => text.includes(code));
-      const matchedTerms = (text) => terms.filter((term) => text.includes(term));
-      const isGoodMatch = (text, matches) => {
-        if (codes.length > 0) return hasCode(text);
-        return matches.length >= Math.min(2, terms.length);
-      };
 
       const nodes = [
         ...document.querySelectorAll(
@@ -2452,12 +2439,13 @@ async function clickBestSearchResult(page, mapping, concorrente = null) {
         .map((node) => {
           const text = node.innerText || node.textContent || "";
           const normalized = normalize(text);
-          const matches = matchedTerms(normalized);
-          const exactCodeScore = hasCode(normalized) ? 100 : 0;
-          const score = exactCodeScore + matches.reduce((sum, term) => sum + term.length, 0);
-          return { node, score, length: normalized.length, good: isGoodMatch(normalized, matches) };
+          return {
+            node,
+            score: hasCode(normalized) ? 100 : 0,
+            length: normalized.length,
+          };
         })
-        .filter((item) => item.good && item.score > 0 && item.length <= 2500)
+        .filter((item) => item.score > 0 && item.length <= 2500)
         .sort((a, b) => b.score - a.score || a.length - b.length);
 
       const target = scored[0]?.node;
@@ -2489,7 +2477,7 @@ async function isExpectedProductPage(page, mapping, concorrente = null) {
   }
 
   const identity = productIdentity(mapping);
-  if (identity.codes.length === 0 && identity.terms.length === 0) return true;
+  if (identity.codes.length === 0) return false;
 
   const text = await page
     .locator("body")
@@ -2497,15 +2485,7 @@ async function isExpectedProductPage(page, mapping, concorrente = null) {
     .catch(() => "");
   const normalizedText = normalizeText(text);
 
-  if (identity.codes.some((code) => normalizedText.includes(code))) return true;
-  if (identity.terms.length === 0) return false;
-
-  const matchedTerms = identity.terms.filter((term) => normalizedText.includes(term));
-  const numericTerms = identity.terms.filter((term) => /^\d+(?:[,.]\d+)?[a-z]*$/.test(term));
-  const hasExpectedMeasure =
-    numericTerms.length === 0 || numericTerms.some((term) => normalizedText.includes(term));
-
-  return hasExpectedMeasure && matchedTerms.length >= Math.min(2, identity.terms.length);
+  return identity.codes.some((code) => normalizedText.includes(code));
 }
 
 async function isExpectedCofemaProductPage(page, mapping) {
@@ -2523,7 +2503,6 @@ async function isExpectedCofemaProductPage(page, mapping) {
         .replace(/[\u0300-\u036f]/g, "")
         .toLowerCase();
       return {
-        name: main.querySelector("h1")?.textContent?.trim() ?? "",
         mainCode: normalized.match(/codigo:\s*([a-z0-9._/-]+)/i)?.[1] ?? "",
         supplierReference:
           normalized.match(/referencia do fornecedor:\s*([a-z0-9._/-]+)/i)?.[1] ?? "",
@@ -2531,7 +2510,7 @@ async function isExpectedCofemaProductPage(page, mapping) {
       };
     })
     .catch(() => null);
-  if (!observed?.name || !observed.mainCode) return false;
+  if (!observed?.mainCode) return false;
 
   const urlCode = cofemaProductCodeFromUrl(page.url());
   if (urlCode && normalizeText(urlCode) !== normalizeText(observed.mainCode)) return false;
@@ -2542,17 +2521,7 @@ async function isExpectedCofemaProductPage(page, mapping) {
   );
   const codeMatch = identity.codes.some((code) => observedCodes.includes(normalizeText(code)));
 
-  const normalizedName = normalizeText(observed.name);
-  const matchedTerms = identity.terms.filter((term) => normalizedName.includes(term));
-  const measureTerms = identity.terms.filter((term) => /\d/.test(term));
-  const hasMeasure =
-    measureTerms.length === 0 || measureTerms.some((term) => normalizedName.includes(term));
-  const strongNameMatch =
-    identity.terms.length >= 2 &&
-    hasMeasure &&
-    matchedTerms.length >= Math.min(3, Math.ceil(identity.terms.length * 0.6));
-
-  return codeMatch || strongNameMatch;
+  return codeMatch;
 }
 
 async function pageHasText(page, patterns) {
@@ -2880,22 +2849,7 @@ async function reportProgress(options, message) {
 
 function productIdentity(mapping) {
   const supplierSku = String(mapping.sku_concorrente ?? "").trim();
-  const fallbackSku = String(mapping.produtos?.sku_interno ?? "").trim();
-  const codes = codeCandidates(supplierSku || fallbackSku);
-  const productName = normalizeText(String(mapping.produtos?.nome ?? ""));
-  const nameTerms = productName
-    .split(/[^a-z0-9,]+/)
-    .map((term) => term.trim())
-    .filter((term) => term.length >= 3 || /^\d+(?:[,.]\d+)?$/.test(term))
-    .filter((term) => !/^(otto|baumgart|produto)$/.test(term));
-  const variantTerms = productNameVariants(mapping.produtos?.nome)
-    .flatMap((variant) => normalizeText(variant).split(/[^a-z0-9,]+/))
-    .filter((term) => term.length >= 3 || /^\d+(?:[,.]\d+)?$/.test(term));
-
-  return {
-    codes: [...new Set(codes)],
-    terms: [...new Set([...nameTerms, ...variantTerms])],
-  };
+  return { codes: codeCandidates(supplierSku) };
 }
 
 function codeCandidates(value) {

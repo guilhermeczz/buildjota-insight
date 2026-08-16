@@ -253,7 +253,7 @@ test("Construja rejects a displayed SKU that conflicts with the product URL", as
   );
 });
 
-test("Construja rejects a main title that does not identify the mapped product", async () => {
+test("Construja uses mapped URL and exact SKU even when the supplier title changes", async () => {
   await withConstrujaFixture(
     {
       title: "AMANCO - CURVA LONGA ESGOTO 75X90",
@@ -261,8 +261,9 @@ test("Construja rejects a main title that does not identify the mapped product",
     },
     async (page) => {
       const result = await inspectConstrujaPrice(page, construjaMapping);
-      assert.equal(result.price, null);
-      assert.match(result.error, /titulo principal nao corresponde/i);
+      assert.equal(result.price, 4.12);
+      assert.equal(result.productConfirmed, true);
+      assert.equal(result.title, "AMANCO - CURVA LONGA ESGOTO 75X90");
     },
   );
 });
@@ -344,6 +345,24 @@ test("Cofema rejects two current prices in its main summary", async () => {
       assert.equal(result.price, null);
       assert.match(result.error, /preco principal ambiguo/i);
       assert.equal(isConfirmedPriceEvidence(result), false);
+    },
+  );
+});
+
+test("Cofema rejects a displayed code that conflicts with the mapped URL and SKU", async () => {
+  const url = "https://novo.cofema.com.br/page/produto/410409-fixture";
+  await withHtmlFixture(
+    url,
+    cofemaFixture({
+      code: "999999",
+      title: cofemaMapping.produtos.nome,
+      priceMarkup: '<div class="produto-preco-row">R$ 32,33</div>',
+    }),
+    async (page) => {
+      const result = await inspectCofemaPrice(page, cofemaMapping);
+      assert.equal(result.price, null);
+      assert.equal(result.productConfirmed, false);
+      assert.match(result.error, /URL ou SKU nao corresponde/i);
     },
   );
 });
@@ -498,7 +517,7 @@ test("Megaleste rejects a missing price and a different displayed SKU", async ()
   );
 });
 
-test("exact SKU remains authoritative when each supplier abbreviates the product title", async () => {
+test("exact URL and SKU remain authoritative when supplier titles differ from the mapping", async () => {
   await withHtmlFixture(
     "https://novo.cofema.com.br/page/produto/410409-fixture",
     cofemaFixture({
@@ -509,7 +528,7 @@ test("exact SKU remains authoritative when each supplier abbreviates the product
       const result = await inspectCofemaPrice(page, cofemaMapping);
       assert.equal(result.price, 32.33);
       assert.equal(result.productConfirmed, true);
-      assert.equal(result.titleCorroborated, false);
+      assert.equal(result.title, "BIANCO SACHE");
     },
   );
 
@@ -520,7 +539,7 @@ test("exact SKU remains authoritative when each supplier abbreviates the product
       const result = await inspectMarestPrice(page, marestMapping);
       assert.equal(result.price, 16.38);
       assert.equal(result.productConfirmed, true);
-      assert.equal(result.titleCorroborated, false);
+      assert.equal(result.title, "ADESIVO PVC AMANCO");
     },
   );
 
@@ -531,7 +550,7 @@ test("exact SKU remains authoritative when each supplier abbreviates the product
       const result = await inspectMegalestePrice(page, megalesteMapping);
       assert.equal(result.price, 5.29);
       assert.equal(result.productConfirmed, true);
-      assert.equal(result.titleCorroborated, false);
+      assert.equal(result.title, "AUMENTO PARA TORNEIRA GARDEN");
     },
   );
 });

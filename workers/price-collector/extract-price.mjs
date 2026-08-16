@@ -171,7 +171,6 @@ export async function inspectCofemaPrice(page, mapping, options = {}) {
     cofemaPriceSelector,
     "preco-unico-no-resumo-principal",
   );
-  const expectedTitle = String(mapping?.produtos?.nome ?? "").trim();
   const waitTimeoutMs = normalizedWaitTimeout(options.waitTimeoutMs);
   let parsedUrl;
   try {
@@ -300,26 +299,14 @@ export async function inspectCofemaPrice(page, mapping, options = {}) {
   );
   const urlMatchesMain = codesMatch(urlCode, product.mainCode);
   const skuMatches = observedCodes.some((code) => codesMatch(base.expectedSku, code));
-  const titleCorroborated = productTitleMatches(product.title, expectedTitle, {
-    minimumRatio: 0.55,
-  });
   const identity = {
     title: product.title,
     observedSku:
       observedCodes.find((code) => codesMatch(base.expectedSku, code)) ?? product.mainCode,
-    titleCorroborated,
-    productConfirmed: Boolean(
-      base.expectedSku && urlMatchesMain && skuMatches && hasMeaningfulTitle(product.title),
-    ),
+    productConfirmed: Boolean(base.expectedSku && urlMatchesMain && skuMatches),
   };
   if (!identity.productConfirmed) {
-    return failPriceEvidence(
-      base,
-      hasMeaningfulTitle(product.title)
-        ? "COFEMA: produto nao corresponde ao mapeamento"
-        : "COFEMA: titulo principal nao encontrado",
-      identity,
-    );
+    return failPriceEvidence(base, "COFEMA: URL ou SKU nao corresponde ao mapeamento", identity);
   }
   return finalizeSingleMainPrice(base, { ...product, ...identity });
 }
@@ -332,7 +319,6 @@ export async function inspectMarestPrice(page, mapping, options = {}) {
     marestPriceSelector,
     "preco-unico-no-bloco-de-compra",
   );
-  const expectedTitle = String(mapping?.produtos?.nome ?? "").trim();
   const waitTimeoutMs = normalizedWaitTimeout(options.waitTimeoutMs);
   let parsedUrl;
   try {
@@ -473,18 +459,10 @@ export async function inspectMarestPrice(page, mapping, options = {}) {
   const identity = {
     title: product.title,
     observedSku: product.observedSku,
-    titleCorroborated: productTitleMatches(product.title, expectedTitle, { minimumRatio: 0.6 }),
-    productConfirmed:
-      codesMatch(product.observedSku, base.expectedSku) && hasMeaningfulTitle(product.title),
+    productConfirmed: codesMatch(product.observedSku, base.expectedSku),
   };
   if (!identity.productConfirmed) {
-    return failPriceEvidence(
-      base,
-      hasMeaningfulTitle(product.title)
-        ? "MAREST: produto nao corresponde ao mapeamento"
-        : "MAREST: titulo principal nao encontrado",
-      identity,
-    );
+    return failPriceEvidence(base, "MAREST: URL ou SKU nao corresponde ao mapeamento", identity);
   }
   return finalizeSingleMainPrice(base, { ...product, ...identity });
 }
@@ -497,7 +475,6 @@ export async function inspectMegalestePrice(page, mapping, options = {}) {
     megalestePriceSelector,
     "preco-vigente-direto-do-cartao-do-sku",
   );
-  const expectedTitle = String(mapping?.produtos?.nome ?? "").trim();
   const waitTimeoutMs = normalizedWaitTimeout(options.waitTimeoutMs);
   let parsedUrl;
   try {
@@ -607,16 +584,12 @@ export async function inspectMegalestePrice(page, mapping, options = {}) {
   const identity = {
     title: product.title,
     observedSku: product.observedSku,
-    titleCorroborated: productTitleMatches(product.title, expectedTitle, { minimumRatio: 0.45 }),
-    productConfirmed:
-      codesMatch(product.observedSku, base.expectedSku) && hasMeaningfulTitle(product.title),
+    productConfirmed: codesMatch(product.observedSku, base.expectedSku),
   };
   if (!identity.productConfirmed) {
     return failPriceEvidence(
       base,
-      hasMeaningfulTitle(product.title)
-        ? "MEGALESTE: produto nao corresponde ao mapeamento"
-        : "MEGALESTE: titulo principal nao encontrado",
+      "MEGALESTE: consulta ou SKU nao corresponde ao mapeamento",
       identity,
     );
   }
@@ -631,7 +604,6 @@ export async function extractConstrujaPrice(page, mapping, options = {}) {
 
 export async function inspectConstrujaPrice(page, mapping, options = {}) {
   const expectedSku = String(mapping?.sku_concorrente ?? "").trim();
-  const expectedTitle = String(mapping?.produtos?.nome ?? "").trim();
   const pageUrl = page.url();
   const baseResult = basePriceEvidence(
     "CONSTRUJA",
@@ -772,10 +744,6 @@ export async function inspectConstrujaPrice(page, mapping, options = {}) {
   if (observedSku !== expectedSku) {
     return failed("CONSTRUJA: produto nao corresponde ao SKU solicitado", identity);
   }
-  if (!construjaTitleMatches(title, expectedTitle)) {
-    return failed("CONSTRUJA: titulo principal nao corresponde ao produto mapeado", identity);
-  }
-
   return finalizeSingleMainPrice(baseResult, {
     ...identity,
     prices,
@@ -799,10 +767,6 @@ function normalizeText(value) {
     .toLowerCase();
 }
 
-function hasMeaningfulTitle(value) {
-  return normalizeText(value).replace(/[^a-z0-9]/g, "").length >= 3;
-}
-
 function normalizedWaitTimeout(value) {
   return Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 5000;
 }
@@ -815,36 +779,4 @@ function codesMatch(left, right) {
   const normalizedLeft = normalizeCode(left);
   const normalizedRight = normalizeCode(right);
   return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
-}
-
-export function productTitleMatches(actualTitle, expectedTitle, options = {}) {
-  const actual = normalizeText(String(actualTitle ?? ""))
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-  const expected = normalizeText(String(expectedTitle ?? ""))
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-  if (!actual || !expected) return false;
-  if (actual === expected) return true;
-  if (actual.includes(expected) || expected.includes(actual)) {
-    return (
-      Math.min(actual.length, expected.length) / Math.max(actual.length, expected.length) >= 0.75
-    );
-  }
-
-  const ignored = new Set(["a", "as", "o", "os", "de", "da", "das", "do", "dos", "e", "para"]);
-  const expectedTerms = [...new Set(expected.split(" ").filter((term) => !ignored.has(term)))];
-  const actualTerms = new Set(actual.split(" ").filter((term) => !ignored.has(term)));
-  const numericTerms = expectedTerms.filter((term) => /\d/.test(term));
-  if (numericTerms.some((term) => !actualTerms.has(term))) return false;
-
-  const matched = expectedTerms.filter((term) => actualTerms.has(term)).length;
-  const minimumRatio = Number.isFinite(Number(options.minimumRatio))
-    ? Math.min(1, Math.max(0.3, Number(options.minimumRatio)))
-    : 0.7;
-  return matched >= Math.max(2, Math.ceil(expectedTerms.length * minimumRatio));
-}
-
-function construjaTitleMatches(actualTitle, expectedTitle) {
-  return productTitleMatches(actualTitle, expectedTitle, { minimumRatio: 0.7 });
 }

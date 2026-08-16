@@ -130,16 +130,17 @@ dia que ainda nao foram executadas. Cada agenda roda no maximo uma vez por dia e
 Cada concorrente usa um extrator dedicado e limitado ao produto confirmado:
 
 - COFEMA: resumo principal que contem `main h1` e `.produto-preco .produto-preco-row`.
-- CONSTRUJA: `.stepPreco .stepPrecoContent` do titulo e codigo esperados.
+- CONSTRUJA: `.stepPreco .stepPrecoContent` da URL e do codigo esperados.
 - MAREST: bloco de compra da pagina `/product?sku=...`, junto ao codigo e titulo principais.
 - MEGALESTE: cartao `.product-line[data-id="SKU"]` retornado pela busca exata.
 
 O worker nao escolhe preco pelo primeiro/ultimo valor da pagina, por menor/maior valor nem por
-proximidade do preco interno. URL/consulta e SKU exato confirmam a identidade; o titulo visivel e
-usado como corroboracao sem exigir que a abreviacao do fornecedor seja igual ao cadastro interno.
-Na CONSTRUJA, o titulo tambem e confrontado porque a leitura ocorre em uma pagina direta. O bloco e
-o elemento de preco precisam estar visiveis, e o valor principal segue a regra comprovada daquele
-site. Somente conflitos sem regra especifica, ausencia ou formato invalido sao rejeitados.
+proximidade do preco interno. A identidade e confirmada exclusivamente pelo mapeamento cadastrado,
+pela URL ou consulta do produto e pelo SKU exato exibido pelo concorrente. O titulo e guardado
+somente para diagnostico e nunca aprova nem reprova uma leitura, pois a descricao de um mesmo
+produto varia entre Construjota e fornecedores. O bloco e o elemento de preco precisam estar
+visiveis, e o valor principal segue a regra comprovada daquele site. Somente conflitos sem regra
+especifica, ausencia, URL/SKU divergente ou formato invalido sao rejeitados.
 
 Qualquer ausencia, conflito ou incerteza grava erro com `preco_concorrente = null`. A barreira de
 persistencia repete essas verificacoes para os quatro concorrentes e nunca substitui
