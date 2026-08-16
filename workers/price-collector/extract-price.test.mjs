@@ -9,6 +9,7 @@ import {
   inspectConstrujaPrice,
   inspectMarestPrice,
   inspectMegalestePrice,
+  isConstrujaLoginWallText,
   isConfirmedPriceEvidence,
   parseBRL,
 } from "./extract-price.mjs";
@@ -274,6 +275,22 @@ test("Construja rejects a confirmed product with no main price", async () => {
     assert.equal(result.price, null);
     assert.match(result.error, /preco principal nao encontrado/i);
   });
+});
+
+test("Construja identifies the plural login wall instead of reporting a missing price", async () => {
+  assert.equal(isConstrujaLoginWallText("FAÇA LOGIN OU CADASTRE-SE PARA VER OS PREÇOS"), true);
+
+  await withConstrujaFixture(
+    {
+      priceMarkup: "<div>FAÇA LOGIN OU CADASTRE-SE PARA VER OS PREÇOS</div>",
+    },
+    async (page) => {
+      const result = await inspectConstrujaPrice(page, construjaMapping, { waitTimeoutMs: 50 });
+      assert.equal(result.price, null);
+      assert.equal(result.productConfirmed, true);
+      assert.match(result.error, /sessao expirada; preco exige login/i);
+    },
+  );
 });
 
 test("Construja never falls back to a related price while the main price is absent", async () => {

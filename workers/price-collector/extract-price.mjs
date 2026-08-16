@@ -45,6 +45,13 @@ export function persistenceFieldsForPriceEvidence(result) {
   };
 }
 
+export function isConstrujaLoginWallText(value) {
+  const text = normalizeText(value);
+  return /(?:faca login ou |entre ou )?cadastre(?:-se)? para ver (?:o |os )?precos?|entre para ver (?:o |os )?precos?/.test(
+    text,
+  );
+}
+
 export function parseBRL(text, options = {}) {
   if (shouldRejectText(text, options)) return null;
   const prices = [
@@ -712,6 +719,9 @@ export async function inspectConstrujaPrice(page, mapping, options = {}) {
             return {
               title: (heading.innerText || heading.textContent || "").replace(/\s+/g, " ").trim(),
               observedSku: (skuElement?.textContent ?? "").replace(/\s+/g, " ").trim(),
+              productText: String(root.innerText || root.textContent || "")
+                .replace(/\s+/g, " ")
+                .trim(),
               priceScopeConfirmed: true,
               prices: priceElements.map((element) => ({
                 rawText: visibleCurrentText(element),
@@ -739,10 +749,17 @@ export async function inspectConstrujaPrice(page, mapping, options = {}) {
     );
   }
 
-  const [{ title, observedSku, prices, priceScopeConfirmed }] = product;
+  const [{ title, observedSku, productText, prices, priceScopeConfirmed }] = product;
   const identity = { title, observedSku };
   if (observedSku !== expectedSku) {
     return failed("CONSTRUJA: produto nao corresponde ao SKU solicitado", identity);
+  }
+  if (isConstrujaLoginWallText(productText)) {
+    return failed("CONSTRUJA: sessao expirada; preco exige login", {
+      ...identity,
+      productConfirmed: true,
+      priceScopeConfirmed,
+    });
   }
   return finalizeSingleMainPrice(baseResult, {
     ...identity,

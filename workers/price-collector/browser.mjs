@@ -7,6 +7,7 @@ import {
   inspectConstrujaPrice,
   inspectMarestPrice,
   inspectMegalestePrice,
+  isConstrujaLoginWallText,
   isConfirmedPriceEvidence,
   persistenceFieldsForPriceEvidence,
 } from "./extract-price.mjs";
@@ -82,6 +83,10 @@ async function resetAuthState(context, page, statePath, concorrente, reason) {
   console.log(`[${concorrente.nome}] Sessao local limpa (${reason}).`);
 }
 
+async function saveAuthState(context, statePath) {
+  await context.storageState({ path: statePath, indexedDB: true });
+}
+
 async function prepareAuthenticatedSession(context, page, statePath, concorrente) {
   const maximumAttempts = isConstruja(concorrente) ? 3 : 1;
   let lastError = null;
@@ -90,7 +95,7 @@ async function prepareAuthenticatedSession(context, page, statePath, concorrente
     try {
       await login(page, concorrente);
       await ensurePreferencesForRead(page, concorrente);
-      await context.storageState({ path: statePath });
+      await saveAuthState(context, statePath);
       return;
     } catch (error) {
       lastError = error;
@@ -116,7 +121,7 @@ function hasInvalidCredentialsError(error) {
 function isAuthStateError(error) {
   if (!(error instanceof Error)) return false;
 
-  return /Credenciais invalidas|credenciais recusadas|Credenciais nao configuradas|formulario de login|Login nao confirmado|menu Area do Cliente|unidade configurada|Configuracao de unidade|Regiao .* nao selecionada/i.test(
+  return /Credenciais invalidas|credenciais recusadas|Credenciais nao configuradas|formulario de login|Login nao confirmado|sessao expirada|menu Area do Cliente|unidade configurada|Configuracao de unidade|Regiao .* nao selecionada/i.test(
     error.message,
   );
 }
@@ -598,8 +603,6 @@ async function waitForConstrujaLoginForm(page) {
 }
 
 async function waitForConstrujaLogin(page) {
-  let closedFormChecks = 0;
-
   for (let attempt = 1; attempt <= 12; attempt += 1) {
     await page
       .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
@@ -609,23 +612,6 @@ async function waitForConstrujaLogin(page) {
 
     if (await hasInvalidCredentialsMessage(page)) return false;
 
-    const formVisible = await isConstrujaLoginFormVisible(page);
-    const text = await page
-      .locator("body")
-      .innerText({ timeout: 2500 })
-      .catch(() => "");
-    const stillLoggedOut = /entre ou cadastre-se|entrar ou cadastrar-se/.test(normalizeText(text));
-
-    // This check runs only after the credentials were submitted. Some Construja pages do not
-    // expose account labels, but a successful login consistently closes the modal and removes
-    // the logged-out action. Require two stable checks to avoid racing the header render.
-    if (!formVisible && !stillLoggedOut) {
-      closedFormChecks += 1;
-      if (closedFormChecks >= 2) return true;
-    } else {
-      closedFormChecks = 0;
-    }
-
     await page.waitForTimeout(750);
   }
 
@@ -633,14 +619,45 @@ async function waitForConstrujaLogin(page) {
 }
 
 async function isConstrujaLoggedIn(page) {
-  const text = await page
-    .locator("body")
-    .innerText({ timeout: 2500 })
-    .catch(() => "");
-  const normalized = normalizeText(text);
-  if (!normalized) return false;
+  if (await isConstrujaLoggedOut(page)) return false;
 
-  return !(await isConstrujaLoggedOut(page));
+  const accountMenus = page.locator(
+    [
+      "header .dropdown-toggle:has-text('Área do cliente')",
+      "header .dropdown-toggle:has-text('Area do cliente')",
+      "nav .dropdown-toggle:has-text('Área do cliente')",
+      "nav .dropdown-toggle:has-text('Area do cliente')",
+    ].join(", "),
+  );
+  const count = await accountMenus.count().catch(() => 0);
+  for (let index = 0; index < count; index += 1) {
+    if (
+      await accountMenus
+        .nth(index)
+        .isVisible()
+        .catch(() => false)
+    ) {
+      return true;
+    }
+  }
+
+  return page
+    .evaluate(() => {
+      try {
+        const persisted = JSON.parse(localStorage.getItem("persist:auth") || "{}");
+        const serializedToken = persisted.token;
+        const token = typeof serializedToken === "string" ? JSON.parse(serializedToken) : "";
+        const payloadPart = String(token || "").split(".")[1];
+        if (!payloadPart) return false;
+        const normalizedPayload = payloadPart.replace(/-/g, "+").replace(/_/g, "/");
+        const padding = "=".repeat((4 - (normalizedPayload.length % 4)) % 4);
+        const payload = JSON.parse(atob(`${normalizedPayload}${padding}`));
+        return Number(payload.exp) * 1000 > Date.now() + 60_000;
+      } catch {
+        return false;
+      }
+    })
+    .catch(() => false);
 }
 
 async function isConstrujaLoggedOut(page) {
@@ -671,8 +688,9 @@ async function isConstrujaLoggedOut(page) {
     .locator("body")
     .innerText({ timeout: 2500 })
     .catch(() => "");
-  return /entre ou cadastre(?:-se)?|cadastre-se para ver (?:o )?preco|entre para ver (?:o )?preco/.test(
-    normalizeText(text),
+  return (
+    /entre ou cadastre(?:-se)?|entrar ou cadastrar-se/.test(normalizeText(text)) ||
+    isConstrujaLoginWallText(text)
   );
 }
 
@@ -1713,11 +1731,11 @@ async function openProductPage(page, context, statePath, mapping, concorrente) {
   await dismissOverlays(page);
 
   if (await ensurePreferencesForRead(page, concorrente)) {
-    await context.storageState({ path: statePath });
+    await saveAuthState(context, statePath);
     await gotoProductPage(page, productUrl, concorrente);
     await dismissOverlays(page);
     if (await ensurePreferencesForRead(page, concorrente)) {
-      await context.storageState({ path: statePath });
+      await saveAuthState(context, statePath);
     }
   }
 
@@ -1725,7 +1743,7 @@ async function openProductPage(page, context, statePath, mapping, concorrente) {
   if (isConstruja(concorrente)) await waitForConstrujaPriceSignal(page);
   await dismissOverlays(page);
   if (await ensurePreferencesForRead(page, concorrente)) {
-    await context.storageState({ path: statePath });
+    await saveAuthState(context, statePath);
     await waitForProductSignal(page);
   }
   if (productSettleMs > 0) await page.waitForTimeout(productSettleMs);
@@ -1856,7 +1874,7 @@ async function openProductBySearch(page, context, statePath, mapping, concorrent
       await dismissOverlays(page);
 
       if (await ensurePreferencesForRead(page, concorrente)) {
-        await context.storageState({ path: statePath });
+        await saveAuthState(context, statePath);
         await gotoAllowingSameDestinationRedirect(page, searchStartUrl);
         await dismissOverlays(page);
       }
@@ -1888,7 +1906,7 @@ async function openProductBySearch(page, context, statePath, mapping, concorrent
       }
 
       if (await ensurePreferencesForRead(page, concorrente)) {
-        await context.storageState({ path: statePath });
+        await saveAuthState(context, statePath);
         await waitForProductSignal(page);
       }
 
