@@ -3,11 +3,12 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { credentialsFor, resolveConcorrenteKey } from "./config.mjs";
 import {
-  extractConstrujaPrice,
-  extractPrice,
-  extractPriceFromLocator,
-  extractPriceNearTerms,
-  parseBRL,
+  inspectCofemaPrice,
+  inspectConstrujaPrice,
+  inspectMarestPrice,
+  inspectMegalestePrice,
+  isConfirmedPriceEvidence,
+  persistenceFieldsForPriceEvidence,
 } from "./extract-price.mjs";
 
 const userAgent =
@@ -153,7 +154,7 @@ function hasUsableProductUrl(mapping) {
 
 function shouldOpenDirectProductUrl(mapping, concorrente) {
   if (isCofema(concorrente)) return isNewCofemaProductUrl(mapping.url_produto);
-  if (isMegaleste(concorrente) && cleanSearchQuery(mapping.sku_concorrente)) return true;
+  if (isMegaleste(concorrente)) return false;
   if (!hasUsableProductUrl(mapping)) return false;
   return isConstruja(concorrente) || !usesSearchFlow(concorrente);
 }
@@ -1877,7 +1878,11 @@ async function openProductBySearch(page, context, statePath, mapping, concorrent
 
       await waitForProductSignal(page);
 
-      if (!(await isExpectedProductPage(page, mapping, concorrente))) {
+      if (isMarest(concorrente)) {
+        const clicked = await clickBestSearchResult(page, mapping, concorrente);
+        if (!clicked) throw new Error(`Produto exato nao encontrado na busca por "${query}"`);
+        await waitForProductSignal(page);
+      } else if (!(await isExpectedProductPage(page, mapping, concorrente))) {
         await clickBestSearchResult(page, mapping, concorrente);
         await waitForProductSignal(page);
       }
@@ -1889,11 +1894,24 @@ async function openProductBySearch(page, context, statePath, mapping, concorrent
 
       if (productSettleMs > 0) await page.waitForTimeout(productSettleMs);
 
-      if (await isExpectedProductPage(page, mapping, concorrente)) return;
+      const productConfirmed = await isExpectedProductPage(page, mapping, concorrente);
+      if (isMarest(concorrente)) {
+        console.log(
+          `[MAREST] Pagina apos abertura do resultado: ${page.url()} (produto confirmado=${productConfirmed}).`,
+        );
+      }
+      if (productConfirmed) return;
 
       lastError = new Error(`Produto nao confirmado na busca por "${query}"`);
     } catch (error) {
       lastError = error;
+      if (isMarest(concorrente)) {
+        console.log(
+          `[MAREST] Tentativa de busca por ${JSON.stringify(query)} falhou: ${
+            error instanceof Error ? error.message : "erro desconhecido"
+          }`,
+        );
+      }
     }
   }
 
@@ -2283,9 +2301,106 @@ async function clickConfirmedCofemaSearchResult(page, mapping) {
   return true;
 }
 
+async function clickConfirmedMarestSearchResult(page, mapping) {
+  const expectedSku = String(mapping?.sku_concorrente ?? "").trim();
+  if (!expectedSku) return false;
+
+  await page
+    .waitForFunction(
+      (sku) =>
+        [...document.querySelectorAll("a[href]")].some((link) => {
+          try {
+            const url = new URL(link.getAttribute("href") ?? "", location.href);
+            return (
+              url.pathname.replace(/\/+$/, "") === "/product" &&
+              String(url.searchParams.get("sku") ?? "").trim() === sku
+            );
+          } catch {
+            return false;
+          }
+        }),
+      expectedSku,
+      { timeout: productSignalTimeoutMs },
+    )
+    .catch(() => null);
+
+  const hrefs = await page
+    .locator("a[href]")
+    .evaluateAll((links, sku) => {
+      const visible = (element) => {
+        if (!(element instanceof HTMLElement)) return false;
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+      const matches = [];
+      for (const link of links) {
+        if (!visible(link)) continue;
+        try {
+          const url = new URL(link.getAttribute("href") ?? "", location.href);
+          if (url.pathname.replace(/\/+$/, "") !== "/product") continue;
+          if (String(url.searchParams.get("sku") ?? "").trim() !== sku) continue;
+          matches.push(url.toString());
+        } catch {
+          // Ignore malformed links from unrelated widgets.
+        }
+      }
+      return [...new Set(matches)];
+    }, expectedSku)
+    .catch(() => []);
+
+  if (hrefs.length === 0) {
+    console.log(`[MAREST] Link exato do SKU ${expectedSku} ainda nao apareceu em ${page.url()}.`);
+    return false;
+  }
+  if (hrefs.length !== 1) throw new Error("MAREST: produto ambiguo ou nao confirmado");
+
+  const navigation = page
+    .waitForURL(
+      (url) =>
+        url.pathname.replace(/\/+$/, "") === "/product" &&
+        String(url.searchParams.get("sku") ?? "").trim() === expectedSku,
+      { timeout: navigationTimeoutMs },
+    )
+    .catch(() => null);
+  const clicked = await page
+    .locator("a[href]")
+    .evaluateAll((links, expectedHref) => {
+      const target = links.find((link) => {
+        try {
+          return (
+            new URL(link.getAttribute("href") ?? "", location.href).toString() === expectedHref
+          );
+        } catch {
+          return false;
+        }
+      });
+      if (!(target instanceof HTMLElement)) return false;
+      target.click();
+      return true;
+    }, hrefs[0])
+    .catch(() => false);
+  if (!clicked) return false;
+
+  await navigation;
+  await page
+    .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
+    .catch(() => null);
+  await page.waitForTimeout(500);
+  return true;
+}
+
 async function clickBestSearchResult(page, mapping, concorrente = null) {
   if (concorrente && isCofema(concorrente)) {
     return clickConfirmedCofemaSearchResult(page, mapping);
+  }
+  if (concorrente && isMarest(concorrente)) {
+    return clickConfirmedMarestSearchResult(page, mapping);
   }
 
   const identity = productIdentity(mapping);
@@ -2440,159 +2555,6 @@ async function isExpectedCofemaProductPage(page, mapping) {
   return codeMatch || strongNameMatch;
 }
 
-const visibleProductDialogSelector = [
-  ".modal.show",
-  ".modal[style*='display: block' i]",
-  "[role='dialog']:visible",
-  "[aria-modal='true']:visible",
-  "[class*='modal' i]:visible",
-].join(", ");
-
-async function extractCofemaPrice(page, mapping, options) {
-  if (!(await isExpectedCofemaProductPage(page, mapping))) {
-    throw new Error("COFEMA: produto nao corresponde ao mapeamento");
-  }
-
-  const priceText = await page
-    .locator("main h1")
-    .first()
-    .evaluate((heading) => {
-      const visible = (element) => {
-        const style = window.getComputedStyle(element);
-        const rect = element.getBoundingClientRect();
-        return (
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          rect.width > 0 &&
-          rect.height > 0
-        );
-      };
-      const productSummary = heading.closest("div.space-y-2");
-      const price = productSummary?.querySelector(".produto-preco .produto-preco-row");
-      return price instanceof HTMLElement && visible(price) ? price.innerText : "";
-    })
-    .catch(() => "");
-
-  return parseBRL(priceText, {
-    ...options,
-    requireCurrency: true,
-    requireSingle: true,
-    preferLast: false,
-  });
-}
-
-async function extractMegalestePrice(page, mapping, options) {
-  const priceOptions = { ...options, preferPrazo: true };
-  const terms = priceSearchTerms(mapping);
-
-  // The term-scoped search only accepts a block containing the expected supplier SKU.
-  const cardOrProductPrice = await extractPriceNearTerms(page, terms, priceOptions);
-  if (cardOrProductPrice) return cardOrProductPrice;
-
-  const opened = await openMegalesteProductPriceDialog(page, mapping);
-  if (!opened) return null;
-
-  const dialog = page.locator(visibleProductDialogSelector).last();
-  await dialog.waitFor({ state: "visible", timeout: quickLoadTimeoutMs }).catch(() => null);
-  const dialogText = await dialog.innerText({ timeout: quickLoadTimeoutMs }).catch(() => "");
-  const normalizedDialog = normalizeText(dialogText);
-  if (
-    /produto\s+indisponivel|fora\s+(?:de|do)\s+estoque|indisponivel|sem\s+(?:estoque|saldo)|esgotado/.test(
-      normalizedDialog,
-    )
-  ) {
-    throw new Error("Produto indisponível no concorrente");
-  }
-
-  // The dialog belongs to the exact SKU card clicked below, so it remains safely scoped even
-  // when the modal itself omits the supplier code.
-  return extractPriceFromLocator(page, visibleProductDialogSelector, priceOptions);
-}
-
-async function openMegalesteProductPriceDialog(page, mapping) {
-  const identity = productIdentity(mapping);
-  if (identity.codes.length === 0) return false;
-
-  const clicked = await page
-    .evaluate(({ codes }) => {
-      const normalize = (value) =>
-        String(value ?? "")
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
-          .replace(/\s+/g, " ")
-          .trim()
-          .toLowerCase();
-      const visible = (element) => {
-        const style = window.getComputedStyle(element);
-        const rect = element.getBoundingClientRect();
-        return (
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          rect.width > 0 &&
-          rect.height > 0
-        );
-      };
-      const hasExactCode = (text) =>
-        codes.some((code) => {
-          const escaped = code.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-          return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "i").test(text);
-        });
-
-      const containers = [
-        ...document.querySelectorAll(
-          [
-            "article",
-            "li",
-            "tr",
-            "[class*='produto' i]",
-            "[class*='product' i]",
-            "[class*='item' i]",
-            "[class*='card' i]",
-            "[class*='col-' i]",
-          ].join(", "),
-        ),
-      ]
-        .filter((node) => node instanceof HTMLElement && visible(node))
-        .map((node) => ({ node, text: normalize(node.innerText || node.textContent || "") }))
-        .filter((item) => item.text.length <= 2500 && hasExactCode(item.text))
-        .sort((a, b) => a.text.length - b.text.length);
-
-      const product = containers[0]?.node;
-      if (!(product instanceof HTMLElement)) return false;
-
-      const targets = [
-        ...product.querySelectorAll(
-          [
-            "button[aria-label*='ampli' i]",
-            "button[title*='ampli' i]",
-            "button[aria-label*='visual' i]",
-            "button[title*='visual' i]",
-            "[class*='lupa' i]",
-            "[class*='zoom' i]",
-            "a:has(img)",
-            "button:has(img)",
-            "img",
-          ].join(", "),
-        ),
-      ].filter((node) => node instanceof HTMLElement && visible(node));
-
-      const target = targets[0];
-      if (!(target instanceof HTMLElement)) return false;
-      const clickable = target.closest("button, a, [role='button']") ?? target;
-      clickable.click();
-      return true;
-    }, identity)
-    .catch(() => false);
-
-  if (!clicked) return false;
-  await page.waitForTimeout(400);
-  return page
-    .locator(visibleProductDialogSelector)
-    .last()
-    .isVisible()
-    .catch(() => false);
-}
-
 async function pageHasText(page, patterns) {
   const text = await page
     .locator("body")
@@ -2622,42 +2584,15 @@ function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-async function captureCofemaFailureDiagnostics(page, mapping = null) {
+async function captureCompetitorFailureDiagnostics(page, mapping, competitorName) {
+  const competitor = resolveConcorrenteKey(competitorName) ?? "CONCORRENTE";
+  const competitorSlug = competitor.toLowerCase().replace(/[^a-z0-9-]+/g, "-");
   mkdirSync(diagnosticsDir, { recursive: true });
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const mappingLabel = String(mapping?.id ?? "session").replace(/[^a-z0-9-]+/gi, "-");
-  const prefix = join(diagnosticsDir, `cofema-${mappingLabel}-${timestamp}`);
-
-  await page
-    .locator("input[type='password'], #codigo, input[autocomplete='username']")
-    .evaluateAll((inputs) => {
-      for (const input of inputs) {
-        if (!(input instanceof HTMLInputElement)) continue;
-        input.value = "";
-        input.setAttribute("value", "");
-      }
-    })
-    .catch(() => null);
-
-  await page.screenshot({ path: `${prefix}.png`, fullPage: true }).catch(() => null);
-  let html = await page.content().catch(() => "");
-  for (const secret of [process.env.COFEMA_LOGIN, process.env.COFEMA_PASSWORD]) {
-    if (secret) html = html.replaceAll(secret, "[REDACTED]");
-  }
-  html = html.replace(
-    /(<input\b[^>]*(?:type=["']password["']|id=["']codigo["'])[^>]*\bvalue=)["'][^"']*["']/gi,
-    '$1"[REDACTED]"',
-  );
-  writeFileSync(`${prefix}.html`, html, "utf8");
-  console.log(`[COFEMA] Diagnostico de falha salvo em ${diagnosticsDir}.`);
-}
-
-async function captureConstrujaFailureDiagnostics(page, mapping = null) {
-  mkdirSync(diagnosticsDir, { recursive: true });
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const mappingLabel = String(mapping?.id ?? "session").replace(/[^a-z0-9-]+/gi, "-");
-  const prefix = join(diagnosticsDir, `construja-${mappingLabel}-${timestamp}`);
-  const secrets = [process.env.CONSTRUJA_LOGIN, process.env.CONSTRUJA_PASSWORD].filter(Boolean);
+  const prefix = join(diagnosticsDir, `${competitorSlug}-${mappingLabel}-${timestamp}`);
+  const credentials = credentialsFor(competitor);
+  const secrets = [credentials?.login, credentials?.password].filter(Boolean);
 
   const pageSanitized = await page
     .evaluate(
@@ -2697,7 +2632,7 @@ async function captureConstrujaFailureDiagnostics(page, mapping = null) {
     .catch(() => false);
 
   if (!pageSanitized) {
-    console.error("[CONSTRUJA] Diagnostico descartado porque a sanitizacao da pagina falhou.");
+    console.error(`[${competitor}] Diagnostico descartado porque a sanitizacao da pagina falhou.`);
     return;
   }
 
@@ -2727,7 +2662,29 @@ async function captureConstrujaFailureDiagnostics(page, mapping = null) {
     "$1$2[REDACTED]",
   );
   writeFileSync(`${prefix}.html`, html, "utf8");
-  console.log(`[CONSTRUJA] Diagnostico sanitizado de falha salvo em ${diagnosticsDir}.`);
+  console.log(`[${competitor}] Diagnostico sanitizado de falha salvo em ${diagnosticsDir}.`);
+}
+
+async function inspectCompetitorPrice(page, mapping, concorrente) {
+  if (isCofema(concorrente)) return inspectCofemaPrice(page, mapping);
+  if (isConstruja(concorrente)) return inspectConstrujaPrice(page, mapping);
+  if (isMarest(concorrente)) return inspectMarestPrice(page, mapping);
+  if (isMegaleste(concorrente)) return inspectMegalestePrice(page, mapping);
+
+  throw new Error(
+    `${resolveConcorrenteKey(concorrente?.nome)}: extrator seguro de preco nao configurado`,
+  );
+}
+
+function logConfirmedPriceEvidence(result) {
+  const competitor = String(result?.competitor ?? "CONCORRENTE").toUpperCase();
+  console.log(`[${competitor}] URL confirmada: ${result.url}`);
+  console.log(`[${competitor}] SKU confirmado: ${result.observedSku}`);
+  console.log(
+    `[${competitor}] Preco principal: seletor=${result.selector}; ` +
+      `regra=${result.priceRule}; texto bruto=${JSON.stringify(result.rawText)}; ` +
+      `valor=${result.price}.`,
+  );
 }
 
 export async function collectPricesByBrowser(groups, options = {}) {
@@ -2836,97 +2793,31 @@ async function collectGroup(browser, group, options = {}) {
           throw new Error("COFEMA: produto nao corresponde ao mapeamento");
         }
 
-        if (
-          !isConstruja(group.concorrente) &&
-          (await isProductUnavailableForMapping(page, mapping, group.concorrente))
-        ) {
-          throw new Error("Produto indisponível no concorrente");
-        }
-
-        const priceOptions = {
-          referencePrice: Number(mapping.produtos.preco_atual ?? 0),
-        };
-        let construjaPriceResult = null;
-        const price = isCofema(group.concorrente)
-          ? await extractCofemaPrice(page, mapping, priceOptions)
-          : isConstruja(group.concorrente)
-            ? await extractConstrujaPrice(page, mapping, {
-                onResult: (result) => {
-                  construjaPriceResult = result;
-                },
-              })
-            : isMegaleste(group.concorrente)
-              ? await extractMegalestePrice(page, mapping, priceOptions)
-              : usesSearchFlow(group.concorrente) &&
-                  !shouldOpenDirectProductUrl(mapping, group.concorrente)
-                ? await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)
-                : ((await extractPriceNearTerms(page, priceSearchTerms(mapping), priceOptions)) ??
-                  (await extractPrice(page, mapping.seletor_preco, priceOptions)));
-
-        if (isConstruja(group.concorrente)) {
-          if (!price || !construjaPriceResult?.productConfirmed) {
-            throw new Error(
-              construjaPriceResult?.error || "CONSTRUJA: preco principal nao encontrado",
-            );
-          }
-          console.log(`[CONSTRUJA] URL confirmada: ${construjaPriceResult.url}`);
-          console.log(`[CONSTRUJA] SKU confirmado: ${construjaPriceResult.observedSku}`);
-          console.log(
-            `[CONSTRUJA] Preco principal: seletor=${construjaPriceResult.selector}; ` +
-              `texto bruto=${JSON.stringify(construjaPriceResult.rawText)}; valor=${price}.`,
-          );
-        }
-
-        if (
-          price &&
-          !isConstruja(group.concorrente) &&
-          (await isProductUnavailableForMapping(page, mapping, group.concorrente))
-        ) {
-          throw new Error("Produto indisponível no concorrente");
-        }
-
-        if (!price) {
-          if (
-            (isMarest(group.concorrente) || isMegaleste(group.concorrente)) &&
-            (await isExpectedProductPage(page, mapping))
-          ) {
-            throw new Error("Produto indisponível no concorrente");
-          }
-          if (await isProductUnavailableForMapping(page, mapping, group.concorrente)) {
-            throw new Error("Produto indisponível no concorrente");
-          }
+        const priceResult = await inspectCompetitorPrice(page, mapping, group.concorrente);
+        if (!isConfirmedPriceEvidence(priceResult)) {
           throw new Error(
-            isCofema(group.concorrente)
-              ? "COFEMA: preco principal nao encontrado"
-              : "Preco nao encontrado na pagina",
+            priceResult?.error ||
+              `${resolveConcorrenteKey(group.concorrente.nome)}: leitura de preco nao confirmada`,
           );
         }
+        const price = Number(priceResult.price);
+
+        logConfirmedPriceEvidence(priceResult);
 
         resultados.push({
           mapeamento_id: mapping.id,
           preco_construjota: Number(mapping.produtos.preco_atual ?? 0),
           preco_concorrente: price,
           status: "sucesso",
-          ...(isConstruja(group.concorrente)
-            ? {
-                concorrente: "CONSTRUJA",
-                produto_confirmado: construjaPriceResult?.productConfirmed === true,
-                preco_principal_confirmado:
-                  construjaPriceResult?.priceVisible === true &&
-                  construjaPriceResult?.mainPriceCount === 1,
-              }
-            : {}),
+          ...persistenceFieldsForPriceEvidence(priceResult),
         });
         console.log(
           `${progressLabel}: sucesso em ${Math.round((Date.now() - itemStartedAt) / 1000)}s.`,
         );
       } catch (error) {
-        if (isCofema(group.concorrente)) {
-          await captureCofemaFailureDiagnostics(page, mapping).catch(() => null);
-        }
-        if (isConstruja(group.concorrente)) {
-          await captureConstrujaFailureDiagnostics(page, mapping).catch(() => null);
-        }
+        await captureCompetitorFailureDiagnostics(page, mapping, group.concorrente.nome).catch(
+          () => null,
+        );
         if (isAuthStateError(error) && existsSync(statePath)) {
           await resetAuthState(
             context,
@@ -2943,9 +2834,8 @@ async function collectGroup(browser, group, options = {}) {
           preco_concorrente: null,
           status: "erro",
           mensagem_erro: error instanceof Error ? error.message : "Erro desconhecido",
-          ...(isConstruja(group.concorrente)
-            ? { concorrente: "CONSTRUJA", preservar_ultimo_preco: true }
-            : {}),
+          concorrente: resolveConcorrenteKey(group.concorrente.nome),
+          preservar_ultimo_preco: true,
         });
         console.log(
           `${progressLabel}: erro em ${Math.round((Date.now() - itemStartedAt) / 1000)}s - ${
@@ -2960,12 +2850,7 @@ async function collectGroup(browser, group, options = {}) {
         error instanceof Error ? error.message : "Erro desconhecido"
       }`,
     );
-    if (isCofema(group.concorrente)) {
-      await captureCofemaFailureDiagnostics(page).catch(() => null);
-    }
-    if (isConstruja(group.concorrente)) {
-      await captureConstrujaFailureDiagnostics(page).catch(() => null);
-    }
+    await captureCompetitorFailureDiagnostics(page, null, group.concorrente.nome).catch(() => null);
     if (existsSync(statePath)) {
       await resetAuthState(context, page, statePath, group.concorrente, "falha geral");
     }
@@ -2977,9 +2862,8 @@ async function collectGroup(browser, group, options = {}) {
         preco_concorrente: null,
         status: "erro",
         mensagem_erro: error instanceof Error ? error.message : "Erro desconhecido",
-        ...(isConstruja(group.concorrente)
-          ? { concorrente: "CONSTRUJA", preservar_ultimo_preco: true }
-          : {}),
+        concorrente: resolveConcorrenteKey(group.concorrente.nome),
+        preservar_ultimo_preco: true,
       });
     }
   } finally {
@@ -2992,19 +2876,6 @@ async function collectGroup(browser, group, options = {}) {
 async function reportProgress(options, message) {
   if (typeof options.onProgress !== "function") return;
   await options.onProgress(message).catch(() => null);
-}
-
-function priceSearchTerms(mapping) {
-  const supplierSku = String(mapping.sku_concorrente ?? "").trim();
-  if (supplierSku) return [...new Set([supplierSku, ...codeCandidates(supplierSku)])];
-
-  const terms = [
-    mapping.produtos?.sku_interno,
-    mapping.produtos?.nome,
-    ...productNameVariants(mapping.produtos?.nome),
-  ];
-
-  return [...new Set(terms.map((term) => String(term ?? "").trim()).filter(Boolean))];
 }
 
 function productIdentity(mapping) {
@@ -3147,162 +3018,6 @@ async function isLoginRequired(page, concorrente = null) {
   }
 
   return /fa[cç]a login|cadastre-se para ver os pre[cç]os/i.test(text);
-}
-
-async function isProductUnavailable(page) {
-  const text = await page
-    .locator("body")
-    .innerText({ timeout: 5000 })
-    .catch(() => "");
-  const normalized = normalizeText(text);
-
-  if (
-    /fora\s+(?:de|do)\s+estoque|produto\s+indisponivel|item\s+indisponivel|nao\s+disponivel|indisponivel\s+no\s+momento|temporariamente\s+indisponivel|sem\s+(?:estoque|saldo)|produto\s+esgotado|esgotado|avise-?me\s+quando\s+(?:chegar|disponivel)|aviseme\s+quando\s+(?:chegar|disponivel)|produto\s+sob\s+consulta|consulte\s+(?:a\s+)?disponibilidade|aguardando\s+estoque/.test(
-      normalized,
-    )
-  ) {
-    return true;
-  }
-
-  const unavailableControls = await page
-    .locator(
-      [
-        "button:disabled:has-text('Comprar')",
-        "button:disabled:has-text('Adicionar')",
-        "button:disabled:has-text('Carrinho')",
-        "button:has-text('Fora de Estoque')",
-        "button:has-text('Fora do Estoque')",
-        "button:has-text('Indisponível')",
-        "button:has-text('Indisponivel')",
-        "button:has-text('Esgotado')",
-        "[aria-disabled='true']:has-text('Comprar')",
-        "[aria-disabled='true']:has-text('Adicionar')",
-        "[aria-disabled='true']:has-text('Fora de Estoque')",
-        "[class*='indisponivel' i]",
-        "[class*='fora-estoque' i]",
-        "[class*='fora_de_estoque' i]",
-        "[class*='sem-estoque' i]",
-        "[class*='sem_estoque' i]",
-        "[class*='unavailable' i]",
-        "[class*='out-of-stock' i]",
-      ].join(", "),
-    )
-    .count()
-    .catch(() => 0);
-
-  return unavailableControls > 0;
-}
-
-async function isProductUnavailableForMapping(page, mapping, concorrente) {
-  const availability = await expectedProductAvailability(page, mapping, concorrente);
-  if (availability.unavailable) return true;
-  if (availability.found) return false;
-
-  return usesSearchFlow(concorrente) ? false : isProductUnavailable(page);
-}
-
-async function expectedProductAvailability(page, mapping, concorrente) {
-  const identity = productIdentity(mapping);
-  if (identity.codes.length === 0 && identity.terms.length === 0) {
-    return { found: false, unavailable: await isProductUnavailable(page) };
-  }
-
-  return page
-    .evaluate(
-      ({ codes, terms, inferMissingOfferAsUnavailable }) => {
-        const unavailableSignalPattern =
-          /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|nao\s+disponivel|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+(?:chegar|disponivel)|aviseme\s+quando\s+(?:chegar|disponivel)|produto\s+sob\s+consulta|consulte\s+(?:a\s+)?disponibilidade|aguardando\s+estoque/;
-        const pricePattern = /R\$\s*\d|\d{1,3}(?:\.\d{3})*,\d{2,3}/;
-        const buyActionPattern = /\b(adic\.?|adicionar|comprar|carrinho)\b/;
-        const normalize = (value) =>
-          String(value ?? "")
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .toLowerCase();
-        const visible = (element) => {
-          const style = window.getComputedStyle(element);
-          const rect = element.getBoundingClientRect();
-          return (
-            style.display !== "none" &&
-            style.visibility !== "hidden" &&
-            rect.width > 0 &&
-            rect.height > 0
-          );
-        };
-        const hasCode = (text) => codes.some((code) => text.includes(code));
-        const matchedTerms = (text) => terms.filter((term) => text.includes(term));
-        const isExpectedBlock = (text) => {
-          if (codes.length > 0) return hasCode(text);
-          const matches = matchedTerms(text);
-          const numericTerms = terms.filter((term) => /^\d+(?:[,.]\d+)?[a-z]*$/.test(term));
-          const hasMeasure =
-            numericTerms.length === 0 || numericTerms.some((term) => text.includes(term));
-          return hasMeasure && matches.length >= Math.min(2, terms.length);
-        };
-
-        const nodes = [
-          ...document.querySelectorAll(
-            [
-              "article",
-              "li",
-              "tr",
-              "[class*='produto' i]",
-              "[class*='product' i]",
-              "[class*='item' i]",
-              "[class*='card' i]",
-              "[class*='col-' i]",
-              "section",
-              "main",
-              "div",
-            ].join(", "),
-          ),
-        ];
-
-        const candidates = nodes
-          .filter((node) => node instanceof HTMLElement && visible(node))
-          .map((node) => {
-            const rawText = node.innerText || node.textContent || "";
-            const text = normalize(rawText);
-            return {
-              text,
-              length: text.length,
-              hasPrice: pricePattern.test(rawText),
-              hasBuyAction: buyActionPattern.test(text),
-              unavailable: unavailableSignalPattern.test(text),
-            };
-          })
-          .filter((item) => item.length > 0 && item.length <= 2500 && isExpectedBlock(item.text))
-          .sort((a, b) => a.length - b.length)
-          .slice(0, 12);
-
-        const availableCandidate = candidates.find(
-          (item) => !item.unavailable && (item.hasPrice || item.hasBuyAction),
-        );
-        if (availableCandidate) return { found: true, unavailable: false };
-
-        const unavailableCandidate = candidates.find(
-          (item) => item.unavailable && !item.hasPrice && !item.hasBuyAction,
-        );
-        if (unavailableCandidate) return { found: true, unavailable: true };
-
-        return {
-          found: candidates.length > 0,
-          unavailable:
-            inferMissingOfferAsUnavailable &&
-            candidates.length > 0 &&
-            candidates.every((item) => !item.hasPrice && !item.hasBuyAction),
-        };
-      },
-      {
-        ...identity,
-        // These catalogs omit availability labels when an item has no offer. Construja prices
-        // are split across DOM nodes, so a small matching node without a price proves nothing.
-        inferMissingOfferAsUnavailable: isMarest(concorrente) || isMegaleste(concorrente),
-      },
-    )
-    .catch(() => ({ found: false, unavailable: false }));
 }
 
 function normalizeText(value) {

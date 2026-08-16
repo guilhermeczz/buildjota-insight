@@ -1,5 +1,5 @@
 // Price parts are frequently rendered in separate DOM nodes (currency, integer and cents).
-// Keep one shared pattern for the browser-side candidate search and the final parser.
+// The parser recognizes the format, but never resolves ambiguity by ordering or magnitude.
 const moneyPatternSource = String.raw`(?:R\$\s*)?(\d{1,3}(?:\s*\.\s*\d{3})*\s*,\s*\d{2,3})`;
 const moneyPattern = new RegExp(moneyPatternSource, "g");
 const placeholderPricePattern = /R\$\s*[-–—]+(?:\s*[-–—]+|,\s*[-–—]+)*/i;
@@ -9,118 +9,48 @@ const construjaTitleSelector = "h2[class*='Produto_nomeProduto__']";
 const construjaSkuSelector = "span[class*='Produto_codigoProduto__'] strong";
 const construjaPriceSelector =
   ".stepPreco .stepPrecoContent [class*='Produto_precoProdutoContainer__']";
+const cofemaPriceSelector = ".produto-preco .produto-preco-row";
+const marestRootSelector = "[class*='ProductRowContainer-sc-']";
+const marestPriceSelector =
+  "[class*='BuyInformation-sc-'] [class*='PriceContainer-sc-'] p.prod-price";
+const megalesteRootSelector = ".product-line[data-id]";
+const megalestePriceSelector = ":scope > span.price";
 
-const priceHints = [
-  { selector: "[itemprop='price']", preferLast: false },
-  { selector: "meta[itemprop='price']", preferLast: false },
-  { selector: "meta[property='product:price:amount']", preferLast: false },
-  { selector: "[data-testid*='price' i]", preferLast: true },
-  { selector: "[class*='precoProdutoContainer' i]", preferLast: true },
-  { selector: "[class*='precoAtual' i]", preferLast: true },
-  { selector: "[class*='precoPromocional' i]", preferLast: true },
-  { selector: "[class*='preco-promocional' i]", preferLast: true },
-  { selector: "[class*='precoPor' i]", preferLast: true },
-  { selector: "[class*='preco-por' i]", preferLast: true },
-  { selector: "[class*='precoVenda' i]", preferLast: true },
-  { selector: "[class*='precoSelecionado' i]", preferLast: true },
-  { selector: "[class*='preco-selecao' i]", preferLast: true },
-  { selector: "[class*='precoSelecao' i]", preferLast: true },
-  { selector: "[class*='valorProduto' i]", preferLast: true },
-  { selector: "[class*='valor-produto' i]", preferLast: true },
-  { selector: "[class*='product-price' i]", preferLast: true },
-  { selector: "[class*='current-price' i]", preferLast: true },
-  { selector: "[class*='price-current' i]", preferLast: true },
-  { selector: "[class*='sale-price' i]", preferLast: true },
-  { selector: "[class*='best-price' i]", preferLast: true },
-  { selector: "[class*='price' i]", preferLast: true },
-  { selector: "[class*='preco' i]", preferLast: true },
-  { selector: "[id*='price' i]", preferLast: true },
-  { selector: "[id*='preco' i]", preferLast: true },
-  { selector: ".stepPreco", preferLast: true },
-  { selector: ".valor", preferLast: true },
-  { selector: ".product-price", preferLast: true },
-  { selector: ".preco", preferLast: true },
-];
+export function isConfirmedPriceEvidence(result) {
+  const price = Number(result?.price);
+  return (
+    !result?.error &&
+    Number.isFinite(price) &&
+    price > 0 &&
+    result?.productConfirmed === true &&
+    result?.priceScopeConfirmed === true &&
+    result?.priceVisible === true &&
+    result?.mainPriceCount === 1 &&
+    result?.priceFormatRecognized === true
+  );
+}
+
+export function persistenceFieldsForPriceEvidence(result) {
+  return {
+    concorrente: String(result?.competitor ?? "")
+      .trim()
+      .toUpperCase(),
+    leitura_confirmada: isConfirmedPriceEvidence(result),
+    produto_confirmado: result?.productConfirmed === true,
+    bloco_preco_confirmado: result?.priceScopeConfirmed === true,
+    elemento_preco_visivel: result?.priceVisible === true,
+    quantidade_precos_principais: Number(result?.mainPriceCount ?? 0),
+    formato_preco_reconhecido: result?.priceFormatRecognized === true,
+    preco_principal_confirmado: isConfirmedPriceEvidence(result),
+  };
+}
 
 export function parseBRL(text, options = {}) {
   if (shouldRejectText(text, options)) return null;
-
-  if (options.preferPrazo) {
-    const prazo = parsePrazoBRL(text, options);
-    if (prazo) return prazo;
-
-    // MEGALESTE may show only its main price in the result card. It is a safe
-    // fallback only when there is no competing monetary value in that block.
-    const uniquePrices = [
-      ...new Set(parseBRLValues(text, options).filter((value) => isPlausiblePrice(value, options))),
-    ];
-    return uniquePrices.length === 1 ? uniquePrices[0] : null;
-  }
-
-  if (!options.requireCurrency) {
-    const preferred = parsePreferredLabeledBRL(text, options);
-    if (preferred) return preferred;
-  }
-
-  const discounted = parseDiscountedBRL(text, options);
-  if (discounted) return discounted;
-
-  const matches = parseBRLValues(text, options);
-  if (matches.length === 0) return null;
-
-  return selectPrice(matches, options);
-}
-
-function parsePrazoBRL(text, options = {}) {
-  if (!text) return null;
-
-  const plain = normalizeText(String(text).replace(/\s+/g, " "));
-  const valuePattern = String.raw`(\d{1,3}(?:\s*\.\s*\d{3})*\s*,\s*\d{2,3})`;
-  const labelPattern = String.raw`(?:(?:preco|valor)\s+)?(?:a\s+)?prazo`;
-  const patterns = [
-    new RegExp(`${labelPattern}\\s*[:\\-]?\\s*(?:r\\$\\s*)?${valuePattern}`, "i"),
-    new RegExp(`(?:r\\$\\s*)?${valuePattern}\\s*[:\\-]?\\s*${labelPattern}`, "i"),
+  const prices = [
+    ...new Set(parseBRLValues(text, options).filter((value) => isPlausiblePrice(value))),
   ];
-
-  for (const pattern of patterns) {
-    const match = plain.match(pattern);
-    const value = match ? parseMoney(match[1]) : null;
-    if (value && isPlausiblePrice(value, options)) return value;
-  }
-
-  return null;
-}
-
-function parsePreferredLabeledBRL(text, options = {}) {
-  if (!text) return null;
-
-  const normalized = text.replace(/\s+/g, " ").trim();
-  const plain = normalizeText(normalized);
-  const labelPatterns = [
-    /(?:preco\s*)?(?:a vista|avista)\s*(?:r\$)?\s*(\d{1,3}(?:\s*\.\s*\d{3})*\s*,\s*\d{2,3})/i,
-    /(?:r\$)?\s*(\d{1,3}(?:\s*\.\s*\d{3})*\s*,\s*\d{2,3})\s*(?:a vista|avista)/i,
-    /(?:preco|valor|por)\s*(?:r\$)?\s*(\d{1,3}(?:\s*\.\s*\d{3})*\s*,\s*\d{2,3})/i,
-  ];
-
-  for (const pattern of labelPatterns) {
-    const match = plain.match(pattern);
-    const value = match ? parseMoney(match[1]) : null;
-    if (value && isPlausiblePrice(value, options)) return value;
-  }
-
-  return null;
-}
-
-function parseDiscountedBRL(text, options = {}) {
-  if (!text) return null;
-
-  const normalized = normalizeText(text);
-  if (!/(off|desconto|promocao|promocional|por apenas|especial)/i.test(normalized)) return null;
-
-  const matches = parseBRLValues(text, options);
-  if (matches.length === 0) return null;
-
-  return selectPrice(matches, { ...options, preferLast: true });
+  return prices.length === 1 ? prices[0] : null;
 }
 
 function parseBRLValues(text, options = {}) {
@@ -138,15 +68,6 @@ function parseMoney(value) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-function selectPrice(values, options = {}) {
-  const candidates = values.filter((value) => isPlausiblePrice(value, options));
-  if (candidates.length === 0) return null;
-  if (options.requireSingle && candidates.length !== 1) return null;
-
-  if (options.preferLargest) return Math.max(...candidates);
-  return options.preferLast ? candidates[candidates.length - 1] : candidates[0];
-}
-
 function shouldRejectText(text, options = {}) {
   if (options.allowUnavailableText) return false;
 
@@ -156,63 +77,550 @@ function shouldRejectText(text, options = {}) {
   return placeholderPricePattern.test(String(text ?? ""));
 }
 
-function isPlausiblePrice(value, options = {}) {
+function isPlausiblePrice(value) {
   const price = Number(value);
-  if (!Number.isFinite(price) || price <= 0) return false;
-
-  const referencePrice = Number(options.referencePrice ?? 0);
-  if (!Number.isFinite(referencePrice) || referencePrice <= 0) return true;
-
-  const minimum = Math.max(1, referencePrice * 0.15);
-  const maximum = Math.max(referencePrice * 5, referencePrice + 500);
-  return price >= minimum && price <= maximum;
+  return Number.isFinite(price) && price > 0;
 }
 
-function parseLoosePrice(value, options = {}) {
-  if (value == null) return null;
-  if (typeof value === "number") return isPlausiblePrice(value, options) ? value : null;
-
-  const text = String(value).trim();
-  const brl = parseBRL(text, { ...options, preferLast: true });
-  if (brl) return brl;
-
-  const cleaned = text.replace(/[^\d.,]/g, "");
-  if (!cleaned) return null;
-
-  const normalized =
-    cleaned.includes(",") && cleaned.includes(".")
-      ? cleaned.replace(/\./g, "").replace(",", ".")
-      : cleaned.replace(",", ".");
-  const parsed = Number(normalized);
-  return isPlausiblePrice(parsed, options) ? parsed : null;
+function basePriceEvidence(competitor, page, mapping, selector, priceRule) {
+  return {
+    competitor,
+    price: null,
+    error: "",
+    url: page.url(),
+    expectedSku: String(mapping?.sku_concorrente ?? "").trim(),
+    observedSku: "",
+    title: "",
+    selector,
+    rawText: "",
+    priceRule,
+    productConfirmed: false,
+    priceScopeConfirmed: false,
+    priceVisible: false,
+    mainPriceCount: 0,
+    priceFormatRecognized: false,
+  };
 }
 
-export async function extractPrice(page, selector, options = {}) {
-  for (const candidate of selectorCandidates(selector)) {
-    const parsed = await parseLocatorPrice(page, candidate, { ...options, preferLast: true });
-    if (parsed) return parsed;
+function failPriceEvidence(base, error, details = {}) {
+  return { ...base, ...details, price: null, error };
+}
+
+function finalizeSingleMainPrice(base, details = {}) {
+  const visiblePrices = (details.prices ?? []).filter(
+    (candidate) => candidate?.visible === true && String(candidate.rawText ?? "").trim(),
+  );
+  const shared = {
+    ...details,
+    prices: undefined,
+    rawText: visiblePrices.map((candidate) => candidate.rawText).join(" | "),
+    priceScopeConfirmed: details.priceScopeConfirmed === true,
+    priceVisible: visiblePrices.length > 0,
+    mainPriceCount: visiblePrices.length,
+  };
+
+  if (details.unavailable === true) {
+    return failPriceEvidence(base, `${base.competitor}: produto indisponivel`, shared);
+  }
+  if (!shared.priceScopeConfirmed) {
+    return failPriceEvidence(
+      base,
+      `${base.competitor}: bloco principal de preco nao encontrado`,
+      shared,
+    );
+  }
+  if (visiblePrices.length === 0) {
+    return failPriceEvidence(base, `${base.competitor}: preco principal nao encontrado`, shared);
+  }
+  if (visiblePrices.length !== 1) {
+    return failPriceEvidence(base, `${base.competitor}: preco principal ambiguo`, shared);
   }
 
-  const structuredPrice = await extractStructuredPrice(page, options);
-  if (structuredPrice) return structuredPrice;
-
-  for (const hint of priceHints) {
-    const parsed = await parseLocatorPrice(page, hint.selector, {
-      ...options,
-      preferLast: hint.preferLast,
-    });
-    if (parsed) return parsed;
+  const rawText = visiblePrices[0].rawText;
+  const values = parseBRLValues(rawText, { requireCurrency: true }).filter((value) =>
+    isPlausiblePrice(value),
+  );
+  const currencyCount = rawText.match(/R\$/gi)?.length ?? 0;
+  if (values.length !== 1 || currencyCount !== 1) {
+    return failPriceEvidence(
+      base,
+      values.length > 1 || currencyCount > 1
+        ? `${base.competitor}: preco principal ambiguo`
+        : `${base.competitor}: preco principal em formato nao reconhecido`,
+      {
+        ...shared,
+        mainPriceCount: Math.max(visiblePrices.length, values.length, currencyCount),
+      },
+    );
   }
 
-  const bodyText = await page
-    .locator("body")
-    .innerText({ timeout: 8000 })
-    .catch(() => "");
-  return parseBRL(bodyText, { ...options, preferLast: true, requireSingle: true });
+  return {
+    ...base,
+    ...shared,
+    price: values[0],
+    error: "",
+    priceFormatRecognized: true,
+  };
 }
 
-export async function extractPriceFromLocator(page, selector, options = {}) {
-  return parseLocatorPrice(page, selector, options);
+export async function inspectCofemaPrice(page, mapping, options = {}) {
+  const base = basePriceEvidence(
+    "COFEMA",
+    page,
+    mapping,
+    cofemaPriceSelector,
+    "preco-unico-no-resumo-principal",
+  );
+  const expectedTitle = String(mapping?.produtos?.nome ?? "").trim();
+  const waitTimeoutMs = normalizedWaitTimeout(options.waitTimeoutMs);
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(base.url);
+  } catch {
+    return failPriceEvidence(base, "COFEMA: URL nao corresponde a uma pagina de produto");
+  }
+  const urlCode =
+    parsedUrl.pathname.match(/^\/(?:[a-z]{2}\/)?page\/produto\/(\d{3,})(?:[-/]|$)/i)?.[1] ?? "";
+  if (!/(^|\.)cofema\.com\.br$/i.test(parsedUrl.hostname) || !urlCode) {
+    return failPriceEvidence(base, "COFEMA: URL nao corresponde a uma pagina de produto");
+  }
+
+  await page
+    .locator("main h1")
+    .first()
+    .waitFor({ state: "visible", timeout: waitTimeoutMs })
+    .catch(() => null);
+  const products = await page
+    .evaluate(
+      ({ priceSelector }) => {
+        const oldPricePattern =
+          /preco(?:antigo|anterior|semdesconto)|valor(?:antigo|anterior)|oldprice|priceold|riscado|strike/i;
+        const isVisible = (element) => {
+          if (!(element instanceof HTMLElement)) return false;
+          const rect = element.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) return false;
+          let current = element;
+          while (current) {
+            const style = getComputedStyle(current);
+            if (
+              style.display === "none" ||
+              style.visibility === "hidden" ||
+              Number(style.opacity || 1) === 0 ||
+              current.hidden ||
+              current.getAttribute("aria-hidden") === "true"
+            ) {
+              return false;
+            }
+            current = current.parentElement;
+          }
+          return true;
+        };
+        const isOldPriceNode = (node, boundary) => {
+          let current = node instanceof Element ? node : node.parentElement;
+          while (current && current !== boundary.parentElement) {
+            const style = getComputedStyle(current);
+            const classAndId = `${current.className ?? ""} ${current.id ?? ""}`.replace(
+              /[^a-z0-9]/gi,
+              "",
+            );
+            if (["DEL", "S", "STRIKE"].includes(current.tagName)) return true;
+            if (/line-through/.test(style.textDecorationLine)) return true;
+            if (oldPricePattern.test(classAndId)) return true;
+            if (current === boundary) break;
+            current = current.parentElement;
+          }
+          return false;
+        };
+        const currentText = (element) => {
+          const parts = [];
+          const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+          while (walker.nextNode()) {
+            const parent = walker.currentNode.parentElement;
+            if (parent && isVisible(parent) && !isOldPriceNode(walker.currentNode, element)) {
+              parts.push(walker.currentNode.textContent ?? "");
+            }
+          }
+          return parts.join(" ").replace(/\s+/g, " ").trim();
+        };
+
+        return [...document.querySelectorAll("main h1")]
+          .filter(isVisible)
+          .map((heading) => {
+            const main = heading.closest("main");
+            const summary = heading.closest("div.space-y-2");
+            if (!(main instanceof HTMLElement) || !(summary instanceof HTMLElement)) return null;
+            const mainText = (main.innerText || main.textContent || "").replace(/\s+/g, " ").trim();
+            const normalized = mainText
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .toLowerCase();
+            const summaryText = String(summary.innerText || summary.textContent || "")
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
+            const priceElements = [...summary.querySelectorAll(priceSelector)].filter(
+              (element) => isVisible(element) && !isOldPriceNode(element, element),
+            );
+            return {
+              title: (heading.innerText || heading.textContent || "").replace(/\s+/g, " ").trim(),
+              mainCode: normalized.match(/codigo:\s*([a-z0-9._/-]+)/i)?.[1] ?? "",
+              supplierReference:
+                normalized.match(/referencia do fornecedor:\s*([a-z0-9._/-]+)/i)?.[1] ?? "",
+              barcode: normalized.match(/codigo barras:\s*([a-z0-9._/-]+)/i)?.[1] ?? "",
+              priceScopeConfirmed: true,
+              unavailable:
+                /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|indisponivel|esgotado/.test(
+                  summaryText,
+                ),
+              prices: priceElements.map((element) => ({
+                rawText: currentText(element),
+                visible: true,
+              })),
+            };
+          })
+          .filter(Boolean);
+      },
+      { priceSelector: cofemaPriceSelector },
+    )
+    .catch(() => []);
+
+  if (products.length !== 1) {
+    return failPriceEvidence(
+      base,
+      products.length > 1
+        ? "COFEMA: identificacao principal do produto ambigua"
+        : "COFEMA: bloco principal do produto nao encontrado",
+    );
+  }
+  const [product] = products;
+  const observedCodes = [product.mainCode, product.supplierReference, product.barcode].filter(
+    Boolean,
+  );
+  const urlMatchesMain = codesMatch(urlCode, product.mainCode);
+  const skuMatches = observedCodes.some((code) => codesMatch(base.expectedSku, code));
+  const titleCorroborated = productTitleMatches(product.title, expectedTitle, {
+    minimumRatio: 0.55,
+  });
+  const identity = {
+    title: product.title,
+    observedSku:
+      observedCodes.find((code) => codesMatch(base.expectedSku, code)) ?? product.mainCode,
+    titleCorroborated,
+    productConfirmed: Boolean(
+      base.expectedSku && urlMatchesMain && skuMatches && hasMeaningfulTitle(product.title),
+    ),
+  };
+  if (!identity.productConfirmed) {
+    return failPriceEvidence(
+      base,
+      hasMeaningfulTitle(product.title)
+        ? "COFEMA: produto nao corresponde ao mapeamento"
+        : "COFEMA: titulo principal nao encontrado",
+      identity,
+    );
+  }
+  return finalizeSingleMainPrice(base, { ...product, ...identity });
+}
+
+export async function inspectMarestPrice(page, mapping, options = {}) {
+  const base = basePriceEvidence(
+    "MAREST",
+    page,
+    mapping,
+    marestPriceSelector,
+    "preco-unico-no-bloco-de-compra",
+  );
+  const expectedTitle = String(mapping?.produtos?.nome ?? "").trim();
+  const waitTimeoutMs = normalizedWaitTimeout(options.waitTimeoutMs);
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(base.url);
+  } catch {
+    return failPriceEvidence(base, "MAREST: URL nao corresponde a uma pagina de produto");
+  }
+  const urlSku = String(parsedUrl.searchParams.get("sku") ?? "").trim();
+  if (
+    !/(^|\.)marest\.com\.br$/i.test(parsedUrl.hostname) ||
+    parsedUrl.pathname.replace(/\/+$/, "") !== "/product" ||
+    !urlSku
+  ) {
+    return failPriceEvidence(base, "MAREST: URL nao corresponde a uma pagina de produto");
+  }
+  if (!base.expectedSku || !codesMatch(urlSku, base.expectedSku)) {
+    return failPriceEvidence(base, "MAREST: produto nao corresponde ao SKU solicitado");
+  }
+
+  await page
+    .locator(marestRootSelector)
+    .first()
+    .waitFor({ state: "visible", timeout: waitTimeoutMs })
+    .catch(() => null);
+  const products = await page
+    .evaluate(
+      ({ expectedSku, rootSelector, priceSelector }) => {
+        const oldPricePattern =
+          /preco(?:antigo|anterior|semdesconto)|valor(?:antigo|anterior)|oldprice|priceold|riscado|strike/i;
+        const isVisible = (element) => {
+          if (!(element instanceof HTMLElement)) return false;
+          const rect = element.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) return false;
+          let current = element;
+          while (current) {
+            const style = getComputedStyle(current);
+            if (
+              style.display === "none" ||
+              style.visibility === "hidden" ||
+              Number(style.opacity || 1) === 0 ||
+              current.hidden ||
+              current.getAttribute("aria-hidden") === "true"
+            ) {
+              return false;
+            }
+            current = current.parentElement;
+          }
+          return true;
+        };
+        const isOldPriceNode = (node, boundary) => {
+          let current = node instanceof Element ? node : node.parentElement;
+          while (current && current !== boundary.parentElement) {
+            const style = getComputedStyle(current);
+            const classAndId = `${current.className ?? ""} ${current.id ?? ""}`.replace(
+              /[^a-z0-9]/gi,
+              "",
+            );
+            if (["DEL", "S", "STRIKE"].includes(current.tagName)) return true;
+            if (/line-through/.test(style.textDecorationLine)) return true;
+            if (oldPricePattern.test(classAndId)) return true;
+            if (current === boundary) break;
+            current = current.parentElement;
+          }
+          return false;
+        };
+        const currentText = (element) => {
+          const parts = [];
+          const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+          while (walker.nextNode()) {
+            const parent = walker.currentNode.parentElement;
+            if (parent && isVisible(parent) && !isOldPriceNode(walker.currentNode, element)) {
+              parts.push(walker.currentNode.textContent ?? "");
+            }
+          }
+          return parts.join(" ").replace(/\s+/g, " ").trim();
+        };
+        return [...document.querySelectorAll(rootSelector)]
+          .filter(isVisible)
+          .map((root) => {
+            const heading = [...root.querySelectorAll(".detailsHeader h1")].find(isVisible);
+            const sku = [...root.querySelectorAll("p[class*='cod-sku']")].find(isVisible);
+            const buyBlock = [...root.querySelectorAll("[class*='BuyInformation-sc-']")].find(
+              isVisible,
+            );
+            const prices = buyBlock
+              ? [...root.querySelectorAll(priceSelector)].filter(
+                  (element) =>
+                    buyBlock.contains(element) &&
+                    isVisible(element) &&
+                    !isOldPriceNode(element, buyBlock),
+                )
+              : [];
+            const buyText = String(buyBlock?.innerText || buyBlock?.textContent || "")
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
+            return {
+              title: String(heading?.innerText || heading?.textContent || "")
+                .replace(/\s+/g, " ")
+                .trim(),
+              observedSku:
+                String(sku?.innerText || sku?.textContent || "")
+                  .normalize("NFD")
+                  .replace(/[\u0300-\u036f]/g, "")
+                  .match(/cod\.?\s*([a-z0-9._/-]+)/i)?.[1] ?? "",
+              priceScopeConfirmed: Boolean(buyBlock),
+              unavailable:
+                /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|indisponivel|esgotado/.test(
+                  buyText,
+                ),
+              prices: prices.map((element) => ({
+                rawText: currentText(element),
+                visible: true,
+              })),
+            };
+          })
+          .filter((product) => product.observedSku === expectedSku);
+      },
+      {
+        expectedSku: base.expectedSku,
+        rootSelector: marestRootSelector,
+        priceSelector: marestPriceSelector,
+      },
+    )
+    .catch(() => []);
+
+  if (products.length !== 1) {
+    return failPriceEvidence(
+      base,
+      products.length > 1
+        ? "MAREST: identificacao principal do produto ambigua"
+        : "MAREST: bloco principal do produto nao encontrado",
+    );
+  }
+  const [product] = products;
+  const identity = {
+    title: product.title,
+    observedSku: product.observedSku,
+    titleCorroborated: productTitleMatches(product.title, expectedTitle, { minimumRatio: 0.6 }),
+    productConfirmed:
+      codesMatch(product.observedSku, base.expectedSku) && hasMeaningfulTitle(product.title),
+  };
+  if (!identity.productConfirmed) {
+    return failPriceEvidence(
+      base,
+      hasMeaningfulTitle(product.title)
+        ? "MAREST: produto nao corresponde ao mapeamento"
+        : "MAREST: titulo principal nao encontrado",
+      identity,
+    );
+  }
+  return finalizeSingleMainPrice(base, { ...product, ...identity });
+}
+
+export async function inspectMegalestePrice(page, mapping, options = {}) {
+  const base = basePriceEvidence(
+    "MEGALESTE",
+    page,
+    mapping,
+    megalestePriceSelector,
+    "preco-vigente-direto-do-cartao-do-sku",
+  );
+  const expectedTitle = String(mapping?.produtos?.nome ?? "").trim();
+  const waitTimeoutMs = normalizedWaitTimeout(options.waitTimeoutMs);
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(base.url);
+  } catch {
+    return failPriceEvidence(base, "MEGALESTE: URL nao corresponde a busca de produto");
+  }
+  const querySku = String(parsedUrl.searchParams.get("q") ?? "").trim();
+  if (
+    !/(^|\.)megaleste\.com\.br$/i.test(parsedUrl.hostname) ||
+    parsedUrl.pathname.replace(/\/+$/, "") !== "/c/busca" ||
+    !querySku
+  ) {
+    return failPriceEvidence(base, "MEGALESTE: URL nao corresponde a busca de produto");
+  }
+  if (!base.expectedSku || !codesMatch(querySku, base.expectedSku)) {
+    return failPriceEvidence(base, "MEGALESTE: produto nao corresponde ao SKU solicitado");
+  }
+
+  await page
+    .locator(megalesteRootSelector)
+    .first()
+    .waitFor({ state: "visible", timeout: waitTimeoutMs })
+    .catch(() => null);
+  const products = await page
+    .evaluate(
+      ({ expectedSku, rootSelector, priceSelector }) => {
+        const isVisible = (element) => {
+          if (!(element instanceof HTMLElement)) return false;
+          const rect = element.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) return false;
+          let current = element;
+          while (current) {
+            const style = getComputedStyle(current);
+            if (
+              style.display === "none" ||
+              style.visibility === "hidden" ||
+              Number(style.opacity || 1) === 0 ||
+              current.hidden ||
+              current.getAttribute("aria-hidden") === "true"
+            ) {
+              return false;
+            }
+            current = current.parentElement;
+          }
+          return true;
+        };
+        return [...document.querySelectorAll(rootSelector)]
+          .filter(
+            (root) =>
+              isVisible(root) && String(root.getAttribute("data-id") ?? "").trim() === expectedSku,
+          )
+          .map((root) => {
+            const heading = [...root.querySelectorAll(".product-content h4")].find(isVisible);
+            const skuText = [...root.querySelectorAll(".product-content small")].find(isVisible);
+            const prices = [...root.querySelectorAll(priceSelector)].filter(
+              (element) => isVisible(element) && !element.querySelector("s, del, strike"),
+            );
+            const text = String(root.innerText || root.textContent || "")
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
+            return {
+              title: String(heading?.innerText || heading?.textContent || "")
+                .replace(/\s+/g, " ")
+                .trim(),
+              observedSku:
+                String(skuText?.innerText || skuText?.textContent || "")
+                  .normalize("NFD")
+                  .replace(/[\u0300-\u036f]/g, "")
+                  .match(/cod\.?\s*([a-z0-9._/-]+)/i)?.[1] ?? "",
+              priceScopeConfirmed:
+                Boolean(root.querySelector("input[name='qtd']")) &&
+                Boolean(root.querySelector("button.btn-cart-add")),
+              unavailable:
+                /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|indisponivel|esgotado/.test(
+                  text,
+                ),
+              prices: prices.map((element) => ({
+                rawText: String(element.innerText || element.textContent || "")
+                  .replace(/\s+/g, " ")
+                  .trim(),
+                visible: true,
+              })),
+            };
+          });
+      },
+      {
+        expectedSku: base.expectedSku,
+        rootSelector: megalesteRootSelector,
+        priceSelector: megalestePriceSelector,
+      },
+    )
+    .catch(() => []);
+
+  if (products.length !== 1) {
+    return failPriceEvidence(
+      base,
+      products.length > 1
+        ? "MEGALESTE: identificacao principal do produto ambigua"
+        : "MEGALESTE: cartao exato do produto nao encontrado",
+    );
+  }
+  const [product] = products;
+  const identity = {
+    title: product.title,
+    observedSku: product.observedSku,
+    titleCorroborated: productTitleMatches(product.title, expectedTitle, { minimumRatio: 0.45 }),
+    productConfirmed:
+      codesMatch(product.observedSku, base.expectedSku) && hasMeaningfulTitle(product.title),
+  };
+  if (!identity.productConfirmed) {
+    return failPriceEvidence(
+      base,
+      hasMeaningfulTitle(product.title)
+        ? "MEGALESTE: produto nao corresponde ao mapeamento"
+        : "MEGALESTE: titulo principal nao encontrado",
+      identity,
+    );
+  }
+  return finalizeSingleMainPrice(base, { ...product, ...identity });
 }
 
 export async function extractConstrujaPrice(page, mapping, options = {}) {
@@ -225,23 +633,15 @@ export async function inspectConstrujaPrice(page, mapping, options = {}) {
   const expectedSku = String(mapping?.sku_concorrente ?? "").trim();
   const expectedTitle = String(mapping?.produtos?.nome ?? "").trim();
   const pageUrl = page.url();
-  const baseResult = {
-    price: null,
-    error: "",
-    url: pageUrl,
-    expectedSku,
-    observedSku: "",
-    title: "",
-    selector: construjaPriceSelector,
-    rawText: "",
-    productConfirmed: false,
-    priceVisible: false,
-    mainPriceCount: 0,
-  };
+  const baseResult = basePriceEvidence(
+    "CONSTRUJA",
+    page,
+    mapping,
+    construjaPriceSelector,
+    "preco-unico-no-bloco-principal-do-produto",
+  );
   const failed = (error, details = {}) => ({ ...baseResult, ...details, error });
-  const waitTimeoutMs = Number.isFinite(Number(options.waitTimeoutMs))
-    ? Math.max(0, Number(options.waitTimeoutMs))
-    : 5000;
+  const waitTimeoutMs = normalizedWaitTimeout(options.waitTimeoutMs);
 
   let parsedUrl;
   try {
@@ -340,6 +740,7 @@ export async function inspectConstrujaPrice(page, mapping, options = {}) {
             return {
               title: (heading.innerText || heading.textContent || "").replace(/\s+/g, " ").trim(),
               observedSku: (skuElement?.textContent ?? "").replace(/\s+/g, " ").trim(),
+              priceScopeConfirmed: true,
               prices: priceElements.map((element) => ({
                 rawText: visibleCurrentText(element),
                 visible: true,
@@ -366,7 +767,7 @@ export async function inspectConstrujaPrice(page, mapping, options = {}) {
     );
   }
 
-  const [{ title, observedSku, prices }] = product;
+  const [{ title, observedSku, prices, priceScopeConfirmed }] = product;
   const identity = { title, observedSku };
   if (observedSku !== expectedSku) {
     return failed("CONSTRUJA: produto nao corresponde ao SKU solicitado", identity);
@@ -375,363 +776,22 @@ export async function inspectConstrujaPrice(page, mapping, options = {}) {
     return failed("CONSTRUJA: titulo principal nao corresponde ao produto mapeado", identity);
   }
 
-  const visiblePrices = prices.filter((candidate) => candidate.visible && candidate.rawText);
-  const details = {
+  return finalizeSingleMainPrice(baseResult, {
     ...identity,
-    rawText: visiblePrices.map((candidate) => candidate.rawText).join(" | "),
+    prices,
     productConfirmed: true,
-    priceVisible: visiblePrices.length > 0,
-    mainPriceCount: visiblePrices.length,
-  };
-  if (visiblePrices.length === 0) {
-    return failed("CONSTRUJA: preco principal nao encontrado", details);
-  }
-  if (visiblePrices.length !== 1) {
-    return failed("CONSTRUJA: preco principal ambiguo", details);
-  }
-
-  const parsedPrices = visiblePrices.map((candidate) => {
-    const values = parseBRLValues(candidate.rawText, { requireCurrency: true }).filter((value) =>
-      isPlausiblePrice(value),
-    );
-    return values.length === 1 ? values[0] : null;
+    priceScopeConfirmed,
   });
-  if (parsedPrices.some((price) => price === null)) {
-    const currencyCount = visiblePrices.reduce(
-      (total, candidate) => total + (candidate.rawText.match(/R\$/gi)?.length ?? 0),
-      0,
-    );
-    return failed(
-      currencyCount > 1
-        ? "CONSTRUJA: preco principal ambiguo"
-        : "CONSTRUJA: preco principal em formato nao reconhecido",
-      details,
-    );
-  }
-
-  const uniquePrices = [...new Set(parsedPrices)];
-  if (uniquePrices.length !== 1) {
-    return failed("CONSTRUJA: preco principal ambiguo", details);
-  }
-
-  return {
-    ...baseResult,
-    ...details,
-    price: uniquePrices[0],
-    error: "",
-  };
 }
 
-export async function extractPriceNearTerms(page, terms, options = {}) {
-  const normalizedTerms = [...new Set((terms ?? []).map(normalizeText).filter(Boolean))]
-    .filter(isUsefulSearchTerm)
-    .sort((a, b) => b.length - a.length);
-  if (normalizedTerms.length === 0) return null;
-
-  const candidates = await page
-    .evaluate(
-      ({ searchTerms, browserMoneyPatternSource, requireCurrency }) => {
-        const moneyPattern = new RegExp(browserMoneyPatternSource);
-        const placeholderPricePattern = /R\$\s*[-–—]+(?:\s*[-–—]+|,\s*[-–—]+)*/i;
-        const unavailableSignalPattern =
-          /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|nao\s+disponivel|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+(?:chegar|disponivel)|aviseme\s+quando\s+(?:chegar|disponivel)|produto\s+sob\s+consulta|consulte\s+(?:a\s+)?disponibilidade|aguardando\s+estoque/;
-        const normalize = (value) =>
-          String(value ?? "")
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .toLowerCase();
-        const visible = (element) => {
-          const style = window.getComputedStyle(element);
-          const rect = element.getBoundingClientRect();
-          return (
-            style.display !== "none" &&
-            style.visibility !== "hidden" &&
-            rect.width > 0 &&
-            rect.height > 0
-          );
-        };
-        const termMatches = (text, term) => {
-          if (!/^\d+$/.test(term)) return text.includes(term);
-          return new RegExp(`(^|[^0-9])${term}([^0-9]|$)`).test(text);
-        };
-        const isOldPriceNode = (node, root) => {
-          let current = node instanceof Element ? node : node.parentElement;
-          while (current && current !== root) {
-            const style = window.getComputedStyle(current);
-            const classAndId = `${current.className ?? ""} ${current.id ?? ""}`;
-            if (/line-through/.test(style.textDecorationLine)) return true;
-            if (
-              /(preco[-_ ]?de|precoantigo|old[-_ ]?price|valor[-_ ]?de|riscado|strike)/i.test(
-                classAndId,
-              )
-            ) {
-              return true;
-            }
-            current = current.parentElement;
-          }
-          return false;
-        };
-        const currentPriceText = (element) => {
-          const parts = [];
-          const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
-          while (walker.nextNode()) {
-            if (!isOldPriceNode(walker.currentNode, element)) {
-              parts.push(walker.currentNode.textContent ?? "");
-            }
-          }
-          return parts.join(" ");
-        };
-
-        const elements = [
-          ...document.querySelectorAll(
-            [
-              "article",
-              "li",
-              "tr",
-              "[class*='produto' i]",
-              "[class*='product' i]",
-              "[class*='item' i]",
-              "[class*='card' i]",
-              "[class*='col-' i]",
-              "div",
-            ].join(", "),
-          ),
-        ];
-
-        return elements
-          .filter((element) => element instanceof HTMLElement && visible(element))
-          .map((element) => {
-            const text = currentPriceText(element);
-            const normalized = normalize(text);
-            const matchedTerm = searchTerms.find((term) => termMatches(normalized, term));
-            return {
-              text,
-              length: normalized.length,
-              matchedTerm: matchedTerm ?? "",
-              hasPrice: moneyPattern.test(text) && (!requireCurrency || /R\$\s*\d/i.test(text)),
-              unavailable:
-                unavailableSignalPattern.test(normalized) || placeholderPricePattern.test(text),
-            };
-          })
-          .filter(
-            (item) => item.matchedTerm && item.hasPrice && !item.unavailable && item.length <= 2000,
-          )
-          .sort((a, b) => {
-            const termDiff = b.matchedTerm.length - a.matchedTerm.length;
-            if (termDiff !== 0) return termDiff;
-            return a.length - b.length;
-          })
-          .slice(0, 12)
-          .map((item) => item.text);
-      },
-      {
-        searchTerms: normalizedTerms,
-        browserMoneyPatternSource: moneyPatternSource,
-        requireCurrency: options.requireCurrency === true,
-      },
-    )
-    .catch(() => []);
-
-  for (const text of candidates) {
-    const parsed = parseBRL(text, {
-      ...options,
-      preferLast: options.preferLast ?? true,
-    });
-    if (parsed) return parsed;
-  }
-
+// Kept as a fail-closed compatibility export. Production collection must use one of the
+// competitor-specific inspectors above; broad proximity scans are not valid price evidence.
+export async function extractPriceNearTerms() {
   return null;
 }
 
-function isUsefulSearchTerm(term) {
-  if (!term) return false;
-  if (/^\d+$/.test(term)) return term.length >= 4;
-  if (/^(bianco|otto|baumgart|produto)$/.test(term)) return false;
-  return term.length >= 6;
-}
-
-async function parseLocatorPrice(page, selector, options) {
-  const locator = page.locator(selector);
-  const count = await locator.count().catch(() => 0);
-  if (count === 0) return null;
-
-  const priceTexts = await locator
-    .evaluateAll((nodes) =>
-      nodes.map((node) => {
-        const element = node instanceof HTMLElement ? node : null;
-        const content =
-          element?.getAttribute("content") ??
-          element?.getAttribute("value") ??
-          element?.getAttribute("data-price") ??
-          element?.getAttribute("data-preco") ??
-          "";
-        const fallback = element?.innerText ?? node.textContent ?? "";
-        const normalize = (value) =>
-          String(value ?? "")
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .replace(/\s+/g, " ")
-            .trim()
-            .toLowerCase();
-        const placeholderPricePattern = /R\$\s*[-–—]+(?:\s*[-–—]+|,\s*[-–—]+)*/i;
-        const unavailableSignalPattern =
-          /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|nao\s+disponivel|indisponivel|temporariamente\s+indisponivel|esgotado|avise-?me\s+quando\s+(?:chegar|disponivel)|aviseme\s+quando\s+(?:chegar|disponivel)|produto\s+sob\s+consulta|consulte\s+(?:a\s+)?disponibilidade|aguardando\s+estoque/;
-
-        const isVisible = (target) => {
-          if (!target || target instanceof HTMLMetaElement) return true;
-          const style = window.getComputedStyle(target);
-          const rect = target.getBoundingClientRect();
-          return (
-            style.display !== "none" &&
-            style.visibility !== "hidden" &&
-            rect.width > 0 &&
-            rect.height > 0
-          );
-        };
-        const rootClassAndId = `${element?.className ?? ""} ${element?.id ?? ""}`;
-        const rootStyle = element ? window.getComputedStyle(element) : null;
-        const rootIsOldPrice =
-          Boolean(rootStyle && /line-through/.test(rootStyle.textDecorationLine)) ||
-          /(preco[-_ ]?de|precoantigo|old[-_ ]?price|valor[-_ ]?de|riscado|strike)/i.test(
-            rootClassAndId,
-          );
-
-        if (element && !content && (!isVisible(element) || rootIsOldPrice)) {
-          return { preferred: "", fallback: "" };
-        }
-
-        const isOldPriceNode = (target) => {
-          let current = target instanceof Element ? target : target.parentElement;
-          while (current && current !== node) {
-            const style = window.getComputedStyle(current);
-            const classAndId = `${current.className ?? ""} ${current.id ?? ""}`;
-            if (/line-through/.test(style.textDecorationLine)) return true;
-            if (
-              /(preco[-_ ]?de|precoantigo|old[-_ ]?price|valor[-_ ]?de|riscado|strike)/i.test(
-                classAndId,
-              )
-            ) {
-              return true;
-            }
-            current = current.parentElement;
-          }
-          return false;
-        };
-
-        const textNodes = [];
-        const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
-        while (walker.nextNode()) {
-          const textNode = walker.currentNode;
-          if (!isOldPriceNode(textNode)) textNodes.push(textNode.textContent ?? "");
-        }
-
-        const preferred = `${content} ${textNodes.join(" ")}`.trim();
-        const fallbackText = `${content} ${fallback}`.trim();
-        const combinedText = `${preferred} ${fallbackText}`;
-
-        if (
-          placeholderPricePattern.test(combinedText) ||
-          unavailableSignalPattern.test(normalize(combinedText))
-        ) {
-          return { preferred: "", fallback: "" };
-        }
-
-        return { preferred, fallback: fallbackText };
-      }),
-    )
-    .catch(() => []);
-
-  const filteredPriceTexts = priceTexts.filter((item) => {
-    const text = `${item.preferred ?? ""} ${item.fallback ?? ""}`;
-    const normalized = normalizeText(text);
-    return (
-      text.trim() &&
-      !placeholderPricePattern.test(text) &&
-      !unavailableSignalPattern.test(normalized)
-    );
-  });
-
-  const preferred = filteredPriceTexts
-    .map((item) => item.preferred)
-    .filter(Boolean)
-    .join(" ");
-  const fallback = filteredPriceTexts
-    .map((item) => item.fallback)
-    .filter(Boolean)
-    .join(" ");
-
-  return (
-    parseBRL(preferred, options) ??
-    parseLoosePrice(preferred, options) ??
-    parseBRL(fallback, options) ??
-    parseLoosePrice(fallback, options)
-  );
-}
-
-async function extractStructuredPrice(page, options = {}) {
-  const candidates = await page
-    .evaluate(() => {
-      const values = [];
-      const push = (value) => {
-        if (value !== null && value !== undefined && String(value).trim() !== "") {
-          values.push(String(value));
-        }
-      };
-
-      document
-        .querySelectorAll(
-          [
-            "meta[itemprop='price']",
-            "meta[property='product:price:amount']",
-            "meta[property='og:price:amount']",
-            "[itemprop='price']",
-          ].join(", "),
-        )
-        .forEach((node) => {
-          push(node.getAttribute("content"));
-          push(node.getAttribute("value"));
-          push(node.textContent);
-        });
-
-      const walk = (value) => {
-        if (!value || values.length >= 20) return;
-        if (Array.isArray(value)) {
-          value.forEach(walk);
-          return;
-        }
-        if (typeof value !== "object") return;
-
-        for (const [key, nested] of Object.entries(value)) {
-          if (/^(price|lowPrice|highPrice|minPrice|maxPrice|salePrice)$/i.test(key)) {
-            push(nested);
-          } else if (typeof nested === "object") {
-            walk(nested);
-          }
-        }
-      };
-
-      document.querySelectorAll("script[type='application/ld+json']").forEach((script) => {
-        try {
-          walk(JSON.parse(script.textContent ?? ""));
-        } catch {
-          // Ignore malformed structured data from third-party scripts.
-        }
-      });
-
-      return values;
-    })
-    .catch(() => []);
-
-  const prices = candidates
-    .map((value) => parseLoosePrice(value, options))
-    .filter((value) => value !== null);
-  return selectPrice(prices, options);
-}
-
 function normalizeText(value) {
-  return value
+  return String(value ?? "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/\s+/g, " ")
@@ -739,7 +799,25 @@ function normalizeText(value) {
     .toLowerCase();
 }
 
-function construjaTitleMatches(actualTitle, expectedTitle) {
+function hasMeaningfulTitle(value) {
+  return normalizeText(value).replace(/[^a-z0-9]/g, "").length >= 3;
+}
+
+function normalizedWaitTimeout(value) {
+  return Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 5000;
+}
+
+function codesMatch(left, right) {
+  const normalizeCode = (value) =>
+    normalizeText(String(value ?? ""))
+      .replace(/[^a-z0-9]/g, "")
+      .trim();
+  const normalizedLeft = normalizeCode(left);
+  const normalizedRight = normalizeCode(right);
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
+}
+
+export function productTitleMatches(actualTitle, expectedTitle, options = {}) {
   const actual = normalizeText(String(actualTitle ?? ""))
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
@@ -761,16 +839,12 @@ function construjaTitleMatches(actualTitle, expectedTitle) {
   if (numericTerms.some((term) => !actualTerms.has(term))) return false;
 
   const matched = expectedTerms.filter((term) => actualTerms.has(term)).length;
-  return matched >= Math.max(2, Math.ceil(expectedTerms.length * 0.7));
+  const minimumRatio = Number.isFinite(Number(options.minimumRatio))
+    ? Math.min(1, Math.max(0.3, Number(options.minimumRatio)))
+    : 0.7;
+  return matched >= Math.max(2, Math.ceil(expectedTerms.length * minimumRatio));
 }
 
-function selectorCandidates(selector) {
-  const value = selector?.trim();
-  if (!value) return [];
-
-  if (/^[.#[]/.test(value) || value.includes(" ") || value.includes(">") || value.includes(":")) {
-    return [value];
-  }
-
-  return [value, `.${value}`, `#${value}`];
+function construjaTitleMatches(actualTitle, expectedTitle) {
+  return productTitleMatches(actualTitle, expectedTitle, { minimumRatio: 0.7 });
 }

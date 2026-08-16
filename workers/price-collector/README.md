@@ -31,7 +31,7 @@ MEGALESTE_REGIAO=SP
 # Opcional. Por padrao o worker bloqueia imagens, fontes e midias para economizar rede.
 WORKER_BLOCK_HEAVY_ASSETS=true
 
-# Opcional. Quantos concorrentes podem ser lidos ao mesmo tempo em execucoes manuais.
+# Opcional. Quantos concorrentes podem ser lidos ao mesmo tempo em execucoes agendadas.
 # Em VM de 8 GB, 2 costuma ser um bom equilibrio. Use 1 se quiser consumo minimo.
 WORKER_CONCURRENCY=2
 
@@ -127,6 +127,21 @@ dia que ainda nao foram executadas. Cada agenda roda no maximo uma vez por dia e
 
 ## Como o worker decide o preco
 
-1. Se o mapeamento tiver `seletor_preco`, ele tenta ler esse seletor primeiro.
-2. Se nao tiver seletor, ele procura textos com padrao de moeda brasileira na pagina.
-3. Ele salva sucesso/erro em `historico_precos`, atualiza `mapeamentos_sku` e registra a execucao em `execucoes_robo`.
+Cada concorrente usa um extrator dedicado e limitado ao produto confirmado:
+
+- COFEMA: resumo principal que contem `main h1` e `.produto-preco .produto-preco-row`.
+- CONSTRUJA: `.stepPreco .stepPrecoContent` do titulo e codigo esperados.
+- MAREST: bloco de compra da pagina `/product?sku=...`, junto ao codigo e titulo principais.
+- MEGALESTE: cartao `.product-line[data-id="SKU"]` retornado pela busca exata.
+
+O worker nao escolhe preco pelo primeiro/ultimo valor da pagina, por menor/maior valor nem por
+proximidade do preco interno. URL/consulta e SKU exato confirmam a identidade; o titulo visivel e
+usado como corroboracao sem exigir que a abreviacao do fornecedor seja igual ao cadastro interno.
+Na CONSTRUJA, o titulo tambem e confrontado porque a leitura ocorre em uma pagina direta. O bloco e
+o elemento de preco precisam estar visiveis, e o valor principal segue a regra comprovada daquele
+site. Somente conflitos sem regra especifica, ausencia ou formato invalido sao rejeitados.
+
+Qualquer ausencia, conflito ou incerteza grava erro com `preco_concorrente = null`. A barreira de
+persistencia repete essas verificacoes para os quatro concorrentes e nunca substitui
+`ultimo_preco` quando a leitura falha. Screenshot e HTML higienizado sao gerados somente nas
+falhas, sem valores de campos, credenciais, scripts ou atributos sensiveis.

@@ -369,12 +369,22 @@ export async function updateExecutionProgress(executionId, message) {
 
 export function normalizeResultForPersistence(item) {
   const precoInformado = Number(item.preco_concorrente);
-  const isConstruja = item.concorrente === "CONSTRUJA";
-  const construjaConfirmed =
-    !isConstruja || (item.produto_confirmado === true && item.preco_principal_confirmado === true);
+  const concorrente = String(item.concorrente ?? "")
+    .trim()
+    .toUpperCase();
+  const concorrentePermitido = allowedConcorrenteNames.includes(concorrente);
+  const evidenceConfirmed =
+    concorrentePermitido &&
+    item.leitura_confirmada === true &&
+    item.produto_confirmado === true &&
+    item.bloco_preco_confirmado === true &&
+    item.elemento_preco_visivel === true &&
+    Number(item.quantidade_precos_principais) === 1 &&
+    item.formato_preco_reconhecido === true &&
+    item.preco_principal_confirmado === true;
   const sucesso =
     item.status === "sucesso" &&
-    construjaConfirmed &&
+    evidenceConfirmed &&
     Number.isFinite(precoInformado) &&
     precoInformado > 0;
 
@@ -386,10 +396,8 @@ export function normalizeResultForPersistence(item) {
       item.mensagem_erro ??
       (sucesso
         ? null
-        : isConstruja && !construjaConfirmed
-          ? "CONSTRUJA: validacao final do produto ou preco principal falhou"
-          : "Preco valido nao encontrado"),
-    preservarUltimoPreco: item.preservar_ultimo_preco === true || (isConstruja && !sucesso),
+        : `${concorrente || "CONCORRENTE"}: validacao final do produto ou preco principal falhou`),
+    preservarUltimoPreco: item.preservar_ultimo_preco === true || !sucesso,
   };
 }
 

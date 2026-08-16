@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { chromium } from "playwright";
 
-import { extractConstrujaPrice, inspectConstrujaPrice, parseBRL } from "./extract-price.mjs";
+import {
+  extractConstrujaPrice,
+  extractPriceNearTerms,
+  inspectCofemaPrice,
+  inspectConstrujaPrice,
+  inspectMarestPrice,
+  inspectMegalestePrice,
+  isConfirmedPriceEvidence,
+  parseBRL,
+} from "./extract-price.mjs";
 
 let browser;
 
@@ -79,6 +88,21 @@ async function withConstrujaFixture(fixture, callback) {
   }
 }
 
+async function withHtmlFixture(url, html, callback) {
+  const context = await browser.newContext({ locale: "pt-BR" });
+  const page = await context.newPage();
+  await page.route(url, (route) =>
+    route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: html }),
+  );
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+
+  try {
+    return await callback(page);
+  } finally {
+    await context.close();
+  }
+}
+
 test("reads prices whose DOM parts are separated by whitespace or lines", () => {
   const cases = [
     ["R$\n162\n,093", 162.093],
@@ -117,6 +141,17 @@ test("Construja reads only the main product price and ignores R$ 2,19 outside it
     },
     async (page) => {
       assert.equal(await extractConstrujaPrice(page, construjaMapping), 4.12);
+    },
+  );
+});
+
+test("the legacy broad proximity extractor fails closed", async () => {
+  const url = "https://example.test/produto/123";
+  await withHtmlFixture(
+    url,
+    "<main><h1>Produto 123</h1><section>R$ 2,19</section></main>",
+    async (page) => {
+      assert.equal(await extractPriceNearTerms(page, ["123"]), null);
     },
   );
 });
@@ -256,6 +291,251 @@ test("Construja never falls back to a related price while the main price is abse
   );
 });
 
+const cofemaMapping = {
+  sku_concorrente: "410409",
+  produtos: { nome: "OTTO BAUMGART BIANCO 900G SACHE 122854" },
+};
+
+function cofemaFixture({
+  priceMarkup = "",
+  relatedMarkup = "",
+  code = "410409",
+  title = "OTTO BAUMGART BIANCO 900G SACHE 122854",
+} = {}) {
+  return `<!doctype html><html><body><main>
+    <div class="space-y-2">
+      <h1>${title}</h1>
+      <p>Código: ${code}</p>
+      <p>Referência do fornecedor: 122854</p>
+      <div class="produto-preco">${priceMarkup}</div>
+      <label>Quantidade</label><button>Comprar</button>
+    </div>
+    ${relatedMarkup}
+  </main></body></html>`;
+}
+
+test("Cofema reads only the visible main-summary price", async () => {
+  const url = "https://novo.cofema.com.br/br/page/produto/410409-fixture";
+  await withHtmlFixture(
+    url,
+    cofemaFixture({
+      priceMarkup: '<div class="produto-preco-row"><s>R$ 35,00</s><span>R$ 32,33</span></div>',
+      relatedMarkup: "<section><h2>Relacionados</h2><span>R$ 2,19</span></section>",
+    }),
+    async (page) => {
+      const result = await inspectCofemaPrice(page, cofemaMapping);
+      assert.equal(result.price, 32.33);
+      assert.equal(isConfirmedPriceEvidence(result), true);
+      assert.match(result.selector, /produto-preco-row/);
+    },
+  );
+});
+
+test("Cofema rejects two current prices in its main summary", async () => {
+  const url = "https://novo.cofema.com.br/page/produto/410409-fixture";
+  await withHtmlFixture(
+    url,
+    cofemaFixture({
+      priceMarkup:
+        '<div class="produto-preco-row"><span>R$ 32,33</span><span>R$ 31,90</span></div>',
+    }),
+    async (page) => {
+      const result = await inspectCofemaPrice(page, cofemaMapping);
+      assert.equal(result.price, null);
+      assert.match(result.error, /preco principal ambiguo/i);
+      assert.equal(isConfirmedPriceEvidence(result), false);
+    },
+  );
+});
+
+const marestMapping = {
+  sku_concorrente: "3502",
+  produtos: { nome: "ADESIVO PVC 175G AMANCO 90061" },
+};
+
+function marestFixture({
+  sku = "3502",
+  title = "ADESIVO PVC 175G AMANCO 90061",
+  priceMarkup = '<p class="prod-price">R$ 16,38</p>',
+  relatedMarkup = "",
+} = {}) {
+  return `<!doctype html><html><body><main>
+    <div class="styles__ProductRowContainer-sc-fixture">
+      <div class="detailsHeader">
+        <p class="styles-module__cod-sku">Cod. ${sku}</p>
+        <h1>${title}</h1>
+      </div>
+      <div class="styles__BuyInformation-sc-fixture">
+        <h3>Em estoque</h3>
+        <div class="styles__PriceContainer-sc-fixture">${priceMarkup}</div>
+        <label>Quantidade</label><input name="qtd"><button>COMPRAR</button>
+      </div>
+    </div>
+    ${relatedMarkup}
+  </main></body></html>`;
+}
+
+test("Marest ignores related and struck prices outside the current main price", async () => {
+  const url = "https://www.marest.com.br/product?sku=3502&nome=3502";
+  await withHtmlFixture(
+    url,
+    marestFixture({
+      priceMarkup: '<p class="prod-price"><s>R$ 19,90</s><span>R$ 16,38</span></p>',
+      relatedMarkup:
+        '<section><h2>Também pode gostar: AMANCO</h2><p class="prod-price">R$ 1,02</p></section>',
+    }),
+    async (page) => {
+      const result = await inspectMarestPrice(page, marestMapping);
+      assert.equal(result.price, 16.38);
+      assert.equal(isConfirmedPriceEvidence(result), true);
+      assert.match(result.selector, /PriceContainer/);
+    },
+  );
+});
+
+test("Marest rejects conflicting main prices and a page from another SKU", async () => {
+  const correctUrl = "https://www.marest.com.br/product?sku=3502&nome=3502";
+  await withHtmlFixture(
+    correctUrl,
+    marestFixture({
+      priceMarkup: '<p class="prod-price">R$ 16,38</p><p class="prod-price">R$ 15,90</p>',
+    }),
+    async (page) => {
+      const result = await inspectMarestPrice(page, marestMapping);
+      assert.equal(result.price, null);
+      assert.match(result.error, /preco principal ambiguo/i);
+    },
+  );
+
+  const wrongUrl = "https://www.marest.com.br/product?sku=9999&nome=9999";
+  await withHtmlFixture(wrongUrl, marestFixture({ sku: "9999" }), async (page) => {
+    const result = await inspectMarestPrice(page, marestMapping);
+    assert.equal(result.price, null);
+    assert.match(result.error, /SKU solicitado/i);
+  });
+});
+
+const megalesteMapping = {
+  sku_concorrente: "335029",
+  produtos: { nome: "AUMENTO P TORNEIRA 3/4 MED 10861 GARDEN" },
+};
+
+function megalesteCard({
+  sku = "335029",
+  title = "AUMENTO P/TORN. 3/4 MED 10861 GARDEN",
+  priceMarkup = '<span class="price">R$ 5,290</span>',
+  hidden = false,
+} = {}) {
+  return `<div class="product-line product-${sku}" data-id="${sku}"${hidden ? ' style="display:none"' : ""}>
+    <a href="/c/produto/${sku}" class="btn-modal show-lupa"></a>
+    <div class="product-content"><h4>${title}</h4><small>Cód. ${sku} Emb.: PC0100/001</small></div>
+    ${priceMarkup}
+    <input type="text" name="qtd"><button class="btn-cart-add">Adic.</button>
+  </div>`;
+}
+
+test("Megaleste uses only the current price in the exact SKU card", async () => {
+  const url = "https://www.megaleste.com.br/c/busca?linha=&q=335029";
+  const html = `<!doctype html><html><body>
+    <section aria-label="Promoções"><span class="price">R$ 2,190</span></section>
+    <div class="search-result">
+      ${megalesteCard({
+        priceMarkup:
+          '<small class="price"><strike>R$ 6,530</strike></small><span class="price text-danger font-weight-bold">R$ 5,290</span>',
+      })}
+      ${megalesteCard({ sku: "999999", title: "OUTRO AMANCO", priceMarkup: '<span class="price">R$ 2,190</span>' })}
+    </div>
+  </body></html>`;
+  await withHtmlFixture(url, html, async (page) => {
+    const result = await inspectMegalestePrice(page, megalesteMapping);
+    assert.equal(result.price, 5.29);
+    assert.equal(isConfirmedPriceEvidence(result), true);
+    assert.equal(result.observedSku, "335029");
+  });
+});
+
+test("Megaleste ignores hidden duplicates but rejects two visible current prices", async () => {
+  const url = "https://www.megaleste.com.br/c/busca?q=335029";
+  await withHtmlFixture(
+    url,
+    `<!doctype html><html><body>${megalesteCard()}${megalesteCard({ hidden: true, priceMarkup: '<span class="price">R$ 2,190</span>' })}</body></html>`,
+    async (page) => {
+      const result = await inspectMegalestePrice(page, megalesteMapping);
+      assert.equal(result.price, 5.29);
+    },
+  );
+
+  await withHtmlFixture(
+    url,
+    `<!doctype html><html><body>${megalesteCard({ priceMarkup: '<span class="price">R$ 5,290</span><span class="price">R$ 4,990</span>' })}</body></html>`,
+    async (page) => {
+      const result = await inspectMegalestePrice(page, megalesteMapping);
+      assert.equal(result.price, null);
+      assert.match(result.error, /preco principal ambiguo/i);
+    },
+  );
+});
+
+test("Megaleste rejects a missing price and a different displayed SKU", async () => {
+  const url = "https://www.megaleste.com.br/c/busca?q=335029";
+  await withHtmlFixture(
+    url,
+    `<!doctype html><html><body>${megalesteCard({ priceMarkup: "" })}</body></html>`,
+    async (page) => {
+      const result = await inspectMegalestePrice(page, megalesteMapping, { waitTimeoutMs: 50 });
+      assert.equal(result.price, null);
+      assert.match(result.error, /preco principal nao encontrado/i);
+    },
+  );
+  await withHtmlFixture(
+    url,
+    `<!doctype html><html><body>${megalesteCard({ sku: "999999" })}</body></html>`,
+    async (page) => {
+      const result = await inspectMegalestePrice(page, megalesteMapping, { waitTimeoutMs: 50 });
+      assert.equal(result.price, null);
+      assert.match(result.error, /cartao exato do produto nao encontrado/i);
+    },
+  );
+});
+
+test("exact SKU remains authoritative when each supplier abbreviates the product title", async () => {
+  await withHtmlFixture(
+    "https://novo.cofema.com.br/page/produto/410409-fixture",
+    cofemaFixture({
+      title: "BIANCO SACHE",
+      priceMarkup: '<div class="produto-preco-row">R$ 32,33</div>',
+    }),
+    async (page) => {
+      const result = await inspectCofemaPrice(page, cofemaMapping);
+      assert.equal(result.price, 32.33);
+      assert.equal(result.productConfirmed, true);
+      assert.equal(result.titleCorroborated, false);
+    },
+  );
+
+  await withHtmlFixture(
+    "https://www.marest.com.br/product?sku=3502&nome=3502",
+    marestFixture({ title: "ADESIVO PVC AMANCO" }),
+    async (page) => {
+      const result = await inspectMarestPrice(page, marestMapping);
+      assert.equal(result.price, 16.38);
+      assert.equal(result.productConfirmed, true);
+      assert.equal(result.titleCorroborated, false);
+    },
+  );
+
+  await withHtmlFixture(
+    "https://www.megaleste.com.br/c/busca?q=335029",
+    `<!doctype html><html><body>${megalesteCard({ title: "AUMENTO PARA TORNEIRA GARDEN" })}</body></html>`,
+    async (page) => {
+      const result = await inspectMegalestePrice(page, megalesteMapping);
+      assert.equal(result.price, 5.29);
+      assert.equal(result.productConfirmed, true);
+      assert.equal(result.titleCorroborated, false);
+    },
+  );
+});
+
 test("currency-required parsing ignores dimensions, codes and quantities around a price", () => {
   const productText = `
     AMANCO - CURVA LONGA ESG 75X90
@@ -264,36 +544,31 @@ test("currency-required parsing ignores dimensions, codes and quantities around 
     R$ 51,700
   `;
 
-  assert.equal(parseBRL(productText, { requireCurrency: true, preferLast: false }), 51.7);
+  assert.equal(parseBRL(productText, { requireCurrency: true }), 51.7);
 });
 
-test("generic parsing preserves its configured first-price behavior for other callers", () => {
+test("generic parsing rejects multiple prices instead of choosing by position", () => {
   assert.equal(
-    parseBRL("R$ 51,700 informacao secundaria R$ 15,117", {
-      requireCurrency: true,
-      preferLast: false,
-    }),
-    51.7,
+    parseBRL("R$ 51,700 informacao secundaria R$ 15,117", { requireCurrency: true }),
+    null,
   );
 });
 
-test("Megaleste mode always chooses the labeled prazo price", () => {
-  const options = { preferPrazo: true };
-  assert.equal(parseBRL("À prazo R$ 42,130 | À vista R$ 40,024", options), 42.13);
-  assert.equal(parseBRL("Preço a prazo: R$ 52,990 | PIX R$ 47,691", options), 52.99);
-  assert.equal(parseBRL("Valor a prazo R$ 18,500 | 10% OFF R$ 16,650", options), 18.5);
-  assert.equal(parseBRL("Prazo R$ 103,457 | boleto R$ 99,000", options), 103.457);
+test("generic parsing does not use labels to guess between conflicting prices", () => {
+  assert.equal(parseBRL("À prazo R$ 42,130 | À vista R$ 40,024"), null);
+  assert.equal(parseBRL("Preço a prazo: R$ 52,990 | PIX R$ 47,691"), null);
+  assert.equal(parseBRL("Valor a prazo R$ 18,500 | 10% OFF R$ 16,650"), null);
+  assert.equal(parseBRL("Prazo R$ 103,457 | boleto R$ 99,000"), null);
 });
 
-test("Megaleste mode accepts one unlabeled price but does not guess between multiple prices", () => {
-  const options = { preferPrazo: true };
-  assert.equal(parseBRL("Produto 12345 R$ 42,130", options), 42.13);
-  assert.equal(parseBRL("R$ 42,130 | R$ 40,024", options), null);
+test("generic parsing accepts one price but does not guess between multiple prices", () => {
+  assert.equal(parseBRL("Produto 12345 R$ 42,130"), 42.13);
+  assert.equal(parseBRL("R$ 42,130 | R$ 40,024"), null);
 });
 
-test("Megaleste mode rejects unavailable products even when a price remains in the DOM", () => {
-  assert.equal(parseBRL("Produto indisponível | À prazo R$ 42,130", { preferPrazo: true }), null);
-  assert.equal(parseBRL("Fora de estoque R$ 42,130", { preferPrazo: true }), null);
+test("generic parsing rejects unavailable products even when a price remains in the DOM", () => {
+  assert.equal(parseBRL("Produto indisponível | À prazo R$ 42,130"), null);
+  assert.equal(parseBRL("Fora de estoque R$ 42,130"), null);
 });
 
 test("rejects prices inside unavailable product blocks", () => {
