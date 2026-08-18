@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assertExecutionAllowed } from "./execution-policy.mjs";
+import { assertExecutionAllowed, shouldPrepareRuntimeSchema } from "./execution-policy.mjs";
 
 test("permite uma coleta vinculada a agenda e familia", () => {
   assert.doesNotThrow(() =>
@@ -66,4 +66,9 @@ test("mantem diagnosticos dry-run disponiveis sem gravacao", () => {
       dryRun: true,
     }),
   );
+});
+
+test("dry-run nao executa preparacao mutavel do schema", () => {
+  assert.equal(shouldPrepareRuntimeSchema({ dryRun: true }), false);
+  assert.equal(shouldPrepareRuntimeSchema({ dryRun: false }), true);
 });

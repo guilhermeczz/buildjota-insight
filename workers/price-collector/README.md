@@ -60,6 +60,9 @@ gravar no banco:
 npm run worker:prices:dry
 ```
 
+O dry-run apenas consulta os mapeamentos: nao prepara/altera o schema, nao cria uma execucao e nao
+persiste historico, status ou ultimo preco.
+
 Para validar com o navegador visivel:
 
 ```bash
@@ -134,7 +137,8 @@ dia que ainda nao foram executadas. Cada agenda roda no maximo uma vez por dia e
 Cada concorrente usa um extrator dedicado e limitado ao produto confirmado:
 
 - COFEMA: resumo principal que contem `main h1` e `.produto-preco .produto-preco-row`.
-- CONSTRUJA: `.stepPreco .stepPrecoContent` da URL e do codigo esperados.
+- CONSTRUJA: `.stepPreco .stepPrecoContent` da URL e do codigo esperados; a mensagem visivel de
+  indisponibilidade no mesmo `.stepPreco` e tratada antes da ausencia de preco.
 - MAREST: rota direta `/product?sku=SKU`, validada pelo codigo exibido, e seu bloco de compra.
 - MEGALESTE: cartao `.product-line[data-id="SKU"]` e seu filho direto `.price`; valores riscados
   dentro desse bloco sao antigos e o unico valor visivel restante e o vigente.

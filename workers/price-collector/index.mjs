@@ -1,5 +1,5 @@
 import { loadWorkerEnv } from "./env.mjs";
-import { assertExecutionAllowed } from "./execution-policy.mjs";
+import { assertExecutionAllowed, shouldPrepareRuntimeSchema } from "./execution-policy.mjs";
 
 loadWorkerEnv();
 
@@ -101,7 +101,7 @@ async function main() {
   const startedAt = new Date();
   const origem = "agendado";
   const database = createDatabaseClient();
-  await ensureRuntimeSchema();
+  if (shouldPrepareRuntimeSchema({ dryRun })) await ensureRuntimeSchema();
   const execution = dryRun
     ? null
     : await createExecution(0, {

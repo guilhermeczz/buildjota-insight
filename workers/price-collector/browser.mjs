@@ -102,7 +102,7 @@ async function saveAuthState(context, statePath) {
 }
 
 async function prepareAuthenticatedSession(context, page, statePath, concorrente) {
-  const maximumAttempts = isConstruja(concorrente) ? 3 : 1;
+  const maximumAttempts = isConstruja(concorrente) ? 3 : isCofema(concorrente) ? 2 : 1;
   let lastError = null;
 
   for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {

@@ -13,3 +13,7 @@ export function assertExecutionAllowed({
     );
   }
 }
+
+export function shouldPrepareRuntimeSchema({ dryRun }) {
+  return dryRun !== true;
+}

@@ -9,6 +9,8 @@ const construjaTitleSelector = "h2[class*='Produto_nomeProduto__']";
 const construjaSkuSelector = "span[class*='Produto_codigoProduto__'] strong";
 const construjaPriceSelector =
   ".stepPreco .stepPrecoContent [class*='Produto_precoProdutoContainer__']";
+const construjaUnavailableSelector =
+  ".stepPreco [class*='ProdutoCompactCarrinho_mensagemIndisponivel__']";
 const cofemaPriceSelector = ".produto-preco .produto-preco-row";
 const marestRootSelector = "[class*='ProductRowContainer-sc-']";
 const marestPriceSelector =
@@ -670,7 +672,10 @@ export async function inspectConstrujaPrice(page, mapping, options = {}) {
     return failed("CONSTRUJA: URL nao corresponde a uma pagina de produto");
   }
   if (!expectedSku || urlSku !== expectedSku) {
-    return failed("CONSTRUJA: produto nao corresponde ao SKU solicitado");
+    return failed(
+      `CONSTRUJA: produto nao corresponde ao SKU solicitado ` +
+        `(esperado ${expectedSku || "ausente"}; URL ${urlSku || "ausente"})`,
+    );
   }
 
   await page
@@ -691,7 +696,7 @@ export async function inspectConstrujaPrice(page, mapping, options = {}) {
 
   const product = await page
     .evaluate(
-      ({ titleSelector, skuSelector, priceSelector }) => {
+      ({ titleSelector, skuSelector, priceSelector, unavailableSelector }) => {
         const oldPricePattern =
           /preco(?:antigo|anterior|semdesconto)|valor(?:antigo|anterior)|oldprice|priceold|riscado|strike/i;
         const isVisible = (element) => {
@@ -751,9 +756,19 @@ export async function inspectConstrujaPrice(page, mapping, options = {}) {
             if (!(root instanceof HTMLElement) || !root.querySelector(".stepPreco")) return null;
 
             const skuElement = header.querySelector(skuSelector);
+            const priceStep = root.querySelector(".stepPreco");
+            const unavailableElement = [...root.querySelectorAll(unavailableSelector)].find(
+              isVisible,
+            );
             const priceElements = [...root.querySelectorAll(priceSelector)].filter(
               (element) => isVisible(element) && !isOldPriceNode(element, element),
             );
+            const priceStepText = String(priceStep?.innerText || priceStep?.textContent || "")
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
 
             return {
               title: (heading.innerText || heading.textContent || "").replace(/\s+/g, " ").trim(),
@@ -762,6 +777,11 @@ export async function inspectConstrujaPrice(page, mapping, options = {}) {
                 .replace(/\s+/g, " ")
                 .trim(),
               priceScopeConfirmed: true,
+              unavailable:
+                Boolean(unavailableElement) ||
+                /produto indisponivel|fora\s+(?:de|do)\s+estoque|sem\s+estoque|esgotado/.test(
+                  priceStepText,
+                ),
               prices: priceElements.map((element) => ({
                 rawText: visibleCurrentText(element),
                 visible: true,
@@ -776,6 +796,7 @@ export async function inspectConstrujaPrice(page, mapping, options = {}) {
         titleSelector: construjaTitleSelector,
         skuSelector: construjaSkuSelector,
         priceSelector: construjaPriceSelector,
+        unavailableSelector: construjaUnavailableSelector,
       },
     )
     .catch(() => []);
@@ -788,10 +809,14 @@ export async function inspectConstrujaPrice(page, mapping, options = {}) {
     );
   }
 
-  const [{ title, observedSku, productText, prices, priceScopeConfirmed }] = product;
+  const [{ title, observedSku, productText, unavailable, prices, priceScopeConfirmed }] = product;
   const identity = { title, observedSku };
   if (observedSku !== expectedSku) {
-    return failed("CONSTRUJA: produto nao corresponde ao SKU solicitado", identity);
+    return failed(
+      `CONSTRUJA: produto nao corresponde ao SKU solicitado ` +
+        `(esperado ${expectedSku}; URL ${urlSku}; exibido ${observedSku || "ausente"})`,
+      identity,
+    );
   }
   if (isConstrujaLoginWallText(productText)) {
     return failed("CONSTRUJA: sessao expirada; preco exige login", {
@@ -813,6 +838,7 @@ export async function inspectConstrujaPrice(page, mapping, options = {}) {
   }
   return finalizeSingleMainPrice(baseResult, {
     ...identity,
+    unavailable,
     prices,
     productConfirmed: true,
     priceScopeConfirmed,

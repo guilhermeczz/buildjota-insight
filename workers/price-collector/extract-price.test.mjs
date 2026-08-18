@@ -278,6 +278,50 @@ test("Construja rejects a confirmed product with no main price", async () => {
   });
 });
 
+test("Construja identifies an unavailable product inside the exact main purchase block", async () => {
+  await withConstrujaFixture(
+    {
+      priceMarkup: `
+        <span class="ProdutoCompactCarrinho_mensagemIndisponivel__fixture">
+          <span>Produto Indisponível</span>
+          <button aria-label="Avise-me quando chegar">Avise-me</button>
+        </span>`,
+      relatedMarkup: `
+        <section aria-label="Similares">
+          <article><h3>AMANCO - OUTRO PRODUTO</h3><span>R$ 2,190</span></article>
+        </section>`,
+    },
+    async (page) => {
+      const result = await inspectConstrujaPrice(page, construjaMapping, { waitTimeoutMs: 50 });
+      assert.equal(result.price, null);
+      assert.equal(result.productConfirmed, true);
+      assert.match(result.error, /CONSTRUJA: produto indisponivel/i);
+    },
+  );
+});
+
+test("Construja ignores an unavailable badge that belongs only to a related product", async () => {
+  await withConstrujaFixture(
+    {
+      priceMarkup: mainPrice("R$ 4,120"),
+      relatedMarkup: `
+        <section aria-label="Similares">
+          <article>
+            <span class="ProdutoCompactCarrinho_mensagemIndisponivel__fixture">
+              Produto Indisponível
+            </span>
+            <span>R$ 2,190</span>
+          </article>
+        </section>`,
+    },
+    async (page) => {
+      const result = await inspectConstrujaPrice(page, construjaMapping);
+      assert.equal(result.price, 4.12);
+      assert.equal(result.error, "");
+    },
+  );
+});
+
 test("Construja identifies the plural login wall instead of reporting a missing price", async () => {
   assert.equal(isConstrujaLoginWallText("FAÇA LOGIN OU CADASTRE-SE PARA VER OS PREÇOS"), true);
 
