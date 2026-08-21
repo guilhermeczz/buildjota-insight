@@ -13,7 +13,7 @@ DATABASE_URL=postgres://radar:senha@localhost:5432/radar_construjota
 
 COFEMA_LOGIN=
 COFEMA_PASSWORD=
-COFEMA_BASE_URL=https://novo.cofema.com.br
+COFEMA_BASE_URL=https://www.cofema.com.br
 COFEMA_LOGIN_URL=/
 CONSTRUJA_LOGIN=
 CONSTRUJA_PASSWORD=

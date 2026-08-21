@@ -50,7 +50,7 @@ const actionTimeoutMs = envNumber("WORKER_ACTION_TIMEOUT_MS", 5000, 1000, 15000)
 const productSignalTimeoutMs = envNumber("WORKER_PRICE_SIGNAL_TIMEOUT_MS", 4500, 1000, 15000);
 const productSettleMs = envNumber("WORKER_PRODUCT_SETTLE_MS", 350, 0, 3000);
 const loginSettleMs = envNumber("WORKER_LOGIN_SETTLE_MS", 1200, 0, 5000);
-const cofemaBaseUrl = process.env.COFEMA_BASE_URL ?? "https://novo.cofema.com.br";
+const cofemaBaseUrl = process.env.COFEMA_BASE_URL ?? "https://www.cofema.com.br";
 const cofemaLoginUrl = process.env.COFEMA_LOGIN_URL ?? "/";
 const cofemaUnidade = String(process.env.COFEMA_UNIDADE ?? "").trim();
 const marestRegiao = process.env.MAREST_REGIAO ?? "SP";
@@ -102,7 +102,7 @@ async function saveAuthState(context, statePath) {
 }
 
 async function prepareAuthenticatedSession(context, page, statePath, concorrente) {
-  const maximumAttempts = isConstruja(concorrente) ? 3 : isCofema(concorrente) ? 2 : 1;
+  const maximumAttempts = isConstruja(concorrente) ? 3 : 2;
   let lastError = null;
 
   for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
@@ -193,7 +193,14 @@ function cofemaUrl(value = "/") {
 
   try {
     const url = new URL(value || "/", base);
-    return url.origin === base.origin ? url.toString() : new URL("/", base).toString();
+    if (!/(^|\.)cofema\.com\.br$/i.test(url.hostname)) return new URL("/", base).toString();
+
+    // The former novo.cofema.com.br entry point now redirects to www.cofema.com.br. Keep the
+    // known product path, but use one canonical origin so authentication storage remains valid.
+    url.protocol = base.protocol;
+    url.hostname = base.hostname;
+    url.port = base.port;
+    return url.toString();
   } catch {
     return new URL("/", base).toString();
   }
@@ -204,9 +211,9 @@ function isNewCofemaProductUrl(value) {
 
   try {
     const url = new URL(value, cofemaBaseUrl);
-    const base = new URL(cofemaBaseUrl);
     return (
-      url.origin === base.origin && /^\/(?:[a-z]{2}\/)?page\/produto\/[^/]+/i.test(url.pathname)
+      /(^|\.)cofema\.com\.br$/i.test(url.hostname) &&
+      /^\/(?:[a-z]{2}\/)?page\/produto\/[^/]+/i.test(url.pathname)
     );
   } catch {
     return false;
@@ -823,9 +830,22 @@ async function waitForMarestLogin(page) {
 async function isMarestLoggedIn(page) {
   if (await isMarestLoginFormVisible(page)) return false;
 
+  const authenticatedHeader = await page
+    .locator("header#hdr")
+    .evaluate((header) => {
+      const text = String(header.innerText || header.textContent || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+      return /\bola,?\s+\S/.test(text) && /ver minha conta/.test(text) && /\bsair\b/.test(text);
+    })
+    .catch(() => false);
+  if (authenticatedHeader) return true;
+
   const path = new URL(page.url()).pathname.replace(/\/+$/, "");
   if (path === "/login" || (await isLoginRequired(page))) return false;
-  if (path === "/home" || path.startsWith("/product")) return true;
 
   return pageHasText(page, [/ola,?\s+[^\s]/, /ver minha conta/, /sair/, /meus pedidos/]);
 }
@@ -1104,10 +1124,14 @@ async function waitForMegalesteLogin(page) {
 async function isMegalesteLoggedIn(page) {
   if (await isMegalesteLoginFormVisible(page)) return false;
 
-  const path = new URL(page.url()).pathname.replace(/\/+$/, "");
-  if (path === "/c" || path.startsWith("/c/")) return true;
+  const authenticatedDom = await page
+    .locator("body#cliente-page, a[href*='logout']")
+    .count()
+    .then((count) => count > 0)
+    .catch(() => false);
+  if (authenticatedDom) return true;
 
-  return pageHasText(page, [/centermak/, /seus pedidos/, /todos os produtos/]);
+  return pageHasText(page, [/seus pedidos/, /todos os produtos/]);
 }
 
 async function goToMegalesteCustomerHome(page, concorrente) {
@@ -2803,11 +2827,9 @@ async function collectGroup(browser, group, options = {}) {
       });
     }
 
-    // Construja sessions may expire while their storage-state file remains present.
-    // Always visit the login page and positively validate that session before collecting.
-    if (!existsSync(statePath) || isConstruja(group.concorrente) || isCofema(group.concorrente)) {
-      await prepareAuthenticatedSession(context, page, statePath, group.concorrente);
-    }
+    // Persisted cookies may expire while their storage-state file remains present. Always visit
+    // the provider and positively validate the authenticated DOM before collecting.
+    await prepareAuthenticatedSession(context, page, statePath, group.concorrente);
 
     console.log(`[${group.concorrente.nome}] Iniciando ${group.mapeamentos.length} mapeamento(s).`);
 
@@ -3111,12 +3133,8 @@ async function shouldRetryLogin(page, mapping, concorrente) {
   if (isCofema(concorrente)) return !(await isCofemaLoggedIn(page));
   if (isConstruja(concorrente)) return isConstrujaLoggedOut(page);
   if (isMarest(concorrente)) return !(await isMarestLoggedIn(page));
+  if (isMegaleste(concorrente)) return !(await isMegalesteLoggedIn(page));
   if (await isLoginRequired(page)) return true;
-
-  if (isMegaleste(concorrente)) {
-    const path = new URL(page.url()).pathname.replace(/\/+$/, "");
-    if (path === "/sp" || path === "") return true;
-  }
 
   return false;
 }

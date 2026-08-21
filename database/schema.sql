@@ -174,7 +174,7 @@ create index if not exists idx_agenda_coletas_ativo_horario on agenda_coletas(at
 
 insert into concorrentes (nome, site_url, login_url, tipo_consulta, observacoes, ativo)
 values
-  ('COFEMA', 'https://novo.cofema.com.br', 'https://novo.cofema.com.br/', 'SKU', '', true),
+  ('COFEMA', 'https://www.cofema.com.br', 'https://www.cofema.com.br/', 'SKU', '', true),
   ('CONSTRUJA', 'https://www.construja.com.br', 'https://www.construja.com.br', 'SKU', '', true),
   ('MAREST', 'https://www.marest.com.br', 'https://www.marest.com.br', 'SKU', '', true),
   ('MEGALESTE', 'https://www.megaleste.com.br', 'https://www.megaleste.com.br', 'SKU', '', true)
