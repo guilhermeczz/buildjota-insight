@@ -728,13 +728,13 @@ async function loginMarest(page, concorrente, credentials) {
   await page.waitForLoadState("load", { timeout: quickLoadTimeoutMs }).catch(() => null);
   await dismissOverlays(page);
 
-  if (await isMarestLoggedIn(page)) {
+  const sessionEntry = await waitForMarestSessionEntry(page);
+  if (sessionEntry === "authenticated") {
     await goToMarestHome(page, concorrente);
     return;
   }
 
-  const formVisible = await waitForMarestLoginForm(page);
-  if (!formVisible) {
+  if (sessionEntry !== "login-form") {
     throw new Error("Formulario de login da MAREST nao abriu");
   }
 
@@ -795,15 +795,21 @@ async function loginMarest(page, concorrente, credentials) {
   await goToMarestHome(page, concorrente);
 }
 
-async function waitForMarestLoginForm(page) {
-  return page
-    .locator("input[type='password'], input[placeholder*='senha' i]")
-    .first()
-    .waitFor({ state: "visible", timeout: 8000 })
-    .then(
-      () => true,
-      () => false,
-    );
+async function waitForMarestSessionEntry(page) {
+  for (let attempt = 1; attempt <= 12; attempt += 1) {
+    await page
+      .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
+      .catch(() => null);
+
+    // The authenticated home and the login form are rendered asynchronously. On slower runs,
+    // waiting only for the password field misclassifies an already authenticated home as a
+    // missing form. Accept whichever confirmed state becomes visible first.
+    if (await isMarestLoggedIn(page)) return "authenticated";
+    if (await isMarestLoginFormVisible(page)) return "login-form";
+    await page.waitForTimeout(750);
+  }
+
+  return "missing";
 }
 
 async function isMarestLoginFormVisible(page) {
