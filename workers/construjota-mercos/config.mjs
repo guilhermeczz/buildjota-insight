@@ -2,6 +2,15 @@ import { join, resolve } from "node:path";
 
 const DEFAULT_BASE_URL = "https://construjota2.mercos.com";
 
+// Limites tecnicos internos. Eles nao fazem parte da configuracao operacional do usuario:
+// a agenda expoe somente horario e intervalo entre produtos.
+export const CONSTRUJOTA_MERCOS_INTERNAL_LIMITS = Object.freeze({
+  navigationTimeoutMs: 60_000,
+  signalTimeoutMs: 30_000,
+  actionTimeoutMs: 15_000,
+  navigationAttempts: 3,
+});
+
 function envNumber(name, fallback, min, max) {
   const parsed = Number(process.env[name]);
   if (!Number.isFinite(parsed)) return fallback;
@@ -32,22 +41,17 @@ export function construjotaMercosConfig(overrides = {}) {
       join(resolve(process.cwd(), ".worker-auth"), "construjota-mercos.json"),
     diagnosticsDir: overrides.diagnosticsDir ?? resolve(process.cwd(), ".worker-diagnostics"),
     navigationTimeoutMs:
-      overrides.navigationTimeoutMs ??
-      envNumber("CONSTRUJOTA_MERCOS_NAVIGATION_TIMEOUT_MS", 30_000, 5_000, 120_000),
+      overrides.navigationTimeoutMs ?? CONSTRUJOTA_MERCOS_INTERNAL_LIMITS.navigationTimeoutMs,
     signalTimeoutMs:
-      overrides.signalTimeoutMs ??
-      envNumber("CONSTRUJOTA_MERCOS_SIGNAL_TIMEOUT_MS", 12_000, 1_000, 60_000),
+      overrides.signalTimeoutMs ?? CONSTRUJOTA_MERCOS_INTERNAL_LIMITS.signalTimeoutMs,
     actionTimeoutMs:
-      overrides.actionTimeoutMs ??
-      envNumber("CONSTRUJOTA_MERCOS_ACTION_TIMEOUT_MS", 7_000, 1_000, 30_000),
+      overrides.actionTimeoutMs ?? CONSTRUJOTA_MERCOS_INTERNAL_LIMITS.actionTimeoutMs,
     productIntervalMs:
       overrides.productIntervalMs ??
       envNumber("CONSTRUJOTA_MERCOS_PRODUCT_INTERVAL_MS", 4_000, 1_000, 60_000),
     navigationAttempts:
-      overrides.navigationAttempts ?? envNumber("CONSTRUJOTA_MERCOS_NAVIGATION_ATTEMPTS", 3, 1, 3),
-    blockHeavyAssets:
-      overrides.blockHeavyAssets ??
-      String(process.env.CONSTRUJOTA_MERCOS_BLOCK_HEAVY_ASSETS ?? "true").toLowerCase() !== "false",
+      overrides.navigationAttempts ?? CONSTRUJOTA_MERCOS_INTERNAL_LIMITS.navigationAttempts,
+    blockHeavyAssets: overrides.blockHeavyAssets ?? true,
   };
 }
 

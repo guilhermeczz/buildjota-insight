@@ -22,7 +22,7 @@
     "worker:server": "node workers/price-collector/server.mjs",
     "test:prices": "node --test --test-concurrency=1 workers/price-collector/extract-price.test.mjs workers/price-collector/database.test.mjs workers/construjota-mercos/extract.test.mjs workers/construjota-mercos/browser.test.mjs",
     "test:schedule": "node --test workers/price-collector/schedule.test.mjs workers/construjota-mercos/schedule.test.mjs",
-    "test:worker": "node --test workers/price-collector/schedule.test.mjs workers/price-collector/execution-policy.test.mjs workers/construjota-mercos/schedule.test.mjs"
+    "test:worker": "node --test workers/price-collector/schedule.test.mjs workers/price-collector/execution-policy.test.mjs workers/construjota-mercos/schedule.test.mjs workers/construjota-mercos/config.test.mjs workers/construjota-mercos/cli.test.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

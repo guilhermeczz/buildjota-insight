@@ -2,20 +2,16 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { loadWorkerEnv } from "../workers/price-collector/env.mjs";
+import { cliArgValue } from "../workers/construjota-mercos/cli.mjs";
 
 loadWorkerEnv();
 
 const apply = process.argv.includes("--apply");
 const headed = process.argv.includes("--headed");
-const produtoId = argValue("--produto-id");
-const sku = argValue("--sku");
-const format = (argValue("--format") || "csv").toLowerCase();
-
-function argValue(name) {
-  const prefix = `${name}=`;
-  const value = process.argv.find((arg) => arg.startsWith(prefix));
-  return value ? value.slice(prefix.length).trim() : "";
-}
+const cliArgs = process.argv.slice(2);
+const produtoId = cliArgValue(cliArgs, "--produto-id");
+const sku = cliArgValue(cliArgs, "--sku");
+const format = (cliArgValue(cliArgs, "--format") || "csv").toLowerCase();
 
 function csvCell(value) {
   const text = value == null ? "" : String(value);

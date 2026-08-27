@@ -4,28 +4,25 @@ import {
   parseSimulationDate,
   saoPauloDateParts,
 } from "./schedule.mjs";
+import { cliArgValue, normalizeDryRunProductUrl } from "./cli.mjs";
+import { normalizeMercosBaseUrl } from "./config.mjs";
 
 loadWorkerEnv();
 
 const args = new Set(process.argv.slice(2));
+const cliArgs = process.argv.slice(2);
 const dryRun = args.has("--dry-run");
 const headed = args.has("--headed");
 const scheduled = args.has("--scheduled");
-const produtoId = argValue("--produto-id");
-const mapeamentoId = argValue("--mapeamento-id");
-const sku = argValue("--sku");
-const fixtureUrl = argValue("--url");
-const agendaId = argValue("--agenda-id");
-const simulatedDate = parseSimulationDate(argValue("--simulate-date"));
-
-function argValue(name) {
-  const prefix = `${name}=`;
-  const value = process.argv.find((arg) => arg.startsWith(prefix));
-  return value ? value.slice(prefix.length).trim() : "";
-}
+const produtoId = cliArgValue(cliArgs, "--produto-id");
+const mapeamentoId = cliArgValue(cliArgs, "--mapeamento-id");
+const sku = cliArgValue(cliArgs, "--sku");
+const fixtureUrlArgument = cliArgValue(cliArgs, "--url");
+const agendaId = cliArgValue(cliArgs, "--agenda-id");
+const simulatedDate = parseSimulationDate(cliArgValue(cliArgs, "--simulate-date"));
 
 function assertExecutionAllowed() {
-  if (fixtureUrl && !dryRun) {
+  if (fixtureUrlArgument && !dryRun) {
     throw new Error("--url e permitido somente com --dry-run");
   }
   if (simulatedDate && !dryRun) {
@@ -55,6 +52,7 @@ function summarize(results) {
 
 async function main() {
   assertExecutionAllowed();
+  const fixtureUrl = normalizeDryRunProductUrl(fixtureUrlArgument, normalizeMercosBaseUrl());
   const effectiveDate = simulatedDate ?? new Date();
   const localDate = saoPauloDateParts(effectiveDate);
   if (!isConstrujotaMercosBusinessDay(effectiveDate)) {

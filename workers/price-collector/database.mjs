@@ -811,6 +811,28 @@ export function normalizeConstrujotaMercosResultForPersistence(item) {
   };
 }
 
+export function summarizeConstrujotaMercosPersistedResults(persistedResults = []) {
+  const persisted = Array.isArray(persistedResults) ? persistedResults : [];
+  const totalSucesso = persisted.filter((item) => item.status === "sucesso").length;
+  const totalIndisponivel = persisted.filter((item) =>
+    ["indisponivel", "indisponivel_sem_historico"].includes(item.status),
+  ).length;
+  const totalErro = persisted.length - totalSucesso - totalIndisponivel;
+
+  // Indisponibilidade e um resultado esperado: a tentativa foi concluida e o
+  // ultimo preco confirmado foi preservado. Ela fica visivel no historico e na
+  // contagem, mas somente falhas reais acionam status parcial/erro na agenda.
+  const status = totalErro === 0 ? "sucesso" : totalErro === persisted.length ? "erro" : "parcial";
+
+  return {
+    totalProcessados: persisted.length,
+    totalSucesso,
+    totalIndisponivel,
+    totalErro,
+    status,
+  };
+}
+
 async function persistConstrujotaMercosResult(client, item, executionId, collectedAt) {
   const mapeamentoId = String(item?.mapeamento_id ?? item?.mapeamentoId ?? "").trim();
   if (!mapeamentoId) throw new Error("mapeamento_id CONSTRUJOTA_MERCOS nao informado");
@@ -867,6 +889,7 @@ async function persistConstrujotaMercosResult(client, item, executionId, collect
       ],
     );
   } else {
+    const indisponivel = ["indisponivel", "indisponivel_sem_historico"].includes(normalized.status);
     await client.query(
       `update mapeamentos_construjota_mercos
        set ultima_tentativa_em = $1,
@@ -876,7 +899,7 @@ async function persistConstrujotaMercosResult(client, item, executionId, collect
       [
         collectedAt,
         normalized.status,
-        String(normalized.mensagem ?? "").slice(0, 1000),
+        indisponivel ? null : String(normalized.mensagem ?? "").slice(0, 1000),
         mapeamentoId,
       ],
     );
@@ -999,17 +1022,8 @@ export async function registerConstrujotaMercosResults(resultados, mensagem, opt
       persisted.push(await persistConstrujotaMercosResult(client, item, executionId, collectedAt));
     }
 
-    const totalSucesso = persisted.filter((item) => item.status === "sucesso").length;
-    const totalIndisponivel = persisted.filter((item) =>
-      ["indisponivel", "indisponivel_sem_historico"].includes(item.status),
-    ).length;
-    const totalErro = persisted.length - totalSucesso - totalIndisponivel;
-    const status =
-      totalSucesso === persisted.length
-        ? "sucesso"
-        : totalErro === persisted.length
-          ? "erro"
-          : "parcial";
+    const { totalProcessados, totalSucesso, totalIndisponivel, totalErro, status } =
+      summarizeConstrujotaMercosPersistedResults(persisted);
     const finishedAt = new Date();
     const finalMessage = String(
       mensagem ??
@@ -1025,7 +1039,7 @@ export async function registerConstrujotaMercosResults(resultados, mensagem, opt
       [
         status,
         finishedAt.toISOString(),
-        persisted.length,
+        totalProcessados,
         totalSucesso,
         totalIndisponivel,
         totalErro,
@@ -1040,14 +1054,14 @@ export async function registerConstrujotaMercosResults(resultados, mensagem, opt
         `update agenda_construjota_mercos
          set ultima_execucao = $1, ultimo_status = $2, ultimo_erro = $3
          where id = 1`,
-        [finishedAt.toISOString(), status, status === "sucesso" ? null : finalMessage],
+        [finishedAt.toISOString(), status, totalErro === 0 ? null : finalMessage],
       );
     }
 
     return {
       id: executionId,
       status,
-      total_processados: persisted.length,
+      total_processados: totalProcessados,
       total_sucesso: totalSucesso,
       total_indisponivel: totalIndisponivel,
       total_erro: totalErro,

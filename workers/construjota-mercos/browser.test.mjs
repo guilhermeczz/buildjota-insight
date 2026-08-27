@@ -14,21 +14,31 @@ import {
 
 const fixtureBaseUrl = "https://mercos.fixture";
 
-function loginHtml(valid = true) {
+function loginHtml(valid = true, options = {}) {
+  const fields = options.unlabelled
+    ? `<input id="email" placeholder="E-mail" type="email" name="email">
+       <input id="password" placeholder="Senha" type="password" name="password">
+       <button type="button">visibility</button>
+       <button type="submit">Entrar</button>`
+    : `<label>E-mail<input aria-label="E-mail"></label>
+       <label>Senha<input aria-label="Senha" type="password"></label>
+       <button type="submit">Entrar</button>`;
   return `<!doctype html><html><body>
-    <label>E-mail<input aria-label="E-mail"></label>
-    <label>Senha<input aria-label="Senha" type="password"></label>
-    <button type="button">Entrar</button>
-    <div id="error"></div>
+    <div id="root"></div>
     <script>
-      document.querySelector('button').addEventListener('click', () => {
-        if (${JSON.stringify(valid)}) {
-          localStorage.setItem('mercos-fixture-auth', 'ok');
-          location.href = '/';
-        } else {
-          document.querySelector('#error').textContent = 'E-mail ou senha inválidos';
-        }
-      });
+      const mountLogin = () => {
+        document.querySelector('#root').innerHTML = ${JSON.stringify(`${fields}<div id="error"></div>`)};
+        document.querySelector('button[type="submit"]').addEventListener('click', (event) => {
+          event.preventDefault();
+          if (${JSON.stringify(valid)}) {
+            localStorage.setItem('mercos-fixture-auth', 'ok');
+            location.href = '/';
+          } else {
+            document.querySelector('#error').textContent = 'E-mail ou senha inválidos';
+          }
+        });
+      };
+      setTimeout(mountLogin, ${Math.max(0, Number(options.delayMs) || 0)});
     </script>
   </body></html>`;
 }
@@ -88,7 +98,10 @@ async function installFixtureRoutes(context, options = {}) {
       await route.fulfill({
         status: 200,
         contentType: "text/html; charset=utf-8",
-        body: loginHtml(options.validLogin !== false),
+        body: loginHtml(options.validLogin !== false, {
+          unlabelled: options.unlabelledLogin === true,
+          delayMs: options.loginFormDelayMs,
+        }),
       });
       return;
     }
@@ -161,6 +174,28 @@ test("logs in with semantic controls, saves state and reuses the authenticated s
   });
   await second.close();
   assert.equal(counters.loginAttempts, 1, "a sessao salva deve evitar um segundo login");
+});
+
+test("logs in with current Mercos input markup after asynchronous form rendering", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mercos-current-login-test-"));
+  const counters = { loginAttempts: 0 };
+  const collector = await createConstrujotaMercosBrowser({
+    config: config(join(dir, "state.json"), { signalTimeoutMs: 50 }),
+    setupContext: (context) =>
+      installFixtureRoutes(context, {
+        counters,
+        unlabelledLogin: true,
+        loginFormDelayMs: 350,
+      }),
+    onLogin: () => {
+      counters.loginAttempts += 1;
+    },
+  });
+  try {
+    assert.equal(counters.loginAttempts, 1);
+  } finally {
+    await collector.close();
+  }
 });
 
 test("renews an expired session only once and retries the same product safely", async () => {

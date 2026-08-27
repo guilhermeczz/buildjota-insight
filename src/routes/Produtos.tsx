@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import PageHeader from "@/components/layout/PageHeader";
 import {
   AlertDialog,
@@ -247,7 +247,7 @@ export default function Produtos() {
   const [importFilename, setImportFilename] = useState("");
   const [importing, setImporting] = useState(false);
 
-  async function refreshData() {
+  const refreshData = useCallback(async (options: { silent?: boolean } = {}) => {
     const [familiasResult, produtosResult] = await Promise.all([
       apiClient.from("familias").select("id,nome,ativo").order("nome", { ascending: true }),
       apiClient
@@ -259,7 +259,7 @@ export default function Produtos() {
     ]);
 
     if (familiasResult.error || produtosResult.error) {
-      toast.error("Não foi possível carregar os produtos");
+      if (!options.silent) toast.error("Não foi possível carregar os produtos");
       setLoading(false);
       return;
     }
@@ -272,11 +272,25 @@ export default function Produtos() {
       ),
     );
     setLoading(false);
-  }
+  }, []);
 
   useEffect(() => {
     void refreshData();
-  }, []);
+
+    const refreshSilently = () => void refreshData({ silent: true });
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") refreshSilently();
+    };
+    const intervalId = window.setInterval(refreshSilently, 60_000);
+    window.addEventListener("focus", refreshSilently);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshSilently);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [refreshData]);
 
   const activeFamilias = useMemo(() => familias.filter((familia) => familia.ativo), [familias]);
 

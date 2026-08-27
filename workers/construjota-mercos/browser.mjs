@@ -51,6 +51,93 @@ async function firstVisible(locator) {
   return null;
 }
 
+async function firstVisibleCandidate(candidates) {
+  for (const candidate of candidates) {
+    const visible = await firstVisible(candidate).catch(() => null);
+    if (visible) return visible;
+  }
+  return null;
+}
+
+function loginControlCandidates(page) {
+  return {
+    email: [
+      // Keep the documented semantic selectors as the primary contract. The current
+      // Mercos markup does not associate its visible text with the inputs, so the
+      // narrowly scoped input fallbacks below are required in production.
+      page.getByLabel("E-mail", { exact: true }),
+      page.getByLabel(/^e-?mail\s*\*?$/i),
+      page.locator('input[type="email"]'),
+      page.locator('input[name="email" i]'),
+      page.locator('input[id="email" i]'),
+      page.getByPlaceholder(/^e-?mail\s*\*?$/i),
+    ],
+    password: [
+      page.getByLabel("Senha", { exact: true }),
+      page.getByLabel(/^senha\s*\*?$/i),
+      page.locator('input[type="password"]'),
+      page.locator('input[name="password" i]'),
+      page.locator('input[id="password" i]'),
+      page.getByPlaceholder(/^senha\s*\*?$/i),
+    ],
+    submit: [
+      page.getByRole("button", { name: "Entrar", exact: true }),
+      page.getByRole("button", { name: /^entrar$/i }),
+      page.locator('button[type="submit"]'),
+      page.locator('input[type="submit"]'),
+    ],
+  };
+}
+
+async function findVisibleLoginControls(page, timeoutMs) {
+  const candidates = loginControlCandidates(page);
+  const deadline = Date.now() + Math.max(1_000, Number(timeoutMs) || 0);
+
+  do {
+    const [email, password, submit] = await Promise.all([
+      firstVisibleCandidate(candidates.email),
+      firstVisibleCandidate(candidates.password),
+      firstVisibleCandidate(candidates.submit),
+    ]);
+    if (email && password && submit) return { email, password, submit };
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await page.waitForTimeout(Math.min(250, remainingMs));
+  } while (Date.now() < deadline);
+
+  return null;
+}
+
+async function openLoginForm(page, config) {
+  const formTimeoutMs = Math.max(Number(config.signalTimeoutMs) || 0, 30_000);
+  let lastNavigationError = null;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      await page.goto(config.loginUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: config.navigationTimeoutMs,
+      });
+    } catch (error) {
+      lastNavigationError = error;
+    }
+
+    // A navigation timeout does not necessarily mean the SPA failed. Its app shell
+    // may already be usable while a slow third-party resource is still pending.
+    const controls = await findVisibleLoginControls(page, formTimeoutMs);
+    if (controls) return controls;
+
+    if (attempt < 2) await page.waitForTimeout(750);
+  }
+
+  throw new Error(
+    `CONSTRUJOTA_MERCOS: formulario de login nao carregou${
+      lastNavigationError ? " apos falha de navegacao" : ""
+    }`,
+  );
+}
+
 async function hasInvalidCredentialMessage(page) {
   return Boolean(
     await firstVisible(
@@ -104,20 +191,17 @@ async function waitForAuthenticatedHome(page, timeoutMs) {
 
 export async function loginConstrujotaMercos(page, config = construjotaMercosConfig()) {
   const credentials = construjotaMercosCredentials(config);
-  await page.goto(config.loginUrl, {
-    waitUntil: "domcontentloaded",
-    timeout: config.navigationTimeoutMs,
-  });
+  const { email, password, submit } = await openLoginForm(page, config);
 
-  const email = page.getByLabel("E-mail", { exact: true });
-  const password = page.getByLabel("Senha", { exact: true });
-  const submit = page.getByRole("button", { name: "Entrar", exact: true });
-  await email.waitFor({ state: "visible", timeout: config.signalTimeoutMs });
-  await password.waitFor({ state: "visible", timeout: config.signalTimeoutMs });
-  await submit.waitFor({ state: "visible", timeout: config.signalTimeoutMs });
-  await email.fill(credentials.login);
-  await password.fill(credentials.password);
-  await submit.click();
+  try {
+    await email.fill(credentials.login);
+    await password.fill(credentials.password);
+    await submit.click();
+  } catch {
+    await email.fill("").catch(() => {});
+    await password.fill("").catch(() => {});
+    throw new Error("CONSTRUJOTA_MERCOS: nao foi possivel enviar o formulario de login");
+  }
 
   const confirmed = await waitForAuthenticatedHome(page, config.navigationTimeoutMs);
   if (!confirmed || (await hasInvalidCredentialMessage(page))) {
@@ -332,7 +416,9 @@ export async function createConstrujotaMercosBrowser(options = {}) {
         waitUntil: "domcontentloaded",
         timeout: config.navigationTimeoutMs,
       });
-      await waitForAuthenticatedHome(page, config.signalTimeoutMs).catch(() => false);
+      if (!loginPath(page.url())) {
+        await waitForAuthenticatedHome(page, config.signalTimeoutMs).catch(() => false);
+      }
       if (await isConstrujotaMercosSessionValid(page)) return;
     }
     options.onLogin?.({ reauthentication: force });

@@ -5,6 +5,7 @@ import {
   normalizeConstrujotaMercosResultForPersistence,
   normalizeResultForPersistence,
   persistConstrujotaMercosResultForTest,
+  summarizeConstrujotaMercosPersistedResults,
 } from "./database.mjs";
 
 const competitors = ["COFEMA", "CONSTRUJA", "MAREST", "MEGALESTE"];
@@ -162,6 +163,42 @@ test("CONSTRUJOTA_MERCOS keeps discovery failures distinct from competitor error
   }
 });
 
+test("CONSTRUJOTA_MERCOS does not turn unavailable products into execution errors", () => {
+  const summary = summarizeConstrujotaMercosPersistedResults([
+    { status: "sucesso" },
+    { status: "indisponivel" },
+    { status: "indisponivel_sem_historico" },
+  ]);
+
+  assert.deepEqual(summary, {
+    totalProcessados: 3,
+    totalSucesso: 1,
+    totalIndisponivel: 2,
+    totalErro: 0,
+    status: "sucesso",
+  });
+  assert.equal(
+    summarizeConstrujotaMercosPersistedResults([
+      { status: "indisponivel" },
+      { status: "indisponivel_sem_historico" },
+    ]).status,
+    "sucesso",
+  );
+});
+
+test("CONSTRUJOTA_MERCOS reports only real collection failures as errors", () => {
+  assert.equal(
+    summarizeConstrujotaMercosPersistedResults([{ status: "indisponivel" }, { status: "erro" }])
+      .status,
+    "parcial",
+  );
+  assert.equal(
+    summarizeConstrujotaMercosPersistedResults([{ status: "erro" }, { status: "nao_encontrado" }])
+      .status,
+    "erro",
+  );
+});
+
 function persistenceClient(mappingOverrides = {}) {
   const calls = [];
   return {
@@ -213,6 +250,12 @@ test("CONSTRUJOTA_MERCOS transaction leaves product and last success untouched w
   );
   assert.ok(mappingUpdate);
   assert.doesNotMatch(mappingUpdate.sql, /ultimo_preco\s*=|ultimo_sucesso_em\s*=/i);
+  assert.deepEqual(mappingUpdate.values, [
+    "2026-08-27T12:00:00.000Z",
+    "indisponivel",
+    null,
+    "mapping-id",
+  ]);
   const historyInsert = client.calls.find((call) =>
     /insert into historico_precos_construjota_mercos/i.test(call.sql),
   );

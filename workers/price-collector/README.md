@@ -54,9 +54,6 @@ CONSTRUJOTA_MERCOS_LOGIN=
 CONSTRUJOTA_MERCOS_PASSWORD=
 CONSTRUJOTA_MERCOS_BASE_URL=https://construjota2.mercos.com
 CONSTRUJOTA_MERCOS_PRODUCT_INTERVAL_MS=4000
-CONSTRUJOTA_MERCOS_NAVIGATION_TIMEOUT_MS=30000
-CONSTRUJOTA_MERCOS_SIGNAL_TIMEOUT_MS=12000
-CONSTRUJOTA_MERCOS_NAVIGATION_ATTEMPTS=3
 
 ```
 
@@ -151,6 +148,9 @@ somente depois de confirmar URL `/produtos/{id}`, bloco principal, `Cod.` exatam
 A sessao autenticada e armazenada em `.worker-auth/construjota-mercos.json`, arquivo ignorado
 pelo Git. Se a sessao expirar e redirecionar para `/entrar`, o login e repetido uma unica vez.
 Credenciais, cookies, tokens e respostas de login nao sao registrados em log ou diagnostico.
+Os tempos de navegacao, espera de renderizacao e novas tentativas sao limites tecnicos internos e
+nao precisam ser configurados no `.env` nem na interface. A configuracao operacional permite
+alterar somente o horario diario e o intervalo conservador entre produtos.
 
 Configure o horario na secao **ConstruJota Mercos - preco proprio** da Agenda. Essa agenda usa
 sempre concorrencia 1, fuso `America/Sao_Paulo` e somente segunda a sexta-feira. Quando ela e a
@@ -162,14 +162,16 @@ Validacao sem gravar no banco:
 npm run worker:construjota:dry
 npm run worker:construjota:dry -- --sku=503
 npm run worker:construjota:headed -- --sku=503
-npm run worker:construjota:dry -- --sku=503 --url=https://construjota2.mercos.com/produtos/237153522
-npm run worker:construjota:dry -- --sku=419 --url=https://construjota2.mercos.com/produtos/237153309
+npm run worker:construjota:dry -- --sku=503 --url="https://construjota2.mercos.com/produtos/237153522"
+npm run worker:construjota:dry -- --sku=419 --url="https://construjota2.mercos.com/produtos/237153309"
 npm run worker:construjota:dry -- --simulate-date=2026-08-29
 ```
 
 `--url` cria somente um mapeamento temporario em memoria e exige `--dry-run`; nenhum dado e
-gravado. `--simulate-date` tambem e exclusivo do dry-run e permite comprovar o bloqueio de sabado
-e domingo. Em segunda a sexta, a execucao segue normalmente.
+gravado. Passe a URL completa de `/produtos/{id}` entre aspas e na mesma linha do comando. Os
+argumentos aceitam tanto `--sku=503` quanto `--sku 503`. `--simulate-date` tambem e exclusivo do
+dry-run e permite comprovar o bloqueio de sabado e domingo. Em segunda a sexta, a execucao segue
+normalmente.
 
 Descoberta de URLs por SKU exato (a execucao padrao apenas gera a previa):
 
@@ -183,6 +185,8 @@ Produto indisponivel, falha de rede, SKU divergente, preco ausente ou ambiguo nu
 `produtos.preco_atual`. A tentativa e registrada no historico proprio com preco nulo; a data e o
 valor do ultimo sucesso permanecem intactos. Precos de relacionados, resumo fixo ou carrinho sao
 ignorados, pois a leitura fica restrita a `[class*="ProductPage__productDetails__"]`.
+Indisponibilidade e um resultado operacional esperado: aparece separadamente no relatorio, nao
+conta como erro da execucao e nao faz o comando terminar com falha.
 
 ## Como o worker decide o preco
 
