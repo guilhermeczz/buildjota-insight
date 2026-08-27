@@ -38,10 +38,19 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { formatBRL } from "@/lib/format";
-import { compareProductNames, sortByProductName } from "@/lib/product-sort";
+import { formatBRL, formatDateTime } from "@/lib/format";
+import { sortByProductName } from "@/lib/product-sort";
 import { apiClient } from "@/lib/api-client";
-import { FileSpreadsheet, Pencil, Plus, Power, Search, Trash2, Upload } from "lucide-react";
+import {
+  ExternalLink,
+  FileSpreadsheet,
+  Pencil,
+  Plus,
+  Power,
+  Search,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
 
@@ -49,6 +58,19 @@ type FamiliaOption = {
   id: string;
   nome: string;
   ativo: boolean;
+};
+
+type ConstruJotaMercosMapping = {
+  id: string;
+  sku_site: string;
+  mercos_produto_id: string | null;
+  url_produto: string | null;
+  ativo: boolean;
+  ultimo_preco: number | null;
+  ultimo_sucesso_em: string | null;
+  ultima_tentativa_em: string | null;
+  ultimo_status: string | null;
+  ultimo_erro: string | null;
 };
 
 type Produto = {
@@ -61,6 +83,8 @@ type Produto = {
   observacoes: string;
   ativo: boolean;
   familias?: { nome: string } | null;
+  construjota_mercos?: ConstruJotaMercosMapping | ConstruJotaMercosMapping[] | null;
+  mapeamentos_construjota_mercos?: ConstruJotaMercosMapping | ConstruJotaMercosMapping[] | null;
 };
 
 type ProdutoForm = {
@@ -69,6 +93,7 @@ type ProdutoForm = {
   familia_id: string;
   unidade: string;
   preco_atual: string;
+  url_construjota_mercos: string;
   observacoes: string;
 };
 
@@ -88,14 +113,120 @@ const emptyForm: ProdutoForm = {
   familia_id: "",
   unidade: "",
   preco_atual: "",
+  url_construjota_mercos: "",
   observacoes: "",
 };
 
+function normalizeMercosMapping(
+  value: Produto["construjota_mercos"],
+): ConstruJotaMercosMapping | null {
+  const mapping = Array.isArray(value) ? (value[0] ?? null) : value;
+  if (!mapping) return null;
+  return {
+    ...mapping,
+    ultimo_preco:
+      mapping.ultimo_preco === null || mapping.ultimo_preco === undefined
+        ? null
+        : Number(mapping.ultimo_preco),
+  };
+}
+
 function normalizeProduto(row: Produto): Produto {
+  const mercosMapping = normalizeMercosMapping(
+    row.construjota_mercos ?? row.mapeamentos_construjota_mercos,
+  );
   return {
     ...row,
     preco_atual: Number(row.preco_atual ?? 0),
+    construjota_mercos: mercosMapping,
+    mapeamentos_construjota_mercos: mercosMapping,
   };
+}
+
+function validateMercosProductUrl(value: string) {
+  if (!value) return true;
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      url.hostname === "construjota2.mercos.com" &&
+      /^\/produtos\/\d+\/?$/.test(url.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function mercosProductIdFromUrl(value: string) {
+  return value.match(/\/produtos\/(\d+)\/?$/)?.[1] ?? null;
+}
+
+function mercosStatusBadge(mapping: ConstruJotaMercosMapping | null) {
+  if (!mapping?.url_produto) return <Badge variant="secondary">Sem URL</Badge>;
+  if (mapping.ultimo_status === "sucesso") {
+    return <Badge className="bg-success text-success-foreground">Sincronizado</Badge>;
+  }
+  if (mapping.ultimo_status?.startsWith("indisponivel")) {
+    return (
+      <Badge
+        variant="outline"
+        className="border-amber-300 bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
+      >
+        Indisponível
+      </Badge>
+    );
+  }
+  if (mapping.ultimo_status === "erro") return <Badge variant="destructive">Erro</Badge>;
+  if (!mapping.ultimo_status || mapping.ultimo_status === "pendente") {
+    return <Badge variant="secondary">Aguardando leitura</Badge>;
+  }
+  return <Badge variant="destructive">Erro</Badge>;
+}
+
+function MercosProductStatus({ produto }: { produto: Produto }) {
+  const mapping = normalizeMercosMapping(produto.construjota_mercos);
+  const unavailable = mapping?.ultimo_status?.startsWith("indisponivel");
+
+  return (
+    <div className="min-w-56 space-y-1.5">
+      <div className="flex flex-wrap items-center gap-2">
+        {mercosStatusBadge(mapping)}
+        {mapping?.url_produto && (
+          <a
+            href={mapping.url_produto}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+          >
+            Abrir produto <ExternalLink className="h-3 w-3" />
+          </a>
+        )}
+      </div>
+      {unavailable && (
+        <div className="text-xs text-amber-700 dark:text-amber-300">
+          Último preço confirmado preservado
+          {mapping?.ultimo_sucesso_em
+            ? ` em ${formatDateTime(mapping.ultimo_sucesso_em)}`
+            : ", sem leitura anterior"}
+        </div>
+      )}
+      {!unavailable && mapping?.ultimo_sucesso_em && (
+        <div className="text-xs text-muted-foreground">
+          Último sucesso: {formatDateTime(mapping.ultimo_sucesso_em)}
+        </div>
+      )}
+      {mapping?.ultimo_erro && mapping.ultimo_status !== "sucesso" && (
+        <div
+          className={`max-w-72 truncate text-xs ${
+            unavailable ? "text-amber-700 dark:text-amber-300" : "text-destructive"
+          }`}
+          title={mapping.ultimo_erro}
+        >
+          {mapping.ultimo_erro}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function Produtos() {
@@ -122,7 +253,7 @@ export default function Produtos() {
       apiClient
         .from("produtos")
         .select(
-          "id,sku_interno,nome,familia_id,unidade,preco_atual,observacoes,ativo,familias(nome)",
+          "id,sku_interno,nome,familia_id,unidade,preco_atual,observacoes,ativo,familias(nome),construjota_mercos:mapeamentos_construjota_mercos(id,sku_site,mercos_produto_id,url_produto,ativo,ultimo_preco,ultimo_sucesso_em,ultima_tentativa_em,ultimo_status,ultimo_erro)",
         )
         .order("nome", { ascending: true }),
     ]);
@@ -187,6 +318,7 @@ export default function Produtos() {
       familia_id: produto.familia_id ?? "",
       unidade: produto.unidade,
       preco_atual: String(produto.preco_atual),
+      url_construjota_mercos: normalizeMercosMapping(produto.construjota_mercos)?.url_produto ?? "",
       observacoes: produto.observacoes,
     });
     setOpen(true);
@@ -195,6 +327,7 @@ export default function Produtos() {
   async function save() {
     const sku = form.sku_interno.trim();
     const nome = form.nome.trim();
+    const mercosUrl = form.url_construjota_mercos.trim();
     const precoText = form.preco_atual.trim();
     const preco = Number(precoText.replace(",", "."));
 
@@ -205,6 +338,11 @@ export default function Produtos() {
 
     if (!precoText || Number.isNaN(preco) || preco < 0) {
       toast.error("Informe um preço válido");
+      return;
+    }
+
+    if (!validateMercosProductUrl(mercosUrl)) {
+      toast.error("Informe uma URL de produto valida de construjota2.mercos.com");
       return;
     }
 
@@ -219,6 +357,34 @@ export default function Produtos() {
 
     setSaving(true);
 
+    async function saveMercosMapping(produtoId: string) {
+      const currentMapping = editing ? normalizeMercosMapping(editing.construjota_mercos) : null;
+      const mappingPayload = {
+        produto_id: produtoId,
+        sku_site: sku,
+        mercos_produto_id: mercosProductIdFromUrl(mercosUrl),
+        url_produto: mercosUrl,
+        ativo: Boolean(mercosUrl),
+        ...(currentMapping?.url_produto !== mercosUrl || currentMapping?.sku_site !== sku
+          ? { ultimo_status: "pendente", ultimo_erro: null }
+          : {}),
+      };
+
+      if (currentMapping?.id) {
+        return apiClient
+          .from("mapeamentos_construjota_mercos")
+          .update(mappingPayload)
+          .eq("id", currentMapping.id);
+      }
+      if (mercosUrl) {
+        return apiClient.from("mapeamentos_construjota_mercos").insert({
+          ...mappingPayload,
+          ultimo_status: "pendente",
+        });
+      }
+      return { error: null };
+    }
+
     if (editing) {
       const { data, error } = await apiClient
         .from("produtos")
@@ -229,9 +395,8 @@ export default function Produtos() {
         )
         .single();
 
-      setSaving(false);
-
       if (error || !data) {
+        setSaving(false);
         toast.error(
           error?.code === "23505"
             ? "Já existe um produto com esse SKU"
@@ -240,12 +405,16 @@ export default function Produtos() {
         return;
       }
 
-      const produto = normalizeProduto(data as Produto);
-      setList((current) =>
-        current
-          .map((item) => (item.id === produto.id ? produto : item))
-          .sort((a, b) => compareProductNames(a.nome, b.nome)),
-      );
+      const mercosResult = await saveMercosMapping(editing.id);
+      if (mercosResult.error) {
+        setSaving(false);
+        toast.error("Produto salvo, mas nao foi possivel salvar a URL da ConstruJota Mercos");
+        await refreshData();
+        return;
+      }
+
+      await refreshData();
+      setSaving(false);
       toast.success("Produto atualizado");
       setOpen(false);
       return;
@@ -257,9 +426,8 @@ export default function Produtos() {
       .select("id,sku_interno,nome,familia_id,unidade,preco_atual,observacoes,ativo,familias(nome)")
       .single();
 
-    setSaving(false);
-
     if (error || !data) {
+      setSaving(false);
       toast.error(
         error?.code === "23505"
           ? "Já existe um produto com esse SKU"
@@ -268,11 +436,17 @@ export default function Produtos() {
       return;
     }
 
-    setList((current) =>
-      [...current, normalizeProduto(data as Produto)].sort((a, b) =>
-        compareProductNames(a.nome, b.nome),
-      ),
-    );
+    const produto = normalizeProduto(data as Produto);
+    const mercosResult = await saveMercosMapping(produto.id);
+    if (mercosResult.error) {
+      setSaving(false);
+      toast.error("Produto salvo, mas nao foi possivel salvar a URL da ConstruJota Mercos");
+      await refreshData();
+      return;
+    }
+
+    await refreshData();
+    setSaving(false);
     toast.success("Produto cadastrado");
     setOpen(false);
   }
@@ -524,6 +698,7 @@ export default function Produtos() {
                   <TableHead>Família</TableHead>
                   <TableHead>Unidade</TableHead>
                   <TableHead>Preço atual</TableHead>
+                  <TableHead>ConstruJota Mercos</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Ações</TableHead>
                 </TableRow>
@@ -531,14 +706,14 @@ export default function Produtos() {
               <TableBody>
                 {loading && (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                    <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
                       Carregando produtos...
                     </TableCell>
                   </TableRow>
                 )}
                 {!loading && filtered.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                    <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
                       Nenhum produto encontrado
                     </TableCell>
                   </TableRow>
@@ -552,6 +727,9 @@ export default function Produtos() {
                       {produto.unidade || "-"}
                     </TableCell>
                     <TableCell>{formatBRL(produto.preco_atual)}</TableCell>
+                    <TableCell>
+                      <MercosProductStatus produto={produto} />
+                    </TableCell>
                     <TableCell>
                       {produto.ativo ? (
                         <Badge className="bg-success text-success-foreground">Ativo</Badge>
@@ -584,7 +762,7 @@ export default function Produtos() {
       </Card>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent>
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>{editing ? "Editar produto" : "Novo produto"}</DialogTitle>
           </DialogHeader>
@@ -636,6 +814,21 @@ export default function Produtos() {
                 value={form.preco_atual}
                 onChange={(event) => setForm({ ...form, preco_atual: event.target.value })}
               />
+            </div>
+            <div className="space-y-1.5 sm:col-span-2">
+              <Label>URL do produto no portal ConstruJota Mercos (opcional)</Label>
+              <Input
+                type="url"
+                value={form.url_construjota_mercos}
+                onChange={(event) =>
+                  setForm({ ...form, url_construjota_mercos: event.target.value })
+                }
+                placeholder="https://construjota2.mercos.com/produtos/123456789"
+              />
+              <p className="text-xs text-muted-foreground">
+                Esta URL alimenta o preco proprio da ConstruJota. Ela nao e um mapeamento de
+                concorrente.
+              </p>
             </div>
             <div className="space-y-1.5 sm:col-span-2">
               <Label>Observações</Label>

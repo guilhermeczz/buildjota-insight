@@ -46,6 +46,11 @@ type Produto = {
   preco_atual: number;
   ativo: boolean;
   familias?: { id: string; nome: string } | null;
+  mapeamentos_construjota_mercos?: {
+    ultimo_status: string | null;
+    ultimo_sucesso_em: string | null;
+    ultimo_preco: number | null;
+  } | null;
 };
 
 type Concorrente = {
@@ -132,7 +137,9 @@ export default function Dashboard() {
     ] = await Promise.all([
       apiClient
         .from("produtos")
-        .select("id,nome,sku_interno,familia_id,preco_atual,ativo,familias(id,nome)")
+        .select(
+          "id,nome,sku_interno,familia_id,preco_atual,ativo,familias(id,nome),mapeamentos_construjota_mercos(ultimo_status,ultimo_sucesso_em,ultimo_preco)",
+        )
         .order("nome"),
       apiClient.from("familias").select("id,nome").eq("ativo", true).order("nome"),
       apiClient.from("concorrentes").select("id,nome,ativo").order("nome"),
@@ -319,6 +326,9 @@ export default function Dashboard() {
   const semPreco = filteredMapeamentos.filter(
     (mapeamento) => !numeric(mapeamento.ultimo_preco),
   ).length;
+  const construjotaIndisponiveis = produtos.filter((produto) =>
+    produto.mapeamentos_construjota_mercos?.ultimo_status?.startsWith("indisponivel"),
+  ).length;
 
   const chartData = useMemo(() => {
     const days = Array.from(
@@ -392,6 +402,14 @@ export default function Dashboard() {
       sub: `${(((ultimaExec?.total_erro ?? 0) / Math.max(ultimaExec?.total_processados ?? 0, 1)) * 100).toFixed(2)}% do total`,
       valueClass: "text-destructive",
     },
+    {
+      icon: AlertTriangle,
+      label: "ConstruJota indisponíveis",
+      value: construjotaIndisponiveis,
+      sub: "Último preço confirmado preservado",
+      iconBg: "bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300",
+      valueClass: "text-amber-600",
+    },
   ];
 
   return (
@@ -441,7 +459,7 @@ export default function Dashboard() {
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
         {cards.map((card) => {
           const Icon = card.icon;
           return (

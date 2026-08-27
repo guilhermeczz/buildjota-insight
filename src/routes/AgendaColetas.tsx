@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import PageHeader from "@/components/layout/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -17,7 +17,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { formatDateTime } from "@/lib/format";
 import { apiClient } from "@/lib/api-client";
-import { CalendarClock, Loader2, Save, Search } from "lucide-react";
+import { CalendarClock, Loader2, Save, Search, Store } from "lucide-react";
 import { toast } from "sonner";
 
 const weekDays = [
@@ -28,6 +28,14 @@ const weekDays = [
   { value: 5, label: "Sex" },
   { value: 6, label: "Sab" },
   { value: 0, label: "Dom" },
+];
+
+const construjotaWeekDays = [
+  { value: 1, label: "Seg" },
+  { value: 2, label: "Ter" },
+  { value: 3, label: "Qua" },
+  { value: 4, label: "Qui" },
+  { value: 5, label: "Sex" },
 ];
 
 type Familia = {
@@ -57,6 +65,29 @@ type AgendaFromApi = Omit<AgendaRow, "familia_nome" | "familia_ativo"> & {
   familias?: Familia | null;
 };
 
+type ConstruJotaAgenda = {
+  id?: string;
+  ativo: boolean;
+  horario: string;
+  dias_semana: number[];
+  intervalo_produtos_ms: number;
+  ultima_execucao: string | null;
+  ultimo_status: string | null;
+  ultimo_erro: string | null;
+  dirty?: boolean;
+  saving?: boolean;
+};
+
+const defaultConstruJotaAgenda: ConstruJotaAgenda = {
+  ativo: false,
+  horario: "",
+  dias_semana: [1, 2, 3, 4, 5],
+  intervalo_produtos_ms: 4000,
+  ultima_execucao: null,
+  ultimo_status: null,
+  ultimo_erro: null,
+};
+
 function normalizeTime(value: string) {
   return value ? String(value).slice(0, 5) : "";
 }
@@ -69,6 +100,17 @@ function statusBadge(status: AgendaRow["ultimo_status"]) {
     return <Badge className="bg-primary text-primary-foreground">Parcial</Badge>;
   if (status === "erro") return <Badge variant="destructive">Erro</Badge>;
   return <Badge variant="secondary">Buscando</Badge>;
+}
+
+function construjotaStatusBadge(status: string | null) {
+  if (!status) return <Badge variant="secondary">Sem execucao</Badge>;
+  if (status === "sucesso") {
+    return <Badge className="bg-success text-success-foreground">Sucesso</Badge>;
+  }
+  if (status === "parcial")
+    return <Badge className="bg-primary text-primary-foreground">Parcial</Badge>;
+  if (status === "erro") return <Badge variant="destructive">Erro</Badge>;
+  return <Badge variant="secondary">{status === "pendente" ? "Pendente" : status}</Badge>;
 }
 
 function defaultAgenda(familia: Familia): AgendaRow {
@@ -92,9 +134,11 @@ export default function AgendaColetas() {
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("todos");
+  const [construjotaAgenda, setConstrujotaAgenda] =
+    useState<ConstruJotaAgenda>(defaultConstruJotaAgenda);
 
   async function refresh() {
-    const [familiasResult, agendaResult] = await Promise.all([
+    const [familiasResult, agendaResult, construjotaResult] = await Promise.all([
       apiClient.from("familias").select("id,nome,ativo").order("nome", { ascending: true }),
       apiClient
         .from("agenda_coletas")
@@ -102,9 +146,16 @@ export default function AgendaColetas() {
           "id,familia_id,ativo,horario,dias_semana,concorrencia_maxima,observacoes,ultima_execucao,ultimo_status,ultimo_erro,familias(id,nome,ativo)",
         )
         .order("horario", { ascending: true }),
+      apiClient
+        .from("agenda_construjota_mercos")
+        .select(
+          "id,ativo,horario,dias_semana,intervalo_produtos_ms,ultima_execucao,ultimo_status,ultimo_erro",
+        )
+        .limit(1)
+        .maybeSingle(),
     ]);
 
-    if (familiasResult.error || agendaResult.error) {
+    if (familiasResult.error || agendaResult.error || construjotaResult.error) {
       toast.error("Nao foi possivel carregar a agenda de coleta");
       setLoading(false);
       return;
@@ -113,6 +164,20 @@ export default function AgendaColetas() {
     const familias = (familiasResult.data ?? []) as Familia[];
     const agendas = new Map(
       ((agendaResult.data ?? []) as AgendaFromApi[]).map((agenda) => [agenda.familia_id, agenda]),
+    );
+
+    const savedConstruJota = construjotaResult.data as ConstruJotaAgenda | null;
+    setConstrujotaAgenda(
+      savedConstruJota
+        ? {
+            ...savedConstruJota,
+            horario: normalizeTime(savedConstruJota.horario),
+            dias_semana: [1, 2, 3, 4, 5],
+            intervalo_produtos_ms: Number(savedConstruJota.intervalo_produtos_ms ?? 4000),
+            dirty: false,
+            saving: false,
+          }
+        : defaultConstruJotaAgenda,
     );
 
     setRows(
@@ -239,6 +304,58 @@ export default function AgendaColetas() {
     toast.success("Agenda salva");
   }
 
+  function updateConstruJotaAgenda(patch: Partial<ConstruJotaAgenda>) {
+    setConstrujotaAgenda((current) => ({ ...current, ...patch, dirty: true }));
+  }
+
+  async function saveConstruJotaAgenda() {
+    if (construjotaAgenda.ativo && !construjotaAgenda.horario) {
+      toast.error("Informe o horario da atualizacao ConstruJota");
+      return;
+    }
+
+    const intervalo = Number(construjotaAgenda.intervalo_produtos_ms);
+    if (!Number.isInteger(intervalo) || intervalo < 1000 || intervalo > 60000) {
+      toast.error("O intervalo deve ficar entre 1 e 60 segundos");
+      return;
+    }
+
+    setConstrujotaAgenda((current) => ({ ...current, saving: true }));
+    const payload = {
+      ativo: construjotaAgenda.ativo,
+      horario: construjotaAgenda.horario || null,
+      dias_semana: [1, 2, 3, 4, 5],
+      intervalo_produtos_ms: intervalo,
+    };
+    const columns =
+      "id,ativo,horario,dias_semana,intervalo_produtos_ms,ultima_execucao,ultimo_status,ultimo_erro";
+    const result = construjotaAgenda.id
+      ? await apiClient
+          .from("agenda_construjota_mercos")
+          .update(payload)
+          .eq("id", construjotaAgenda.id)
+          .select(columns)
+          .single()
+      : await apiClient.from("agenda_construjota_mercos").insert(payload).select(columns).single();
+
+    if (result.error || !result.data) {
+      setConstrujotaAgenda((current) => ({ ...current, saving: false }));
+      toast.error("Nao foi possivel salvar a agenda da ConstruJota Mercos");
+      return;
+    }
+
+    const saved = result.data as ConstruJotaAgenda;
+    setConstrujotaAgenda({
+      ...saved,
+      horario: normalizeTime(saved.horario),
+      dias_semana: [1, 2, 3, 4, 5],
+      intervalo_produtos_ms: Number(saved.intervalo_produtos_ms ?? intervalo),
+      dirty: false,
+      saving: false,
+    });
+    toast.success("Agenda da ConstruJota Mercos salva");
+  }
+
   return (
     <>
       <PageHeader
@@ -251,7 +368,120 @@ export default function AgendaColetas() {
         }
       />
 
+      <Card className="mb-6 border-primary/40 shadow-sm">
+        <CardHeader className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Store className="h-5 w-5 text-primary" />
+              <CardTitle className="text-base">ConstruJota Mercos — preço próprio</CardTitle>
+            </div>
+            <Badge variant="outline" className="border-primary/40 bg-primary/5 text-primary">
+              Não é concorrente
+            </Badge>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Atualiza o preço dos produtos ConstruJota antes das comparações com os concorrentes.
+            Executa somente de segunda a sexta no fuso America/Sao_Paulo.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
+            <div className="space-y-2">
+              <Label>Atualização ativa</Label>
+              <div className="flex h-9 items-center gap-3">
+                <Switch
+                  checked={construjotaAgenda.ativo}
+                  onCheckedChange={(checked) => updateConstruJotaAgenda({ ativo: checked })}
+                  disabled={loading}
+                />
+                <span className="text-sm text-muted-foreground">
+                  {construjotaAgenda.ativo ? "Ativa" : "Inativa"}
+                </span>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Horário diário</Label>
+              <Input
+                type="time"
+                value={construjotaAgenda.horario}
+                onChange={(event) => updateConstruJotaAgenda({ horario: event.target.value })}
+                disabled={loading}
+                className="max-w-40"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Dias fixos</Label>
+              <div className="flex h-9 flex-wrap items-center gap-1.5">
+                {construjotaWeekDays.map((day) => (
+                  <Badge key={day.value} variant="secondary">
+                    {day.label}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="mercos-intervalo">Intervalo entre produtos</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="mercos-intervalo"
+                  type="number"
+                  min={1000}
+                  max={60000}
+                  step={500}
+                  value={construjotaAgenda.intervalo_produtos_ms}
+                  onChange={(event) =>
+                    updateConstruJotaAgenda({
+                      intervalo_produtos_ms: Number(event.target.value),
+                    })
+                  }
+                  disabled={loading}
+                  className="max-w-32"
+                />
+                <span className="text-xs text-muted-foreground">ms</span>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Concorrência</Label>
+              <div className="flex h-9 items-center">
+                <Badge variant="secondary">1 (fixa)</Badge>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-3 rounded-md border bg-muted/30 p-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <span className="font-medium">Última execução:</span>
+                {construjotaStatusBadge(construjotaAgenda.ultimo_status)}
+                <span className="text-muted-foreground">
+                  {construjotaAgenda.ultima_execucao
+                    ? formatDateTime(construjotaAgenda.ultima_execucao)
+                    : "Ainda não executada"}
+                </span>
+              </div>
+              {construjotaAgenda.ultimo_erro && (
+                <p className="text-xs text-destructive">{construjotaAgenda.ultimo_erro}</p>
+              )}
+            </div>
+            <Button
+              onClick={() => void saveConstruJotaAgenda()}
+              disabled={loading || construjotaAgenda.saving || !construjotaAgenda.dirty}
+            >
+              {construjotaAgenda.saving ? (
+                <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="mr-1 h-4 w-4" />
+              )}
+              Salvar agenda ConstruJota
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       <Card className="shadow-sm">
+        <CardHeader>
+          <CardTitle className="text-base">Coletas dos concorrentes por família</CardTitle>
+        </CardHeader>
         <CardContent className="space-y-4 p-5">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_220px]">
             <div className="relative">

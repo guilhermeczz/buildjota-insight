@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
@@ -84,6 +85,27 @@ type Historico = {
   mensagem_erro: string | null;
   coletado_em: string;
   mapeamentos_sku?: Mapeamento | null;
+};
+
+type ConstruJotaMercosMapeamento = {
+  id: string;
+  produto_id: string;
+  sku_site: string;
+  mercos_produto_id: string | null;
+  url_produto: string | null;
+  ultimo_preco: number | null;
+  ultimo_sucesso_em: string | null;
+  produtos?: Pick<Produto, "id" | "sku_interno" | "nome" | "preco_atual"> | null;
+};
+
+type ConstruJotaMercosHistorico = {
+  id: string;
+  mapeamento_id: string;
+  preco: number | null;
+  status: string;
+  mensagem: string | null;
+  coletado_em: string;
+  mapeamentos_construjota_mercos?: ConstruJotaMercosMapeamento | null;
 };
 
 type Row = {
@@ -215,6 +237,32 @@ function normalizeHistorico(row: Historico): Historico {
       row.diferenca_percentual === null ? null : Number(row.diferenca_percentual),
     coletado_em: toDateString(row.coletado_em),
     mapeamentos_sku: row.mapeamentos_sku ? normalizeMapeamento(row.mapeamentos_sku) : null,
+  };
+}
+
+function normalizeConstruJotaHistorico(
+  row: ConstruJotaMercosHistorico,
+): ConstruJotaMercosHistorico {
+  const mapping = row.mapeamentos_construjota_mercos;
+  return {
+    ...row,
+    preco: row.preco === null || row.preco === undefined ? null : Number(row.preco),
+    coletado_em: toDateString(row.coletado_em),
+    mapeamentos_construjota_mercos: mapping
+      ? {
+          ...mapping,
+          ultimo_preco:
+            mapping.ultimo_preco === null || mapping.ultimo_preco === undefined
+              ? null
+              : Number(mapping.ultimo_preco),
+          produtos: mapping.produtos
+            ? {
+                ...mapping.produtos,
+                preco_atual: Number(mapping.produtos.preco_atual ?? 0),
+              }
+            : null,
+        }
+      : null,
   };
 }
 
@@ -460,6 +508,203 @@ function KpiCard({
   );
 }
 
+function isConstruJotaUnavailable(status: string) {
+  return status.startsWith("indisponivel");
+}
+
+function construjotaHistoryStatus(status: string) {
+  if (status === "sucesso") {
+    return <Badge className="bg-success text-success-foreground">Sucesso</Badge>;
+  }
+  if (isConstruJotaUnavailable(status)) {
+    return (
+      <Badge
+        variant="outline"
+        className="border-amber-300 bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
+      >
+        {status === "indisponivel_sem_historico" ? "Indisponível sem histórico" : "Indisponível"}
+      </Badge>
+    );
+  }
+  if (status === "pendente") return <Badge variant="secondary">Pendente</Badge>;
+  return <Badge variant="destructive">Erro</Badge>;
+}
+
+function ConstruJotaHistoryReport({
+  rows,
+  loading,
+}: {
+  rows: ConstruJotaMercosHistorico[];
+  loading: boolean;
+}) {
+  const [statusFilter, setStatusFilter] = useState("todos");
+  const [search, setSearch] = useState("");
+  const filtered = useMemo(() => {
+    const needle = normalizeKey(search);
+    return rows.filter((row) => {
+      const mapping = row.mapeamentos_construjota_mercos;
+      const produto = mapping?.produtos;
+      if (
+        needle &&
+        !normalizeKey(produto?.nome).includes(needle) &&
+        !normalizeKey(produto?.sku_interno ?? mapping?.sku_site).includes(needle)
+      ) {
+        return false;
+      }
+      if (statusFilter === "sucesso") return row.status === "sucesso";
+      if (statusFilter === "indisponivel") return isConstruJotaUnavailable(row.status);
+      if (statusFilter === "erro") {
+        return row.status !== "sucesso" && !isConstruJotaUnavailable(row.status);
+      }
+      return true;
+    });
+  }, [rows, search, statusFilter]);
+
+  const successes = rows.filter((row) => row.status === "sucesso").length;
+  const unavailable = rows.filter((row) => isConstruJotaUnavailable(row.status)).length;
+  const errors = rows.filter(
+    (row) => row.status !== "sucesso" && !isConstruJotaUnavailable(row.status),
+  ).length;
+
+  return (
+    <div className="space-y-4">
+      <Card className="border-primary/40 bg-primary/5 shadow-sm">
+        <CardContent className="flex gap-3 p-5 text-sm">
+          <PackageSearch className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+          <div>
+            <div className="font-medium">Leitura do preço próprio ConstruJota Mercos</div>
+            <div className="mt-1 text-muted-foreground">
+              Este histórico atualiza produtos.preco_atual e fica separado das coletas dos
+              concorrentes. Em indisponibilidade ou erro, o último preço confirmado é preservado.
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <KpiCard
+          icon={PackageSearch}
+          label="Tentativas"
+          value={rows.length}
+          sub="Últimas leituras"
+        />
+        <KpiCard
+          icon={BarChart3}
+          label="Sucessos"
+          value={successes}
+          sub="Preços confirmados"
+          valueClass="text-success"
+        />
+        <KpiCard
+          icon={AlertTriangle}
+          label="Indisponíveis"
+          value={unavailable}
+          sub="Último preço preservado"
+          valueClass="text-amber-600"
+        />
+        <KpiCard
+          icon={AlertTriangle}
+          label="Erros"
+          value={errors}
+          sub="Falhas próprias, não concorrentes"
+          valueClass="text-destructive"
+        />
+      </div>
+
+      <Card className="shadow-sm">
+        <CardHeader className="space-y-4">
+          <CardTitle className="text-base">Histórico e erros da ConstruJota</CardTitle>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_240px]">
+            <Input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Pesquisar por SKU ou produto..."
+            />
+            <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="todos">Todas as tentativas</SelectItem>
+                <SelectItem value="sucesso">Somente sucessos</SelectItem>
+                <SelectItem value="indisponivel">Somente indisponíveis</SelectItem>
+                <SelectItem value="erro">Somente erros</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Data da tentativa</TableHead>
+                  <TableHead>SKU</TableHead>
+                  <TableHead>Produto</TableHead>
+                  <TableHead>Preço lido</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Último sucesso</TableHead>
+                  <TableHead>Mensagem</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {loading && (
+                  <TableRow>
+                    <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                      Carregando leituras da ConstruJota...
+                    </TableCell>
+                  </TableRow>
+                )}
+                {!loading && filtered.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                      Nenhuma tentativa encontrada.
+                    </TableCell>
+                  </TableRow>
+                )}
+                {!loading &&
+                  filtered.map((row) => {
+                    const mapping = row.mapeamentos_construjota_mercos;
+                    const produto = mapping?.produtos;
+                    const unavailableRow = isConstruJotaUnavailable(row.status);
+                    return (
+                      <TableRow key={row.id}>
+                        <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                          {formatDateTime(row.coletado_em)}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {produto?.sku_interno ?? mapping?.sku_site ?? emptyLabel}
+                        </TableCell>
+                        <TableCell className="font-medium">{produto?.nome ?? emptyLabel}</TableCell>
+                        <TableCell>
+                          {row.preco !== null ? formatBRL(row.preco) : emptyLabel}
+                          {unavailableRow && mapping?.ultimo_preco != null && (
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              Último confirmado: {formatBRL(Number(mapping?.ultimo_preco))}
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell>{construjotaHistoryStatus(row.status)}</TableCell>
+                        <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                          {mapping?.ultimo_sucesso_em
+                            ? formatDateTime(mapping.ultimo_sucesso_em)
+                            : emptyLabel}
+                        </TableCell>
+                        <TableCell className="min-w-72 text-sm">
+                          {row.mensagem ?? "Sem mensagem"}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 export default function Relatorios() {
   const [familiaFilter, setFamiliaFilter] = useState("todas");
   const [concorrenteFilter, setConcorrenteFilter] = useState("todos");
@@ -471,6 +716,9 @@ export default function Relatorios() {
   const [concorrentes, setConcorrentes] = useState<Concorrente[]>([]);
   const [mapeamentos, setMapeamentos] = useState<Mapeamento[]>([]);
   const [historico, setHistorico] = useState<Historico[]>([]);
+  const [construjotaHistorico, setConstrujotaHistorico] = useState<ConstruJotaMercosHistorico[]>(
+    [],
+  );
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -478,24 +726,36 @@ export default function Relatorios() {
 
     async function loadReports() {
       setLoading(true);
-      const [familiasResult, concorrentesResult, mapeamentosResult, historicoResult] =
-        await Promise.all([
-          apiClient.from("familias").select("id,nome").order("nome"),
-          apiClient.from("concorrentes").select("id,nome").order("nome"),
-          apiClient
-            .from("mapeamentos_sku")
-            .select(
-              "id,produto_id,concorrente_id,sku_concorrente,ultimo_preco,ultima_atualizacao,status_coleta,produtos(id,sku_interno,nome,familia_id,preco_atual,familias(id,nome)),concorrentes(id,nome)",
-            )
-            .order("ultima_atualizacao", { ascending: false, nullsFirst: false }),
-          apiClient
-            .from("historico_precos")
-            .select(
-              "id,mapeamento_id,preco_construjota,preco_concorrente,diferenca_valor,diferenca_percentual,status,mensagem_erro,coletado_em,mapeamentos_sku(id,produto_id,concorrente_id,sku_concorrente,produtos(id,sku_interno,nome,familia_id,preco_atual,familias(id,nome)),concorrentes(id,nome))",
-            )
-            .order("coletado_em", { ascending: false })
-            .limit(500),
-        ]);
+      const [
+        familiasResult,
+        concorrentesResult,
+        mapeamentosResult,
+        historicoResult,
+        construjotaHistoricoResult,
+      ] = await Promise.all([
+        apiClient.from("familias").select("id,nome").order("nome"),
+        apiClient.from("concorrentes").select("id,nome").order("nome"),
+        apiClient
+          .from("mapeamentos_sku")
+          .select(
+            "id,produto_id,concorrente_id,sku_concorrente,ultimo_preco,ultima_atualizacao,status_coleta,produtos(id,sku_interno,nome,familia_id,preco_atual,familias(id,nome)),concorrentes(id,nome)",
+          )
+          .order("ultima_atualizacao", { ascending: false, nullsFirst: false }),
+        apiClient
+          .from("historico_precos")
+          .select(
+            "id,mapeamento_id,preco_construjota,preco_concorrente,diferenca_valor,diferenca_percentual,status,mensagem_erro,coletado_em,mapeamentos_sku(id,produto_id,concorrente_id,sku_concorrente,produtos(id,sku_interno,nome,familia_id,preco_atual,familias(id,nome)),concorrentes(id,nome))",
+          )
+          .order("coletado_em", { ascending: false })
+          .limit(500),
+        apiClient
+          .from("historico_precos_construjota_mercos")
+          .select(
+            "id,mapeamento_id,preco,status,mensagem,coletado_em,mapeamentos_construjota_mercos(id,produto_id,sku_site,mercos_produto_id,url_produto,ultimo_preco,ultimo_sucesso_em,produtos(id,sku_interno,nome,preco_atual))",
+          )
+          .order("coletado_em", { ascending: false })
+          .limit(500),
+      ]);
 
       if (!mounted) return;
 
@@ -503,7 +763,8 @@ export default function Relatorios() {
         familiasResult.error ||
         concorrentesResult.error ||
         mapeamentosResult.error ||
-        historicoResult.error;
+        historicoResult.error ||
+        construjotaHistoricoResult.error;
 
       if (hasError) {
         toast.error("Não foi possível carregar os relatórios.");
@@ -513,6 +774,11 @@ export default function Relatorios() {
       setConcorrentes((concorrentesResult.data ?? []) as Concorrente[]);
       setMapeamentos(((mapeamentosResult.data ?? []) as Mapeamento[]).map(normalizeMapeamento));
       setHistorico(((historicoResult.data ?? []) as Historico[]).map(normalizeHistorico));
+      setConstrujotaHistorico(
+        ((construjotaHistoricoResult.data ?? []) as ConstruJotaMercosHistorico[]).map(
+          normalizeConstruJotaHistorico,
+        ),
+      );
       setLoading(false);
     }
 
@@ -636,307 +902,323 @@ export default function Relatorios() {
         description="Análise gerencial de preços, concorrentes e coletas."
       />
 
-      <div className="mb-4 grid grid-cols-1 gap-4 md:grid-cols-4">
-        <KpiCard
-          icon={PackageSearch}
-          label="Mapeamentos"
-          value={filteredRows.length}
-          sub="Itens analisados"
-        />
-        <KpiCard
-          icon={TrendingUp}
-          label="Acima do concorrente"
-          value={acima.length}
-          sub="Preço CJ maior"
-          valueClass="text-destructive"
-        />
-        <KpiCard
-          icon={TrendingDown}
-          label="Abaixo do concorrente"
-          value={abaixo.length}
-          sub="Preço CJ menor"
-          valueClass="text-success"
-        />
-        <KpiCard
-          icon={BarChart3}
-          label="Diferença média"
-          value={`${mediaPct.toFixed(2).replace(".", ",")}%`}
-          sub="Base filtrada"
-        />
-      </div>
+      <Tabs defaultValue="concorrentes" className="space-y-5">
+        <TabsList className="h-auto flex-wrap">
+          <TabsTrigger value="concorrentes">Concorrentes</TabsTrigger>
+          <TabsTrigger value="construjota">ConstruJota — preço próprio</TabsTrigger>
+        </TabsList>
 
-      <Card className="mb-4 shadow-sm">
-        <CardHeader className="flex flex-row items-center justify-between gap-3">
-          <CardTitle className="text-base">Filtros</CardTitle>
-          <Button type="button" variant="ghost" size="sm" onClick={clearFilters}>
-            <RotateCcw className="mr-1 h-4 w-4" /> Limpar filtros
-          </Button>
-        </CardHeader>
-        <CardContent className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button type="button" variant="outline" className="justify-between font-normal">
-                <span className="truncate">
-                  {selectedProductIds.length === 0
-                    ? "Todos os produtos"
-                    : `${selectedProductIds.length} produto(s) selecionado(s)`}
-                </span>
-                <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-2">
-              <div className="max-h-72 space-y-1 overflow-y-auto">
-                <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-2 text-sm hover:bg-accent">
-                  <Checkbox
-                    checked={selectedProductIds.length === 0}
-                    onCheckedChange={() => setSelectedProductIds([])}
-                  />
-                  <span className="font-medium">Todos os produtos</span>
-                </label>
-                {productOptions.map((produto) => (
-                  <label
-                    key={produto.id}
-                    className="flex cursor-pointer items-start gap-2 rounded-sm px-2 py-2 text-sm hover:bg-accent"
-                  >
-                    <Checkbox
-                      checked={selectedProductIds.includes(produto.id)}
-                      onCheckedChange={() => toggleProduct(produto.id)}
-                    />
-                    <span className="leading-4">{produto.nome}</span>
-                  </label>
-                ))}
-              </div>
-            </PopoverContent>
-          </Popover>
-          <Select
-            value={productOrder}
-            onValueChange={(value: ProductOrder) => setProductOrder(value)}
-          >
-            <SelectTrigger>
-              <ArrowDownAZ className="mr-2 h-4 w-4" />
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="az">Produtos: A–Z (ordem ConstruJota)</SelectItem>
-              <SelectItem value="za">Produtos: Z–A</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select value={familiaFilter} onValueChange={setFamiliaFilter}>
-            <SelectTrigger>
-              <SelectValue placeholder="Família" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="todas">Todas as famílias</SelectItem>
-              {familias.map((f) => (
-                <SelectItem key={f.id} value={f.id}>
-                  {f.nome}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={concorrenteFilter} onValueChange={setConcorrenteFilter}>
-            <SelectTrigger>
-              <SelectValue placeholder="Concorrente" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="todos">Todos os concorrentes</SelectItem>
-              {concorrentes.map((c) => (
-                <SelectItem key={c.id} value={c.id}>
-                  {c.nome}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select
-            value={periodo}
-            onValueChange={(value: Periodo) => {
-              setPeriodo(value);
-              if (value !== "custom") setDateRange(undefined);
-            }}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="7">Últimos 7 dias</SelectItem>
-              <SelectItem value="30">Últimos 30 dias</SelectItem>
-              <SelectItem value="90">Últimos 90 dias</SelectItem>
-              <SelectItem value="custom">Escolher datas</SelectItem>
-              <SelectItem value="0">Todo o período</SelectItem>
-            </SelectContent>
-          </Select>
-          <div className="flex gap-2">
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full justify-start gap-2 font-normal"
-                  onClick={() => setPeriodo("custom")}
-                >
-                  <CalendarDays className="h-4 w-4" />
-                  <span className="truncate">{dateRangeLabel(dateRange)}</span>
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent align="end" className="w-auto p-0">
-                <Calendar
-                  mode="range"
-                  selected={dateRange}
-                  onSelect={(range) => {
-                    setDateRange(range);
-                    setPeriodo("custom");
-                  }}
-                  numberOfMonths={2}
-                  captionLayout="dropdown"
-                />
-              </PopoverContent>
-            </Popover>
-            {(dateRange?.from || dateRange?.to) && (
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                onClick={() => setDateRange(undefined)}
-                aria-label="Limpar intervalo de datas"
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            )}
+        <TabsContent value="concorrentes" className="space-y-4">
+          <div className="mb-4 grid grid-cols-1 gap-4 md:grid-cols-4">
+            <KpiCard
+              icon={PackageSearch}
+              label="Mapeamentos"
+              value={filteredRows.length}
+              sub="Itens analisados"
+            />
+            <KpiCard
+              icon={TrendingUp}
+              label="Acima do concorrente"
+              value={acima.length}
+              sub="Preço CJ maior"
+              valueClass="text-destructive"
+            />
+            <KpiCard
+              icon={TrendingDown}
+              label="Abaixo do concorrente"
+              value={abaixo.length}
+              sub="Preço CJ menor"
+              valueClass="text-success"
+            />
+            <KpiCard
+              icon={BarChart3}
+              label="Diferença média"
+              value={`${mediaPct.toFixed(2).replace(".", ",")}%`}
+              sub="Base filtrada"
+            />
           </div>
-        </CardContent>
-      </Card>
 
-      {loading ? (
-        <Card className="shadow-sm">
-          <CardContent className="py-12 text-center text-muted-foreground">
-            Carregando relatórios...
-          </CardContent>
-        </Card>
-      ) : mapeamentos.length === 0 ? (
-        <Card className="border-primary/40 bg-primary/5 shadow-sm">
-          <CardContent className="flex gap-3 p-5 text-sm">
-            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
-            <div>
-              <div className="font-medium">Ainda não há mapeamentos para gerar relatórios.</div>
-              <div className="mt-1 text-muted-foreground">
-                Os filtros já carregam famílias e concorrentes cadastrados. Cadastre produtos e
-                mapeamentos de SKU para ver comparações, variações e exportações.
+          <Card className="mb-4 shadow-sm">
+            <CardHeader className="flex flex-row items-center justify-between gap-3">
+              <CardTitle className="text-base">Filtros</CardTitle>
+              <Button type="button" variant="ghost" size="sm" onClick={clearFilters}>
+                <RotateCcw className="mr-1 h-4 w-4" /> Limpar filtros
+              </Button>
+            </CardHeader>
+            <CardContent className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button type="button" variant="outline" className="justify-between font-normal">
+                    <span className="truncate">
+                      {selectedProductIds.length === 0
+                        ? "Todos os produtos"
+                        : `${selectedProductIds.length} produto(s) selecionado(s)`}
+                    </span>
+                    <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent
+                  align="start"
+                  className="w-[var(--radix-popover-trigger-width)] p-2"
+                >
+                  <div className="max-h-72 space-y-1 overflow-y-auto">
+                    <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-2 text-sm hover:bg-accent">
+                      <Checkbox
+                        checked={selectedProductIds.length === 0}
+                        onCheckedChange={() => setSelectedProductIds([])}
+                      />
+                      <span className="font-medium">Todos os produtos</span>
+                    </label>
+                    {productOptions.map((produto) => (
+                      <label
+                        key={produto.id}
+                        className="flex cursor-pointer items-start gap-2 rounded-sm px-2 py-2 text-sm hover:bg-accent"
+                      >
+                        <Checkbox
+                          checked={selectedProductIds.includes(produto.id)}
+                          onCheckedChange={() => toggleProduct(produto.id)}
+                        />
+                        <span className="leading-4">{produto.nome}</span>
+                      </label>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
+              <Select
+                value={productOrder}
+                onValueChange={(value: ProductOrder) => setProductOrder(value)}
+              >
+                <SelectTrigger>
+                  <ArrowDownAZ className="mr-2 h-4 w-4" />
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="az">Produtos: A–Z (ordem ConstruJota)</SelectItem>
+                  <SelectItem value="za">Produtos: Z–A</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={familiaFilter} onValueChange={setFamiliaFilter}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Família" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="todas">Todas as famílias</SelectItem>
+                  {familias.map((f) => (
+                    <SelectItem key={f.id} value={f.id}>
+                      {f.nome}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={concorrenteFilter} onValueChange={setConcorrenteFilter}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Concorrente" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="todos">Todos os concorrentes</SelectItem>
+                  {concorrentes.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.nome}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select
+                value={periodo}
+                onValueChange={(value: Periodo) => {
+                  setPeriodo(value);
+                  if (value !== "custom") setDateRange(undefined);
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="7">Últimos 7 dias</SelectItem>
+                  <SelectItem value="30">Últimos 30 dias</SelectItem>
+                  <SelectItem value="90">Últimos 90 dias</SelectItem>
+                  <SelectItem value="custom">Escolher datas</SelectItem>
+                  <SelectItem value="0">Todo o período</SelectItem>
+                </SelectContent>
+              </Select>
+              <div className="flex gap-2">
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full justify-start gap-2 font-normal"
+                      onClick={() => setPeriodo("custom")}
+                    >
+                      <CalendarDays className="h-4 w-4" />
+                      <span className="truncate">{dateRangeLabel(dateRange)}</span>
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="end" className="w-auto p-0">
+                    <Calendar
+                      mode="range"
+                      selected={dateRange}
+                      onSelect={(range) => {
+                        setDateRange(range);
+                        setPeriodo("custom");
+                      }}
+                      numberOfMonths={2}
+                      captionLayout="dropdown"
+                    />
+                  </PopoverContent>
+                </Popover>
+                {(dateRange?.from || dateRange?.to) && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    onClick={() => setDateRange(undefined)}
+                    aria-label="Limpar intervalo de datas"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                )}
               </div>
-            </div>
-          </CardContent>
-        </Card>
-      ) : (
-        <Tabs defaultValue="atual" className="space-y-4">
-          <TabsList className="h-auto flex-wrap">
-            <TabsTrigger value="atual">Comparação atual</TabsTrigger>
-            <TabsTrigger value="acima">Acima</TabsTrigger>
-            <TabsTrigger value="abaixo">Abaixo</TabsTrigger>
-            <TabsTrigger value="familia">Por família</TabsTrigger>
-            <TabsTrigger value="concorrente">Por concorrente</TabsTrigger>
-            <TabsTrigger value="erros">Erros</TabsTrigger>
-          </TabsList>
+            </CardContent>
+          </Card>
 
-          <TabsContent value="atual">
-            <RelatorioTable
-              rows={filteredRows}
-              title="Comparação atual ConstruJota x Concorrentes"
-              filename="comparacao-atual"
-            />
-          </TabsContent>
-          <TabsContent value="acima">
-            <RelatorioTable
-              rows={acima}
-              title="Produtos acima do concorrente"
-              filename="acima-concorrente"
-            />
-          </TabsContent>
-          <TabsContent value="abaixo">
-            <RelatorioTable
-              rows={abaixo}
-              title="Produtos abaixo do concorrente"
-              filename="abaixo-concorrente"
-            />
-          </TabsContent>
-          <TabsContent value="familia" className="space-y-4">
-            {porFamilia.length === 0 && (
-              <RelatorioTable rows={[]} title="Por família" filename="por-familia" />
-            )}
-            {porFamilia.map(([nome, rows]) => (
-              <RelatorioTable
-                key={nome}
-                rows={rows}
-                title={`Família: ${nome}`}
-                filename={`familia-${nome}`}
-              />
-            ))}
-          </TabsContent>
-          <TabsContent value="concorrente" className="space-y-4">
-            {porConcorrente.length === 0 && (
-              <RelatorioTable rows={[]} title="Por concorrente" filename="por-concorrente" />
-            )}
-            {porConcorrente.map(([nome, rows]) => (
-              <RelatorioTable
-                key={nome}
-                rows={rows}
-                title={`Concorrente: ${nome}`}
-                filename={`concorrente-${nome}`}
-              />
-            ))}
-          </TabsContent>
-          <TabsContent value="erros">
+          {loading ? (
             <Card className="shadow-sm">
-              <CardHeader>
-                <CardTitle className="text-base">Erros de coleta</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Data</TableHead>
-                        <TableHead>Produto</TableHead>
-                        <TableHead>Concorrente</TableHead>
-                        <TableHead>Mensagem</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {erros.length === 0 && (
-                        <TableRow>
-                          <TableCell
-                            colSpan={4}
-                            className="py-10 text-center text-muted-foreground"
-                          >
-                            Nenhum erro registrado.
-                          </TableCell>
-                        </TableRow>
-                      )}
-                      {erros.map((erro) => (
-                        <TableRow key={erro.id}>
-                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                            {formatDateTime(erro.coletado_em)}
-                          </TableCell>
-                          <TableCell className="font-medium">
-                            {erro.mapeamentos_sku?.produtos?.nome ?? emptyLabel}
-                          </TableCell>
-                          <TableCell>
-                            {erro.mapeamentos_sku?.concorrentes?.nome ?? emptyLabel}
-                          </TableCell>
-                          <TableCell>
-                            <Badge variant="destructive" className="mr-2">
-                              Erro
-                            </Badge>
-                            {erro.mensagem_erro ?? "Sem mensagem"}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+              <CardContent className="py-12 text-center text-muted-foreground">
+                Carregando relatórios...
+              </CardContent>
+            </Card>
+          ) : mapeamentos.length === 0 ? (
+            <Card className="border-primary/40 bg-primary/5 shadow-sm">
+              <CardContent className="flex gap-3 p-5 text-sm">
+                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+                <div>
+                  <div className="font-medium">Ainda não há mapeamentos para gerar relatórios.</div>
+                  <div className="mt-1 text-muted-foreground">
+                    Os filtros já carregam famílias e concorrentes cadastrados. Cadastre produtos e
+                    mapeamentos de SKU para ver comparações, variações e exportações.
+                  </div>
                 </div>
               </CardContent>
             </Card>
-          </TabsContent>
-        </Tabs>
-      )}
+          ) : (
+            <Tabs defaultValue="atual" className="space-y-4">
+              <TabsList className="h-auto flex-wrap">
+                <TabsTrigger value="atual">Comparação atual</TabsTrigger>
+                <TabsTrigger value="acima">Acima</TabsTrigger>
+                <TabsTrigger value="abaixo">Abaixo</TabsTrigger>
+                <TabsTrigger value="familia">Por família</TabsTrigger>
+                <TabsTrigger value="concorrente">Por concorrente</TabsTrigger>
+                <TabsTrigger value="erros">Erros</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="atual">
+                <RelatorioTable
+                  rows={filteredRows}
+                  title="Comparação atual ConstruJota x Concorrentes"
+                  filename="comparacao-atual"
+                />
+              </TabsContent>
+              <TabsContent value="acima">
+                <RelatorioTable
+                  rows={acima}
+                  title="Produtos acima do concorrente"
+                  filename="acima-concorrente"
+                />
+              </TabsContent>
+              <TabsContent value="abaixo">
+                <RelatorioTable
+                  rows={abaixo}
+                  title="Produtos abaixo do concorrente"
+                  filename="abaixo-concorrente"
+                />
+              </TabsContent>
+              <TabsContent value="familia" className="space-y-4">
+                {porFamilia.length === 0 && (
+                  <RelatorioTable rows={[]} title="Por família" filename="por-familia" />
+                )}
+                {porFamilia.map(([nome, rows]) => (
+                  <RelatorioTable
+                    key={nome}
+                    rows={rows}
+                    title={`Família: ${nome}`}
+                    filename={`familia-${nome}`}
+                  />
+                ))}
+              </TabsContent>
+              <TabsContent value="concorrente" className="space-y-4">
+                {porConcorrente.length === 0 && (
+                  <RelatorioTable rows={[]} title="Por concorrente" filename="por-concorrente" />
+                )}
+                {porConcorrente.map(([nome, rows]) => (
+                  <RelatorioTable
+                    key={nome}
+                    rows={rows}
+                    title={`Concorrente: ${nome}`}
+                    filename={`concorrente-${nome}`}
+                  />
+                ))}
+              </TabsContent>
+              <TabsContent value="erros">
+                <Card className="shadow-sm">
+                  <CardHeader>
+                    <CardTitle className="text-base">Erros de coleta</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Data</TableHead>
+                            <TableHead>Produto</TableHead>
+                            <TableHead>Concorrente</TableHead>
+                            <TableHead>Mensagem</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {erros.length === 0 && (
+                            <TableRow>
+                              <TableCell
+                                colSpan={4}
+                                className="py-10 text-center text-muted-foreground"
+                              >
+                                Nenhum erro registrado.
+                              </TableCell>
+                            </TableRow>
+                          )}
+                          {erros.map((erro) => (
+                            <TableRow key={erro.id}>
+                              <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                                {formatDateTime(erro.coletado_em)}
+                              </TableCell>
+                              <TableCell className="font-medium">
+                                {erro.mapeamentos_sku?.produtos?.nome ?? emptyLabel}
+                              </TableCell>
+                              <TableCell>
+                                {erro.mapeamentos_sku?.concorrentes?.nome ?? emptyLabel}
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant="destructive" className="mr-2">
+                                  Erro
+                                </Badge>
+                                {erro.mensagem_erro ?? "Sem mensagem"}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </CardContent>
+                </Card>
+              </TabsContent>
+            </Tabs>
+          )}
+        </TabsContent>
+
+        <TabsContent value="construjota">
+          <ConstruJotaHistoryReport rows={construjotaHistorico} loading={loading} />
+        </TabsContent>
+      </Tabs>
     </>
   );
 }

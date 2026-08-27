@@ -84,7 +84,6 @@ type Mapeamento = {
   concorrente_id: string;
   sku_concorrente: string;
   url_produto: string;
-  unidade_equivalente: string;
   seletor_preco: string | null;
   observacoes: string;
   ativo: boolean;
@@ -105,7 +104,6 @@ type MapeamentoForm = {
   detalhes_por_concorrente: Record<string, MapeamentoDetails>;
   sku_concorrente: string;
   url_produto: string;
-  unidade_equivalente: string;
   seletor_preco: string;
   observacoes: string;
 };
@@ -113,7 +111,6 @@ type MapeamentoForm = {
 type MapeamentoDetails = {
   sku_concorrente: string;
   url_produto: string;
-  unidade_equivalente: string;
   seletor_preco: string;
   observacoes: string;
 };
@@ -121,7 +118,6 @@ type MapeamentoDetails = {
 const emptyDetails: MapeamentoDetails = {
   sku_concorrente: "",
   url_produto: "",
-  unidade_equivalente: "",
   seletor_preco: "",
   observacoes: "",
 };
@@ -136,7 +132,6 @@ const emptyForm: MapeamentoForm = {
   detalhes_por_concorrente: {},
   sku_concorrente: "",
   url_produto: "",
-  unidade_equivalente: "",
   seletor_preco: "",
   observacoes: "",
 };
@@ -178,7 +173,7 @@ export default function MapeamentosSku() {
         apiClient
           .from("mapeamentos_sku")
           .select(
-            "id,produto_id,concorrente_id,sku_concorrente,url_produto,unidade_equivalente,seletor_preco,observacoes,ativo,ultimo_preco,ultima_atualizacao,status_coleta,produtos(id,sku_interno,nome,familia_id,preco_atual,familias(nome)),concorrentes(nome)",
+            "id,produto_id,concorrente_id,sku_concorrente,url_produto,seletor_preco,observacoes,ativo,ultimo_preco,ultima_atualizacao,status_coleta,produtos(id,sku_interno,nome,familia_id,preco_atual,familias(nome)),concorrentes(nome)",
           )
           .order("created_at", { ascending: false }),
       ]);
@@ -318,7 +313,6 @@ export default function MapeamentosSku() {
       detalhes_por_concorrente: {},
       sku_concorrente: mapeamento.sku_concorrente,
       url_produto: mapeamento.url_produto,
-      unidade_equivalente: mapeamento.unidade_equivalente,
       seletor_preco: mapeamento.seletor_preco ?? "",
       observacoes: mapeamento.observacoes,
     });
@@ -405,7 +399,6 @@ export default function MapeamentosSku() {
       produto_id: form.produto_id,
       sku_concorrente: form.sku_concorrente.trim(),
       url_produto: form.url_produto.trim(),
-      unidade_equivalente: form.unidade_equivalente.trim(),
       seletor_preco: form.seletor_preco.trim() || null,
       observacoes: form.observacoes.trim(),
     };
@@ -444,7 +437,6 @@ export default function MapeamentosSku() {
           concorrente_id: concorrenteId,
           sku_concorrente: details.sku_concorrente.trim(),
           url_produto: details.url_produto.trim(),
-          unidade_equivalente: details.unidade_equivalente.trim(),
           seletor_preco: details.seletor_preco.trim() || null,
           observacoes: details.observacoes.trim(),
           ativo: true,
@@ -903,15 +895,6 @@ export default function MapeamentosSku() {
                     placeholder="Ex: Código, Cód. ou Cod: exibido no site"
                   />
                 </div>
-                <div className="space-y-1.5">
-                  <Label>Unidade equivalente (opcional)</Label>
-                  <Input
-                    value={form.unidade_equivalente}
-                    onChange={(event) =>
-                      setForm({ ...form, unidade_equivalente: event.target.value })
-                    }
-                  />
-                </div>
                 <div className="space-y-1.5 sm:col-span-2">
                   <Label>URL do produto (opcional)</Label>
                   <Input
@@ -990,19 +973,6 @@ export default function MapeamentosSku() {
                                 updateConcorrenteDetail(key, "sku_concorrente", event.target.value)
                               }
                               placeholder="Ex: Código, Cód. ou Cod: exibido no site"
-                            />
-                          </div>
-                          <div className="space-y-1.5">
-                            <Label>Unidade equivalente (opcional)</Label>
-                            <Input
-                              value={details.unidade_equivalente}
-                              onChange={(event) =>
-                                updateConcorrenteDetail(
-                                  key,
-                                  "unidade_equivalente",
-                                  event.target.value,
-                                )
-                              }
                             />
                           </div>
                           <div className="space-y-1.5 sm:col-span-2">

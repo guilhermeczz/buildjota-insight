@@ -31,7 +31,16 @@ const corsHeaders = {
   "access-control-allow-headers": "content-type, authorization",
 };
 
-const runtimeSchemaTables = new Set(["agenda_coletas", "execucoes_robo", "historico_precos"]);
+const runtimeSchemaTables = new Set([
+  "produtos",
+  "agenda_coletas",
+  "execucoes_robo",
+  "historico_precos",
+  "mapeamentos_construjota_mercos",
+  "historico_precos_construjota_mercos",
+  "execucoes_construjota_mercos",
+  "agenda_construjota_mercos",
+]);
 let runtimeSchemaPromise = null;
 
 function ensureRuntimeSchemaOnce() {

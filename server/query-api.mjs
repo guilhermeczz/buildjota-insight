@@ -10,6 +10,10 @@ const tableMap = {
   historico_precos: "historico_precos",
   execucoes_robo: "execucoes_robo",
   agenda_coletas: "agenda_coletas",
+  mapeamentos_construjota_mercos: "mapeamentos_construjota_mercos",
+  historico_precos_construjota_mercos: "historico_precos_construjota_mercos",
+  execucoes_construjota_mercos: "execucoes_construjota_mercos",
+  agenda_construjota_mercos: "agenda_construjota_mercos",
   app_config: "app_config",
 };
 
@@ -63,6 +67,18 @@ const allowedColumns = {
     "ultimo_status",
     "ultimo_erro",
   ],
+  mapeamentos_construjota_mercos: [
+    "produto_id",
+    "sku_site",
+    "mercos_produto_id",
+    "url_produto",
+    "ativo",
+    "ultimo_status",
+    "ultimo_erro",
+  ],
+  historico_precos_construjota_mercos: [],
+  execucoes_construjota_mercos: [],
+  agenda_construjota_mercos: ["ativo", "horario", "intervalo_produtos_ms"],
 };
 
 const numericFields = new Set([
@@ -73,6 +89,12 @@ const numericFields = new Set([
   "diferenca_valor",
   "diferenca_percentual",
   "concorrencia_maxima",
+  "intervalo_produtos_ms",
+  "preco",
+  "total_processados",
+  "total_sucesso",
+  "total_indisponivel",
+  "total_erro",
 ]);
 
 function normalize(value) {
@@ -108,9 +130,79 @@ function baseSelect(table) {
   if (table === "produtos") {
     return `
       select p.*,
-        case when f.id is null then null else json_build_object('id', f.id, 'nome', f.nome) end as familias
+        case when f.id is null then null else json_build_object('id', f.id, 'nome', f.nome) end as familias,
+        case when cm.id is null then null else json_build_object(
+          'id', cm.id,
+          'produto_id', cm.produto_id,
+          'sku_site', cm.sku_site,
+          'mercos_produto_id', cm.mercos_produto_id,
+          'url_produto', cm.url_produto,
+          'ativo', cm.ativo,
+          'ultimo_preco', cm.ultimo_preco,
+          'ultimo_sucesso_em', cm.ultimo_sucesso_em,
+          'ultima_tentativa_em', cm.ultima_tentativa_em,
+          'ultimo_status', cm.ultimo_status,
+          'ultimo_erro', cm.ultimo_erro
+        ) end as mapeamentos_construjota_mercos
       from produtos p
       left join familias f on f.id = p.familia_id
+      left join mapeamentos_construjota_mercos cm on cm.produto_id = p.id
+    `;
+  }
+
+  if (table === "mapeamentos_construjota_mercos") {
+    return `
+      select mcm.*,
+        json_build_object(
+          'id', p.id,
+          'nome', p.nome,
+          'sku_interno', p.sku_interno,
+          'familia_id', p.familia_id,
+          'unidade', p.unidade,
+          'preco_atual', p.preco_atual,
+          'ativo', p.ativo,
+          'familias', case when f.id is null then null else json_build_object('id', f.id, 'nome', f.nome) end
+        ) as produtos
+      from mapeamentos_construjota_mercos mcm
+      join produtos p on p.id = mcm.produto_id
+      left join familias f on f.id = p.familia_id
+    `;
+  }
+
+  if (table === "historico_precos_construjota_mercos") {
+    return `
+      select hcm.*,
+        json_build_object(
+          'id', mcm.id,
+          'produto_id', mcm.produto_id,
+          'sku_site', mcm.sku_site,
+          'mercos_produto_id', mcm.mercos_produto_id,
+          'url_produto', mcm.url_produto,
+          'ultimo_preco', mcm.ultimo_preco,
+          'ultimo_sucesso_em', mcm.ultimo_sucesso_em,
+          'ultima_tentativa_em', mcm.ultima_tentativa_em,
+          'produtos', json_build_object(
+            'id', p.id,
+            'nome', p.nome,
+            'sku_interno', p.sku_interno,
+            'familia_id', p.familia_id,
+            'unidade', p.unidade,
+            'preco_atual', p.preco_atual,
+            'familias', case when f.id is null then null else json_build_object('id', f.id, 'nome', f.nome) end
+          )
+        ) as mapeamentos_construjota_mercos,
+        case when ecm.id is null then null else json_build_object(
+          'id', ecm.id,
+          'status', ecm.status,
+          'origem', ecm.origem,
+          'iniciado_em', ecm.iniciado_em,
+          'finalizado_em', ecm.finalizado_em
+        ) end as execucoes_construjota_mercos
+      from historico_precos_construjota_mercos hcm
+      join mapeamentos_construjota_mercos mcm on mcm.id = hcm.mapeamento_id
+      join produtos p on p.id = mcm.produto_id
+      left join familias f on f.id = p.familia_id
+      left join execucoes_construjota_mercos ecm on ecm.id = hcm.execucao_id
     `;
   }
 
@@ -175,6 +267,10 @@ function baseSelect(table) {
     `;
   }
 
+  if (table === "agenda_construjota_mercos") {
+    return `select * from agenda_construjota_mercos`;
+  }
+
   return `select * from ${table}`;
 }
 
@@ -188,6 +284,10 @@ function columnRef(table, field) {
     historico_precos: "h",
     execucoes_robo: "execucoes_robo",
     agenda_coletas: "a",
+    mapeamentos_construjota_mercos: "mcm",
+    historico_precos_construjota_mercos: "hcm",
+    execucoes_construjota_mercos: "execucoes_construjota_mercos",
+    agenda_construjota_mercos: "agenda_construjota_mercos",
     app_config: "app_config",
   };
 

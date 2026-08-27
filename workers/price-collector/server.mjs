@@ -4,7 +4,11 @@ import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { resolve } from "node:path";
 import { loadWorkerEnv } from "./env.mjs";
-import { isScheduleDue } from "./schedule.mjs";
+import {
+  isConstrujotaMercosScheduleDue,
+  isScheduleDue,
+  shouldWaitForConstrujotaMercosBeforeCompetitors,
+} from "./schedule.mjs";
 
 loadWorkerEnv();
 
@@ -16,12 +20,15 @@ const [{ ensureRuntimeSchema }, { query }] = await Promise.all([
 
 const port = Number(process.env.WORKER_TRIGGER_PORT ?? 8787);
 let running = false;
+let checkingSchedule = false;
 let runtimeSchemaPromise = null;
 let currentRun = null;
 const workerDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(workerDir, "../..");
-const workerEntry = resolve(workerDir, "index.mjs");
+const competitorWorkerEntry = resolve(workerDir, "index.mjs");
+const construjotaMercosWorkerEntry = resolve(projectRoot, "workers/construjota-mercos/index.mjs");
 const scheduleTimezone = process.env.SCHEDULE_TIMEZONE ?? "America/Sao_Paulo";
+const construjotaMercosScheduleTimezone = "America/Sao_Paulo";
 
 function ensureSchemaOnce() {
   runtimeSchemaPromise ??= ensureRuntimeSchema().catch((error) => {
@@ -67,7 +74,7 @@ function updateRunMessage(runInfo, text) {
   runInfo.updatedAt = new Date().toISOString();
 }
 
-function runWorkerWithArgs(extraArgs, runInfo = currentRun) {
+function runWorkerWithArgs(workerEntry, extraArgs, runInfo = currentRun) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(process.execPath, [workerEntry, ...extraArgs], {
       cwd: projectRoot,
@@ -104,9 +111,9 @@ function runWorkerWithArgs(extraArgs, runInfo = currentRun) {
   });
 }
 
-function localParts(date) {
+function localParts(date, timeZone = scheduleTimezone) {
   const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: scheduleTimezone,
+    timeZone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -129,9 +136,11 @@ async function fetchDueSchedule() {
   await ensureSchemaOnce();
 
   const now = new Date();
-  const current = localParts(now);
-  const { rows } = await query(
-    `
+  const competitorCurrent = localParts(now);
+  const construjotaMercosCurrent = localParts(now, construjotaMercosScheduleTimezone);
+  const [competitorResult, construjotaMercosResult] = await Promise.all([
+    query(
+      `
       select
         a.id,
         a.familia_id,
@@ -145,64 +154,149 @@ async function fetchDueSchedule() {
       where a.ativo = true and a.horario is not null and f.ativo = true
       order by a.horario asc nulls last, f.nome asc
     `,
-  );
+    ),
+    query(
+      `
+        select
+          id,
+          horario,
+          dias_semana,
+          intervalo_produtos_ms,
+          ultima_execucao
+        from agenda_construjota_mercos
+        where ativo = true and horario is not null
+        limit 1
+      `,
+    ),
+  ]);
 
-  return rows.find((row) => {
+  const construjotaMercosSchedule = construjotaMercosResult.rows.find((row) => {
+    const horario = String(row.horario).slice(0, 5);
+    const dias = Array.isArray(row.dias_semana) ? row.dias_semana.map(Number) : [];
+    const lastRun = row.ultima_execucao
+      ? localParts(new Date(row.ultima_execucao), construjotaMercosScheduleTimezone)
+      : null;
+
+    return isConstrujotaMercosScheduleDue(
+      { scheduledTime: horario, weekdays: dias, lastRun },
+      construjotaMercosCurrent,
+    );
+  });
+
+  // The own-store price refresh wins when both kinds are due, so competitor
+  // snapshots use the newest confirmed ConstruJota base price.
+  if (construjotaMercosSchedule) {
+    return {
+      ...construjotaMercosSchedule,
+      scheduleKind: "construjota_mercos",
+      label: "ConstruJota Mercos",
+    };
+  }
+
+  const ownPriceSchedule = construjotaMercosResult.rows[0];
+  if (ownPriceSchedule) {
+    const ownLastRun = ownPriceSchedule.ultima_execucao
+      ? localParts(new Date(ownPriceSchedule.ultima_execucao), construjotaMercosScheduleTimezone)
+      : null;
+    // If the own-price agenda is active today but its configured time has not arrived,
+    // competitor agendas remain due and are dispatched only after this refresh attempt.
+    if (
+      shouldWaitForConstrujotaMercosBeforeCompetitors(
+        { weekdays: ownPriceSchedule.dias_semana, lastRun: ownLastRun },
+        construjotaMercosCurrent,
+      )
+    ) {
+      return null;
+    }
+  }
+
+  const competitorSchedule = competitorResult.rows.find((row) => {
     const horario = String(row.horario).slice(0, 5);
     const dias = Array.isArray(row.dias_semana) ? row.dias_semana.map(Number) : [];
     const lastRun = row.ultima_execucao ? localParts(new Date(row.ultima_execucao)) : null;
 
-    return isScheduleDue({ scheduledTime: horario, weekdays: dias, lastRun }, current);
+    return isScheduleDue({ scheduledTime: horario, weekdays: dias, lastRun }, competitorCurrent);
   });
+
+  return competitorSchedule
+    ? {
+        ...competitorSchedule,
+        scheduleKind: "concorrente",
+        label: competitorSchedule.familia_nome,
+      }
+    : null;
 }
 
-async function markScheduleResult(agendaId, status, error = "") {
+async function markScheduleResult(schedule, status, error = "") {
   await ensureSchemaOnce();
+
+  if (schedule.scheduleKind === "construjota_mercos") {
+    await query(
+      `update agenda_construjota_mercos
+       set ultima_execucao = now(), ultimo_status = $1, ultimo_erro = $2
+       where id = $3`,
+      [status, error ? String(error).slice(0, 500) : null, schedule.id],
+    );
+    return;
+  }
 
   await query(
     `update agenda_coletas
      set ultima_execucao = now(), ultimo_status = $1, ultimo_erro = $2
      where id = $3`,
-    [status, error ? String(error).slice(0, 500) : null, agendaId],
+    [status, error ? String(error).slice(0, 500) : null, schedule.id],
   );
 }
 
-async function markScheduleStarted(agendaId) {
-  await markScheduleResult(agendaId, "pendente");
+async function markScheduleStarted(schedule) {
+  await markScheduleResult(schedule, "pendente");
 }
 
 async function runDueSchedule() {
-  if (running) return;
+  if (running || checkingSchedule) return;
 
-  const schedule = await fetchDueSchedule();
+  let schedule;
+  checkingSchedule = true;
+  try {
+    schedule = await fetchDueSchedule();
+  } finally {
+    checkingSchedule = false;
+  }
   if (!schedule || running) return;
 
   running = true;
-  const args = [
-    `--familia-id=${schedule.familia_id}`,
-    `--agenda-id=${schedule.id}`,
-    `--concurrency=${Math.max(1, Math.min(4, Number(schedule.concorrencia_maxima || 1)))}`,
-    "--scheduled",
-  ];
+  const isConstrujotaMercos = schedule.scheduleKind === "construjota_mercos";
+  const workerEntry = isConstrujotaMercos ? construjotaMercosWorkerEntry : competitorWorkerEntry;
+  const args = isConstrujotaMercos
+    ? ["--scheduled", `--agenda-id=${schedule.id}`]
+    : [
+        `--familia-id=${schedule.familia_id}`,
+        `--agenda-id=${schedule.id}`,
+        `--concurrency=${Math.max(1, Math.min(4, Number(schedule.concorrencia_maxima || 1)))}`,
+        "--scheduled",
+      ];
   currentRun = createRunInfo(
-    "agendado",
+    isConstrujotaMercos ? "construjota_mercos_agendado" : "agendado",
     args,
-    `Coleta agendada iniciada: ${schedule.familia_nome}.`,
+    `Coleta agendada iniciada: ${schedule.label}.`,
   );
 
   console.log(
-    `Coleta agendada iniciada: ${schedule.familia_nome} (${String(schedule.horario).slice(0, 5)}).`,
+    `Coleta agendada iniciada: ${schedule.label} (${String(schedule.horario).slice(0, 5)}).`,
   );
 
   try {
-    await markScheduleStarted(schedule.id);
-    const result = await runWorkerWithArgs(args, currentRun);
-    if (/Nenhum mapeamento ativo encontrado/i.test(result.stdout)) {
-      await markScheduleResult(schedule.id, "sucesso");
+    await markScheduleStarted(schedule);
+    const result = await runWorkerWithArgs(workerEntry, args, currentRun);
+    if (
+      schedule.scheduleKind === "concorrente" &&
+      /Nenhum mapeamento ativo encontrado/i.test(result.stdout)
+    ) {
+      await markScheduleResult(schedule, "sucesso");
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Falha na coleta agendada.";
-    await markScheduleResult(schedule.id, "erro", message);
+    await markScheduleResult(schedule, "erro", message);
     console.error(message);
   } finally {
     running = false;
@@ -222,7 +316,9 @@ const server = createServer(async (req, res) => {
       running,
       currentRun,
       scheduleTimezone,
+      construjotaMercosScheduleTimezone,
       local: localParts(new Date()),
+      construjotaMercosLocal: localParts(new Date(), construjotaMercosScheduleTimezone),
     });
     return;
   }
@@ -243,6 +339,7 @@ const server = createServer(async (req, res) => {
 server.listen(port, "0.0.0.0", () => {
   console.log(`Worker trigger ouvindo em http://0.0.0.0:${port}`);
   console.log(`Agenda de coleta ativa no fuso ${scheduleTimezone}.`);
+  console.log(`Agenda ConstruJota Mercos ativa no fuso ${construjotaMercosScheduleTimezone}.`);
   console.log(`Horario local da agenda: ${JSON.stringify(localParts(new Date()))}.`);
   setInterval(() => {
     runDueSchedule().catch((error) => {

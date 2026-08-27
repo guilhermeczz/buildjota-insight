@@ -25,3 +25,35 @@ export function isScheduleDue({ scheduledTime, weekdays, lastRun }, current) {
 
   return lastRun.time < String(scheduledTime).slice(0, 5);
 }
+
+export const CONSTRUJOTA_MERCOS_WEEKDAYS = Object.freeze([1, 2, 3, 4, 5]);
+
+/**
+ * The own-store price refresh has stricter semantics than competitor schedules:
+ * it may only run on business days and at most once per local calendar day.
+ * Keeping this separate preserves the existing competitor schedule behavior,
+ * which allows a newly-saved later time to run again on the same day.
+ */
+export function isConstrujotaMercosScheduleDue({ scheduledTime, weekdays, lastRun }, current) {
+  const currentWeekday = Number(current?.weekday);
+  if (!CONSTRUJOTA_MERCOS_WEEKDAYS.includes(currentWeekday)) return false;
+
+  const configuredWeekdays = Array.isArray(weekdays)
+    ? weekdays.map(Number).filter((weekday) => CONSTRUJOTA_MERCOS_WEEKDAYS.includes(weekday))
+    : CONSTRUJOTA_MERCOS_WEEKDAYS;
+
+  if (!configuredWeekdays.includes(currentWeekday)) return false;
+  if (!hasScheduleTimeArrived(scheduledTime, current?.time)) return false;
+
+  return !lastRun || lastRun.date !== current?.date;
+}
+
+export function shouldWaitForConstrujotaMercosBeforeCompetitors({ weekdays, lastRun }, current) {
+  const currentWeekday = Number(current?.weekday);
+  if (!CONSTRUJOTA_MERCOS_WEEKDAYS.includes(currentWeekday)) return false;
+  const configuredWeekdays = Array.isArray(weekdays)
+    ? weekdays.map(Number).filter((weekday) => CONSTRUJOTA_MERCOS_WEEKDAYS.includes(weekday))
+    : CONSTRUJOTA_MERCOS_WEEKDAYS;
+  if (!configuredWeekdays.includes(currentWeekday)) return false;
+  return !lastRun || lastRun.date !== current?.date;
+}
