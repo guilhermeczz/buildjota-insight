@@ -102,21 +102,23 @@ export async function waitForMercosProductSignal(page, timeoutMs = 12_000) {
 
 export async function inspectConstrujotaMercosProduct(page, expectedSku, options = {}) {
   const sku = normalizeSku(expectedSku);
-  const productId = mercosProductIdFromUrl(page.url());
-  if (!productId) {
-    return errorResult("erro", "CONSTRUJOTA_MERCOS: URL de detalhe do produto nao confirmada", {
-      sku,
-      url_produto: page.url(),
-    });
-  }
-
   await waitForMercosProductSignal(page, options.waitTimeoutMs ?? 12_000);
 
   if (new URL(page.url()).pathname.startsWith("/entrar")) {
     return errorResult("sessao_expirada", "CONSTRUJOTA_MERCOS: sessao expirada", {
       sku,
       url_produto: page.url(),
-      mercos_produto_id: productId,
+    });
+  }
+
+  // The Mercos SPA can redirect after page.goto() has already resolved. Validate
+  // the final URL only after the product/login signal so an asynchronous session
+  // expiry is classified correctly and can trigger the single reauthentication.
+  const productId = mercosProductIdFromUrl(page.url());
+  if (!productId) {
+    return errorResult("erro", "CONSTRUJOTA_MERCOS: URL de detalhe do produto nao confirmada", {
+      sku,
+      url_produto: page.url(),
     });
   }
 

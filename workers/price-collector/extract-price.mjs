@@ -17,6 +17,87 @@ const marestPriceSelector =
   "[class*='BuyInformation-sc-'] [class*='PriceContainer-sc-'] p.prod-price";
 const megalesteRootSelector = ".product-line[data-id]";
 const megalestePriceSelector = ":scope > .price";
+const cofemaNameStopwords = new Set([
+  "a",
+  "as",
+  "balde",
+  "caixa",
+  "com",
+  "da",
+  "das",
+  "de",
+  "do",
+  "dos",
+  "e",
+  "g",
+  "galao",
+  "kg",
+  "l",
+  "lata",
+  "litro",
+  "litros",
+  "lt",
+  "lts",
+  "ml",
+  "o",
+  "os",
+  "para",
+  "sache",
+  "un",
+  "und",
+  "unidade",
+]);
+
+function cofemaComparableNameTokens(value) {
+  const expanded = normalizeText(value)
+    .replace(/([a-z])(?=\d)/g, "$1 ")
+    .replace(/(\d)(?=[a-z])/g, "$1 ");
+  return (expanded.match(/\d+(?:[,.]\d+)?|[a-z]+/g) ?? []).map((token) => {
+    if (!/^\d/.test(token)) return token;
+    const numeric = Number(token.replace(",", "."));
+    return Number.isFinite(numeric) ? String(numeric) : token;
+  });
+}
+
+export function cofemaNameIdentityTokens(value) {
+  const tokens = [
+    ...new Set(
+      cofemaComparableNameTokens(value).filter(
+        (token) => !cofemaNameStopwords.has(token) && (/^\d/.test(token) || token.length >= 3),
+      ),
+    ),
+  ];
+  const descriptiveCount = tokens.filter((token) => /^[a-z]/.test(token)).length;
+  const numericCount = tokens.filter((token) => /^\d/.test(token)).length;
+
+  // Name-only confirmation is intentionally unavailable for generic descriptions.
+  // A model/variant and an explicit measure are required before it can identify a product.
+  return descriptiveCount >= 2 && numericCount >= 1 ? tokens : [];
+}
+
+export function cofemaProductNamesMatch(expectedName, observedName) {
+  const required = cofemaNameIdentityTokens(expectedName);
+  if (required.length === 0) return false;
+  const observed = new Set(cofemaComparableNameTokens(observedName));
+  return required.every((token) => observed.has(token));
+}
+
+export function marestAuthenticationError(payload) {
+  const messages = Array.isArray(payload?.errors)
+    ? payload.errors.map((item) => normalizeText(item?.message)).filter(Boolean)
+    : [];
+  if (messages.some((message) => /precisa ser aprovado|aguardando aprovacao/.test(message))) {
+    return "MAREST: conta aguardando aprovacao do fornecedor";
+  }
+  if (
+    messages.some((message) =>
+      /credenciais|login|usuario|senha|cadastro.*(?:nao|invalido)|nao.*localizar/.test(message),
+    )
+  ) {
+    return "Credenciais invalidas em MAREST";
+  }
+  return "";
+}
 
 export function isConfirmedPriceEvidence(result) {
   const price = Number(result?.price);
@@ -317,11 +398,13 @@ export async function inspectCofemaPrice(page, mapping, options = {}) {
   );
   const urlMatchesMain = codesMatch(urlCode, product.mainCode);
   const skuMatches = observedCodes.some((code) => codesMatch(base.expectedSku, code));
+  const nameMatches =
+    !base.expectedSku && cofemaProductNamesMatch(mapping?.produtos?.nome, product.title);
   const identity = {
     title: product.title,
     observedSku:
       observedCodes.find((code) => codesMatch(base.expectedSku, code)) ?? product.mainCode,
-    productConfirmed: Boolean(base.expectedSku && urlMatchesMain && skuMatches),
+    productConfirmed: Boolean(urlMatchesMain && (skuMatches || nameMatches)),
   };
   if (!identity.productConfirmed) {
     return failPriceEvidence(base, "COFEMA: URL ou SKU nao corresponde ao mapeamento", identity);

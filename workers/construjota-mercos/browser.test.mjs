@@ -54,7 +54,7 @@ function homeHtml(extra = "") {
   </body></html>`;
 }
 
-function productHtml({ sku = "503", price = "R$ 13,69" } = {}) {
+function productHtml({ sku = "503", price = "R$ 13,69", extra = "" } = {}) {
   return `<!doctype html><html><body>
     <header>ConstruJota São Paulo</header>
     <section class="ProductPage__productDetails__fixture">
@@ -63,6 +63,7 @@ function productHtml({ sku = "503", price = "R$ 13,69" } = {}) {
       <h3 class="AddToCartContainer__price__fixture">${price}</h3>
       <button type="button" onclick="fetch('/carrinho', { method: 'POST' })">COMPRAR</button>
     </section>
+    ${extra}
   </body></html>`;
 }
 
@@ -115,10 +116,32 @@ async function installFixtureRoutes(context, options = {}) {
         });
         return;
       }
+      if (options.expireAsyncFirstProduct && counters.productPages === 1) {
+        await route.fulfill({
+          status: 200,
+          contentType: "text/html; charset=utf-8",
+          body: `<!doctype html><html><body><script>
+            setTimeout(() => {
+              localStorage.removeItem("mercos-fixture-auth");
+              location.replace("/entrar");
+            }, 30);
+          </script></body></html>`,
+        });
+        return;
+      }
+      if (options.loseFirstProductUrl && counters.productPages === 1) {
+        await route.fulfill({
+          status: 200,
+          contentType: "text/html; charset=utf-8",
+          body: productHtml({ extra: '<script>history.replaceState({}, "", "/")</script>' }),
+        });
+        return;
+      }
+      const productId = url.pathname.split("/").filter(Boolean).at(-1);
       await route.fulfill({
         status: 200,
         contentType: "text/html; charset=utf-8",
-        body: productHtml(),
+        body: productHtml({ sku: options.productSkuById?.[productId] ?? "503" }),
       });
       return;
     }
@@ -222,6 +245,91 @@ test("renews an expired session only once and retries the same product safely", 
     assert.equal(counters.loginAttempts, 2, "login inicial mais uma unica renovacao");
     assert.equal(counters.productPages, 2);
     assert.equal(counters.purchaseAttempts, 0, "o coletor jamais aciona COMPRAR/carrinho");
+  } finally {
+    await collector.close();
+  }
+});
+
+test("classifies an asynchronous redirect to login as expired session and reauthenticates", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mercos-async-expired-test-"));
+  const counters = { purchaseAttempts: 0, loginAttempts: 0 };
+  const collector = await createConstrujotaMercosBrowser({
+    config: config(join(dir, "state.json")),
+    setupContext: (context) =>
+      installFixtureRoutes(context, { counters, expireAsyncFirstProduct: true }),
+    onLogin: () => {
+      counters.loginAttempts += 1;
+    },
+  });
+  try {
+    const result = await collector.collect({
+      id: "fixture-mapping",
+      produto_id: "fixture-product",
+      sku_site: "503",
+      url_produto: `${fixtureBaseUrl}/produtos/237153522`,
+      produtos: { sku_interno: "503", preco_atual: 10 },
+    });
+    assert.equal(result.status, "sucesso");
+    assert.equal(result.preco, 13.69);
+    assert.equal(counters.loginAttempts, 2);
+    assert.equal(counters.purchaseAttempts, 0);
+  } finally {
+    await collector.close();
+  }
+});
+
+test("recovers a stale URL or wrong product by searching and confirming the exact SKU", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mercos-stale-url-test-"));
+  const counters = { purchaseAttempts: 0 };
+  const collector = await createConstrujotaMercosBrowser({
+    config: config(join(dir, "state.json")),
+    setupContext: (context) =>
+      installFixtureRoutes(context, {
+        counters,
+        productSkuById: { 111111111: "316", 237153522: "503" },
+      }),
+  });
+  try {
+    const result = await collector.collect({
+      id: "fixture-mapping",
+      produto_id: "fixture-product",
+      sku_site: "503",
+      url_produto: `${fixtureBaseUrl}/produtos/111111111`,
+      produtos: { sku_interno: "503", preco_atual: 10 },
+    });
+    assert.equal(result.status, "sucesso");
+    assert.equal(result.sku_observado, "503");
+    assert.equal(result.mercos_produto_id, "237153522");
+    assert.equal(result.url_descoberta, `${fixtureBaseUrl}/produtos/237153522`);
+    assert.equal(counters.productPages, 2);
+    assert.equal(counters.purchaseAttempts, 0);
+  } finally {
+    await collector.close();
+  }
+});
+
+test("recovers through exact search when the SPA loses the configured detail URL", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mercos-lost-url-test-"));
+  const counters = { purchaseAttempts: 0 };
+  const collector = await createConstrujotaMercosBrowser({
+    config: config(join(dir, "state.json")),
+    setupContext: (context) =>
+      installFixtureRoutes(context, { counters, loseFirstProductUrl: true }),
+  });
+  try {
+    const result = await collector.collect({
+      id: "fixture-mapping",
+      produto_id: "fixture-product",
+      sku_site: "503",
+      url_produto: `${fixtureBaseUrl}/produtos/111111111`,
+      produtos: { sku_interno: "503", preco_atual: 10 },
+    });
+    assert.equal(result.status, "sucesso");
+    assert.equal(result.sku_observado, "503");
+    assert.equal(result.mercos_produto_id, "237153522");
+    assert.equal(result.url_descoberta, `${fixtureBaseUrl}/produtos/237153522`);
+    assert.equal(counters.productPages, 2);
+    assert.equal(counters.purchaseAttempts, 0);
   } finally {
     await collector.close();
   }

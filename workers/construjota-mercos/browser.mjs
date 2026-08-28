@@ -232,6 +232,7 @@ async function gotoWithSignals(page, url, config, productDetail = false) {
       if (loginPath(page.url())) throw new SessionExpiredError();
       if (productDetail) {
         const signaled = await waitForMercosProductSignal(page, config.signalTimeoutMs);
+        if (loginPath(page.url())) throw new SessionExpiredError();
         if (!signaled) throw new Error("pagina de produto nao terminou de carregar");
       } else {
         await Promise.race([
@@ -242,6 +243,7 @@ async function gotoWithSignals(page, url, config, productDetail = false) {
             .waitFor({ state: "attached", timeout: config.signalTimeoutMs })
             .catch(() => null),
         ]);
+        if (loginPath(page.url())) throw new SessionExpiredError();
       }
       return;
     } catch (error) {
@@ -435,21 +437,49 @@ export async function createConstrujotaMercosBrowser(options = {}) {
   async function openAndInspect(mapping) {
     const sku = normalizeSku(mapping.sku_site || mapping.produtos?.sku_interno);
     const directUrl = canonicalProductUrl(mapping.url_produto, config.baseUrl);
-    let discovery = null;
+    let usedDiscovery = false;
+    let directResult = null;
     if (directUrl) {
-      await gotoWithSignals(page, directUrl, config, true);
-    } else {
-      discovery = await discoverProductPage(page, sku, config);
+      try {
+        await gotoWithSignals(page, directUrl, config, true);
+        directResult = await inspectConstrujotaMercosProduct(page, sku, {
+          waitTimeoutMs: config.signalTimeoutMs,
+          hasPreviousPrice: Number(mapping.ultimo_preco) > 0 && Boolean(mapping.ultimo_sucesso_em),
+        });
+        if (directResult.status === "sessao_expirada") throw new SessionExpiredError();
+      } catch (error) {
+        if (error instanceof SessionExpiredError) throw error;
+        // A stale/removed detail URL is recoverable through one exact SKU search.
+        // The original error is never accepted as a successful reading.
+        directResult = null;
+      }
+    }
+
+    const mustDiscover =
+      !directUrl ||
+      directResult === null ||
+      directResult.status === "sku_divergente" ||
+      (directResult.status === "erro" &&
+        directResult.mensagem === "CONSTRUJOTA_MERCOS: URL de detalhe do produto nao confirmada");
+
+    if (mustDiscover) {
+      usedDiscovery = true;
+      const discovery = await discoverProductPage(page, sku, config);
       if (discovery.status !== "detalhe") return discovery;
     }
-    const result = await inspectConstrujotaMercosProduct(page, sku, {
-      waitTimeoutMs: config.signalTimeoutMs,
-      hasPreviousPrice: Number(mapping.ultimo_preco) > 0 && Boolean(mapping.ultimo_sucesso_em),
-    });
+
+    const result =
+      mustDiscover || !directResult
+        ? await inspectConstrujotaMercosProduct(page, sku, {
+            waitTimeoutMs: config.signalTimeoutMs,
+            hasPreviousPrice:
+              Number(mapping.ultimo_preco) > 0 && Boolean(mapping.ultimo_sucesso_em),
+          })
+        : directResult;
     if (result.status === "sessao_expirada") throw new SessionExpiredError();
     return {
       ...result,
-      url_descoberta: !directUrl && result.url_produto ? result.url_produto : null,
+      url_descoberta: usedDiscovery && result.url_produto ? result.url_produto : null,
     };
   }
 

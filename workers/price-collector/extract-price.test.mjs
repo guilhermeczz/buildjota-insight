@@ -3,6 +3,8 @@ import test from "node:test";
 import { chromium } from "playwright";
 
 import {
+  cofemaNameIdentityTokens,
+  cofemaProductNamesMatch,
   construjaRateLimitRetrySeconds,
   extractConstrujaPrice,
   extractPriceNearTerms,
@@ -12,6 +14,7 @@ import {
   inspectMegalestePrice,
   isConstrujaLoginWallText,
   isConfirmedPriceEvidence,
+  marestAuthenticationError,
   parseBRL,
 } from "./extract-price.mjs";
 
@@ -455,6 +458,50 @@ test("Cofema rejects a displayed code that conflicts with the mapped URL and SKU
       assert.match(result.error, /URL ou SKU nao corresponde/i);
     },
   );
+});
+
+test("Cofema safely confirms a name-only mapping by variant, measure and URL code", async () => {
+  const mapping = {
+    sku_concorrente: "",
+    produtos: { nome: "VEDAPREN PRETO 18LTS" },
+  };
+  assert.deepEqual(cofemaNameIdentityTokens(mapping.produtos.nome), ["vedapren", "preto", "18"]);
+  assert.equal(
+    cofemaProductNamesMatch(
+      mapping.produtos.nome,
+      "OTTO BAUMGART VEDAPREN PRETO 18,0 L BALDE 123456",
+    ),
+    true,
+  );
+
+  await withHtmlFixture(
+    "https://www.cofema.com.br/page/produto/445566-vedapren-preto-18l",
+    cofemaFixture({
+      code: "445566",
+      title: "OTTO BAUMGART VEDAPREN PRETO 18,0 L BALDE 123456",
+      priceMarkup: '<div class="produto-preco-row">R$ 289,90</div>',
+    }),
+    async (page) => {
+      const result = await inspectCofemaPrice(page, mapping);
+      assert.equal(result.price, 289.9);
+      assert.equal(result.productConfirmed, true);
+      assert.equal(isConfirmedPriceEvidence(result), true);
+    },
+  );
+});
+
+test("Cofema name-only confirmation rejects a different color or measure", () => {
+  assert.equal(cofemaProductNamesMatch("VEDAPREN PRETO 18LTS", "VEDAPREN BRANCO 18 L"), false);
+  assert.equal(cofemaProductNamesMatch("VEDAPREN PRETO 18LTS", "VEDAPREN PRETO 3,6 L"), false);
+  assert.deepEqual(cofemaNameIdentityTokens("VEDAPREN PRETO"), []);
+});
+
+test("MAREST reports an account pending supplier approval without exposing the response", () => {
+  assert.equal(
+    marestAuthenticationError({ errors: [{ message: "Precisa ser aprovado" }] }),
+    "MAREST: conta aguardando aprovacao do fornecedor",
+  );
+  assert.equal(marestAuthenticationError({ data: { login: true } }), "");
 });
 
 const marestMapping = {

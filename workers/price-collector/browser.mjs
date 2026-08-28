@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { credentialsFor, resolveConcorrenteKey } from "./config.mjs";
 import {
+  cofemaNameIdentityTokens,
+  cofemaProductNamesMatch,
   inspectCofemaPrice,
   inspectConstrujaPrice,
   inspectMarestPrice,
@@ -10,6 +12,7 @@ import {
   construjaRateLimitRetrySeconds,
   isConstrujaLoginWallText,
   isConfirmedPriceEvidence,
+  marestAuthenticationError,
   persistenceFieldsForPriceEvidence,
 } from "./extract-price.mjs";
 
@@ -128,14 +131,15 @@ async function prepareAuthenticatedSession(context, page, statePath, concorrente
 
 function hasInvalidCredentialsError(error) {
   return (
-    error instanceof Error && /Credenciais invalidas|credenciais recusadas/i.test(error.message)
+    error instanceof Error &&
+    /Credenciais invalidas|credenciais recusadas|conta aguardando aprovacao/i.test(error.message)
   );
 }
 
 function isAuthStateError(error) {
   if (!(error instanceof Error)) return false;
 
-  return /Credenciais invalidas|credenciais recusadas|Credenciais nao configuradas|formulario de login|Login nao confirmado|sessao expirada|menu Area do Cliente|unidade configurada|Configuracao de unidade|Regiao .* nao selecionada/i.test(
+  return /Credenciais invalidas|credenciais recusadas|Credenciais nao configuradas|formulario de login|Login nao confirmado|sessao expirada|menu Area do Cliente|unidade configurada|Configuracao de unidade|Regiao .* nao selecionada|conta aguardando aprovacao/i.test(
     error.message,
   );
 }
@@ -738,51 +742,63 @@ async function loginMarest(page, concorrente, credentials) {
     throw new Error("Formulario de login da MAREST nao abriu");
   }
 
-  const loginFilled = await fillFirstVisible(
-    page,
-    [
-      "input[placeholder*='usuario' i]",
-      "input[placeholder*='usuário' i]",
-      "input[name*='usuario' i]",
-      "input[id*='usuario' i]",
-      "input[name*='email' i]",
-      "input[id*='email' i]",
-      "input[type='email']",
-      "input[type='text']",
-      "input:not([type])",
-    ],
-    credentials.login,
-  );
-  const passwordFilled = await fillFirstVisible(
-    page,
-    [
-      "input[type='password']",
-      "input[placeholder*='senha' i]",
-      "input[name*='senha' i]",
-      "input[id*='senha' i]",
-      "input[name*='password' i]",
-      "input[id*='password' i]",
-    ],
-    credentials.password,
-  );
+  // Scope both fields to the form that owns the visible password input. The page header also
+  // contains a text search field, which must never receive the account login.
+  const passwordField = page.locator("input[type='password']:visible").first();
+  const form = passwordField.locator("xpath=ancestor::form[1]");
+  const userField = form
+    .locator("input[type='text'], input[type='email'], input:not([type])")
+    .first();
+  const loginFilled = await userField
+    .fill(credentials.login, { timeout: actionTimeoutMs })
+    .then(() => true)
+    .catch(() => false);
+  const passwordFilled = await passwordField
+    .fill(credentials.password, { timeout: actionTimeoutMs })
+    .then(() => true)
+    .catch(() => false);
 
   if (!loginFilled || !passwordFilled) {
     throw new Error("Campos de login da MAREST nao foram identificados");
   }
 
-  const clicked = await clickFirstVisible(page, [
-    "form button:has-text('LOGIN')",
-    "form button:has-text('Login')",
-    "button[type='submit']",
-    "button:has-text('LOGIN')",
-    "button:has-text('Login')",
-    "button:has-text('Entrar')",
-    "input[type='submit']",
-  ]);
+  await passwordField.press("Tab").catch(() => null);
+  const authenticationResponse = page
+    .waitForResponse(
+      (response) => {
+        try {
+          return (
+            response.request().method() !== "GET" &&
+            new URL(response.url()).origin === new URL(page.url()).origin
+          );
+        } catch {
+          return false;
+        }
+      },
+      { timeout: 15_000 },
+    )
+    .catch(() => null);
+  const clicked = await form
+    .getByRole("button", { name: /^login$/i })
+    .first()
+    .click({ timeout: actionTimeoutMs })
+    .then(() => true)
+    .catch(() => false);
 
   if (!clicked) {
-    await page.keyboard.press("Enter");
+    await passwordField.press("Enter");
   }
+
+  const response = await authenticationResponse;
+  let authenticationError = "";
+  if (response) {
+    const payload = await response.json().catch(() => null);
+    authenticationError = marestAuthenticationError(payload);
+    console.log(
+      `[MAREST] Resposta da autenticacao: HTTP ${response.status()} em ${new URL(response.url()).pathname}.`,
+    );
+  }
+  if (authenticationError) throw new Error(authenticationError);
 
   const logged = await waitForMarestLogin(page);
   if (await hasInvalidCredentialsMessage(page)) {
@@ -821,7 +837,7 @@ async function isMarestLoginFormVisible(page) {
 }
 
 async function waitForMarestLogin(page) {
-  for (let attempt = 1; attempt <= 12; attempt += 1) {
+  for (let attempt = 1; attempt <= 20; attempt += 1) {
     await page
       .waitForLoadState("domcontentloaded", { timeout: quickLoadTimeoutMs })
       .catch(() => null);
@@ -2352,9 +2368,13 @@ async function clickConfirmedCofemaSearchResult(page, mapping) {
   identity.codes = [
     ...new Set([...identity.codes, cofemaProductCodeFromUrl(mapping.url_produto)].filter(Boolean)),
   ];
+  identity.nameTokens = identity.codes.length
+    ? []
+    : cofemaNameIdentityTokens(mapping.produtos?.nome);
+  if (identity.codes.length === 0 && identity.nameTokens.length === 0) return false;
   const candidates = await page
     .locator("a[href]")
-    .evaluateAll((links, { codes }) => {
+    .evaluateAll((links, { codes, nameTokens }) => {
       const normalize = (value) =>
         String(value ?? "")
           .normalize("NFD")
@@ -2362,6 +2382,18 @@ async function clickConfirmedCofemaSearchResult(page, mapping) {
           .replace(/\s+/g, " ")
           .trim()
           .toLowerCase();
+      const comparableTokens = (value) => {
+        const expanded = normalize(value)
+          .replace(/([a-z])(?=\d)/g, "$1 ")
+          .replace(/(\d)(?=[a-z])/g, "$1 ");
+        return new Set(
+          (expanded.match(/\d+(?:[,.]\d+)?|[a-z]+/g) ?? []).map((token) => {
+            if (!/^\d/.test(token)) return token;
+            const numeric = Number(token.replace(",", "."));
+            return Number.isFinite(numeric) ? String(numeric) : token;
+          }),
+        );
+      };
       const byHref = new Map();
 
       for (const link of links) {
@@ -2378,7 +2410,12 @@ async function clickConfirmedCofemaSearchResult(page, mapping) {
           `${link.getAttribute("aria-label") ?? ""} ${href} ${root?.innerText ?? ""}`,
         );
         const codeMatch = codes.some((code) => text.includes(code));
-        if (codeMatch) byHref.set(href, { href, score: 100 });
+        const textTokens = comparableTokens(text);
+        const nameMatch =
+          codes.length === 0 &&
+          nameTokens.length > 0 &&
+          nameTokens.every((token) => textTokens.has(token));
+        if (codeMatch || nameMatch) byHref.set(href, { href, score: 100 });
       }
 
       return [...byHref.values()].sort((a, b) => b.score - a.score);
@@ -2619,6 +2656,9 @@ async function isExpectedCofemaProductPage(page, mapping) {
         .replace(/[\u0300-\u036f]/g, "")
         .toLowerCase();
       return {
+        title: String(main.querySelector("h1")?.textContent ?? "")
+          .replace(/\s+/g, " ")
+          .trim(),
         mainCode: normalized.match(/codigo:\s*([a-z0-9._/-]+)/i)?.[1] ?? "",
         supplierReference:
           normalized.match(/referencia do fornecedor:\s*([a-z0-9._/-]+)/i)?.[1] ?? "",
@@ -2636,8 +2676,10 @@ async function isExpectedCofemaProductPage(page, mapping) {
     normalizeText,
   );
   const codeMatch = identity.codes.some((code) => observedCodes.includes(normalizeText(code)));
+  const nameMatch =
+    identity.codes.length === 0 && cofemaProductNamesMatch(mapping.produtos?.nome, observed.title);
 
-  return codeMatch;
+  return codeMatch || nameMatch;
 }
 
 async function pageHasText(page, patterns) {
