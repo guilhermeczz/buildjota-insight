@@ -229,6 +229,29 @@ export async function ensureRuntimeSchema() {
       before update on agenda_construjota_mercos
       for each row execute function set_updated_at();
 
+    create or replace function notify_radar_agenda_changed()
+    returns trigger
+    language plpgsql
+    as $notify$
+    begin
+      perform pg_notify(
+        'radar_agenda_changed',
+        json_build_object('table', tg_table_name, 'operation', tg_op)::text
+      );
+      return null;
+    end;
+    $notify$;
+
+    drop trigger if exists notify_radar_agenda_coletas_changed on agenda_coletas;
+    create trigger notify_radar_agenda_coletas_changed
+      after insert or update or delete on agenda_coletas
+      for each statement execute function notify_radar_agenda_changed();
+
+    drop trigger if exists notify_radar_agenda_construjota_changed on agenda_construjota_mercos;
+    create trigger notify_radar_agenda_construjota_changed
+      after insert or update or delete on agenda_construjota_mercos
+      for each statement execute function notify_radar_agenda_changed();
+
     create index if not exists idx_execucoes_robo_iniciado_em
       on execucoes_robo(iniciado_em desc);
 

@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  earliestScheduleOccurrence,
   hasScheduleTimeArrived,
   isConstrujotaMercosScheduleDue,
   isScheduleDue,
+  nextScheduleOccurrence,
+  scheduleLocalParts,
   shouldWaitForConstrujotaMercosBeforeCompetitors,
   timeToMinutes,
 } from "./schedule.mjs";
@@ -78,6 +81,53 @@ test("permite novo horario salvo depois de uma execucao anterior no mesmo dia", 
 
 test("nao carrega uma agenda do dia anterior pela meia-noite", () => {
   assert.equal(hasScheduleTimeArrived("23:59", "00:00"), false);
+});
+
+test("calcula um unico despertar no horario exato da proxima agenda", () => {
+  const now = new Date("2026-08-28T12:34:30.000Z"); // 09:34:30 em Sao Paulo
+  assert.equal(
+    nextScheduleOccurrence(
+      { scheduledTime: "09:35", weekdays: [5] },
+      now,
+      "America/Sao_Paulo",
+    )?.toISOString(),
+    "2026-08-28T12:35:00.000Z",
+  );
+  assert.deepEqual(scheduleLocalParts(now, "America/Sao_Paulo"), {
+    date: "2026-08-28",
+    time: "09:34",
+    weekday: 5,
+  });
+});
+
+test("agenda ja vencida hoje aponta para o proximo dia selecionado", () => {
+  assert.equal(
+    nextScheduleOccurrence(
+      { scheduledTime: "09:35", weekdays: [1, 2, 3, 4, 5] },
+      new Date("2026-08-28T13:00:00.000Z"),
+      "America/Sao_Paulo",
+    )?.toISOString(),
+    "2026-08-31T12:35:00.000Z",
+  );
+});
+
+test("escolhe o horario mais proximo sem consultar o banco repetidamente", () => {
+  const next = earliestScheduleOccurrence(
+    [
+      {
+        scheduledTime: "18:00",
+        weekdays: [1, 2, 3, 4, 5],
+        timeZone: "America/Sao_Paulo",
+      },
+      {
+        scheduledTime: "09:35",
+        weekdays: [5],
+        timeZone: "America/Sao_Paulo",
+      },
+    ],
+    new Date("2026-08-28T12:00:00.000Z"),
+  );
+  assert.equal(next?.toISOString(), "2026-08-28T12:35:00.000Z");
 });
 
 test("CONSTRUJOTA_MERCOS executa de segunda a sexta depois do horario", () => {
@@ -184,7 +234,7 @@ test("concorrentes aguardam a tentativa diaria da CONSTRUJOTA_MERCOS", () => {
   const current = { date: "2026-08-24", time: "08:00", weekday: 1 };
   assert.equal(
     shouldWaitForConstrujotaMercosBeforeCompetitors(
-      { weekdays: [1, 2, 3, 4, 5], lastRun: null },
+      { scheduledTime: "08:00", weekdays: [1, 2, 3, 4, 5], lastRun: null },
       current,
     ),
     true,
@@ -192,8 +242,24 @@ test("concorrentes aguardam a tentativa diaria da CONSTRUJOTA_MERCOS", () => {
   assert.equal(
     shouldWaitForConstrujotaMercosBeforeCompetitors(
       {
+        scheduledTime: "08:00",
         weekdays: [1, 2, 3, 4, 5],
         lastRun: { date: "2026-08-24", time: "07:00", weekday: 1 },
+      },
+      current,
+    ),
+    false,
+  );
+});
+
+test("agenda propria futura nao bloqueia concorrente que ja chegou ao horario", () => {
+  const current = { date: "2026-08-28", time: "09:35", weekday: 5 };
+  assert.equal(
+    shouldWaitForConstrujotaMercosBeforeCompetitors(
+      {
+        scheduledTime: "18:00",
+        weekdays: [1, 2, 3, 4, 5],
+        lastRun: null,
       },
       current,
     ),
@@ -204,7 +270,7 @@ test("concorrentes aguardam a tentativa diaria da CONSTRUJOTA_MERCOS", () => {
 test("agenda propria nao bloqueia concorrentes no fim de semana", () => {
   assert.equal(
     shouldWaitForConstrujotaMercosBeforeCompetitors(
-      { weekdays: [1, 2, 3, 4, 5], lastRun: null },
+      { scheduledTime: "06:00", weekdays: [1, 2, 3, 4, 5], lastRun: null },
       { date: "2026-08-29", time: "12:00", weekday: 6 },
     ),
     false,

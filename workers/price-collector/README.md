@@ -125,7 +125,10 @@ mostrar o estado do worker no painel. O processo consulta as agendas diretamente
 
 ## Agenda automatica
 
-O mesmo processo `npm run worker:server` tambem consulta a tabela `agenda_coletas` a cada minuto.
+O mesmo processo `npm run worker:server` recebe `LISTEN/NOTIFY` do PostgreSQL quando uma agenda e
+salva e mantem um unico temporizador em memoria ate o proximo horario. Nao existe polling frequente
+do banco. Na inicializacao ou reconexao, o worker carrega a agenda uma vez para recuperar horarios
+pendentes.
 Quando uma familia estiver ativa, no dia correto e a partir do horario configurado, ele executa:
 
 ```bash
@@ -154,7 +157,8 @@ alterar somente o horario diario e o intervalo conservador entre produtos.
 
 Configure o horario na secao **ConstruJota Mercos - preco proprio** da Agenda. Essa agenda usa
 sempre concorrencia 1, fuso `America/Sao_Paulo` e somente segunda a sexta-feira. Quando ela e a
-coleta de concorrentes estao vencidas, a atualizacao do preco proprio tem prioridade.
+coleta de concorrentes ja estao vencidas, a atualizacao do preco proprio tem prioridade. Uma
+atualizacao propria configurada para mais tarde nao bloqueia uma coleta concorrente ja vencida.
 
 Validacao sem gravar no banco:
 

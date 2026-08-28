@@ -5,15 +5,16 @@ import { dirname } from "node:path";
 import { resolve } from "node:path";
 import { loadWorkerEnv } from "./env.mjs";
 import {
+  earliestScheduleOccurrence,
   isConstrujotaMercosScheduleDue,
   isScheduleDue,
-  shouldWaitForConstrujotaMercosBeforeCompetitors,
+  scheduleLocalParts,
 } from "./schedule.mjs";
 
 loadWorkerEnv();
 
 // Both modules create/use the database pool during initialization.
-const [{ ensureRuntimeSchema }, { query }] = await Promise.all([
+const [{ ensureRuntimeSchema }, { pool, query }] = await Promise.all([
   import("./database.mjs"),
   import("../../server/db.mjs"),
 ]);
@@ -23,12 +24,20 @@ let running = false;
 let checkingSchedule = false;
 let runtimeSchemaPromise = null;
 let currentRun = null;
+let scheduleTimer = null;
+let nextScheduleCheckAt = null;
+let scheduleRefreshQueued = false;
+let scheduleNotificationClient = null;
+let scheduleNotificationReconnectTimer = null;
+let scheduleNotificationsConnected = false;
 const workerDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(workerDir, "../..");
 const competitorWorkerEntry = resolve(workerDir, "index.mjs");
 const construjotaMercosWorkerEntry = resolve(projectRoot, "workers/construjota-mercos/index.mjs");
 const scheduleTimezone = process.env.SCHEDULE_TIMEZONE ?? "America/Sao_Paulo";
 const construjotaMercosScheduleTimezone = "America/Sao_Paulo";
+const scheduleNotificationChannel = "radar_agenda_changed";
+let lastScheduleCheck = null;
 
 function ensureSchemaOnce() {
   runtimeSchemaPromise ??= ensureRuntimeSchema().catch((error) => {
@@ -112,27 +121,10 @@ function runWorkerWithArgs(workerEntry, extraArgs, runInfo = currentRun) {
 }
 
 function localParts(date, timeZone = scheduleTimezone) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    weekday: "short",
-    hour12: false,
-  }).formatToParts(date);
-  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  const weekdayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-
-  return {
-    date: `${value.year}-${value.month}-${value.day}`,
-    time: `${value.hour}:${value.minute}`,
-    weekday: weekdayMap[value.weekday] ?? 0,
-  };
+  return scheduleLocalParts(date, timeZone);
 }
 
-async function fetchDueSchedule() {
+async function fetchSchedulePlan() {
   await ensureSchemaOnce();
 
   const now = new Date();
@@ -183,31 +175,33 @@ async function fetchDueSchedule() {
     );
   });
 
+  const nextWakeAt = earliestScheduleOccurrence(
+    [
+      ...competitorResult.rows.map((row) => ({
+        scheduledTime: String(row.horario).slice(0, 5),
+        weekdays: row.dias_semana,
+        timeZone: scheduleTimezone,
+      })),
+      ...construjotaMercosResult.rows.map((row) => ({
+        scheduledTime: String(row.horario).slice(0, 5),
+        weekdays: row.dias_semana,
+        timeZone: construjotaMercosScheduleTimezone,
+      })),
+    ],
+    now,
+  );
+
   // The own-store price refresh wins when both kinds are due, so competitor
   // snapshots use the newest confirmed ConstruJota base price.
   if (construjotaMercosSchedule) {
     return {
-      ...construjotaMercosSchedule,
-      scheduleKind: "construjota_mercos",
-      label: "ConstruJota Mercos",
+      schedule: {
+        ...construjotaMercosSchedule,
+        scheduleKind: "construjota_mercos",
+        label: "ConstruJota Mercos",
+      },
+      nextWakeAt,
     };
-  }
-
-  const ownPriceSchedule = construjotaMercosResult.rows[0];
-  if (ownPriceSchedule) {
-    const ownLastRun = ownPriceSchedule.ultima_execucao
-      ? localParts(new Date(ownPriceSchedule.ultima_execucao), construjotaMercosScheduleTimezone)
-      : null;
-    // If the own-price agenda is active today but its configured time has not arrived,
-    // competitor agendas remain due and are dispatched only after this refresh attempt.
-    if (
-      shouldWaitForConstrujotaMercosBeforeCompetitors(
-        { weekdays: ownPriceSchedule.dias_semana, lastRun: ownLastRun },
-        construjotaMercosCurrent,
-      )
-    ) {
-      return null;
-    }
   }
 
   const competitorSchedule = competitorResult.rows.find((row) => {
@@ -218,13 +212,16 @@ async function fetchDueSchedule() {
     return isScheduleDue({ scheduledTime: horario, weekdays: dias, lastRun }, competitorCurrent);
   });
 
-  return competitorSchedule
-    ? {
-        ...competitorSchedule,
-        scheduleKind: "concorrente",
-        label: competitorSchedule.familia_nome,
-      }
-    : null;
+  return {
+    schedule: competitorSchedule
+      ? {
+          ...competitorSchedule,
+          scheduleKind: "concorrente",
+          label: competitorSchedule.familia_nome,
+        }
+      : null,
+    nextWakeAt,
+  };
 }
 
 async function markScheduleResult(schedule, status, error = "") {
@@ -252,17 +249,94 @@ async function markScheduleStarted(schedule) {
   await markScheduleResult(schedule, "pendente");
 }
 
-async function runDueSchedule() {
+function clearScheduleTimer() {
+  if (scheduleTimer) clearTimeout(scheduleTimer);
+  scheduleTimer = null;
+  nextScheduleCheckAt = null;
+}
+
+function armScheduleTimer(nextWakeAt) {
+  clearScheduleTimer();
+  if (!(nextWakeAt instanceof Date) || Number.isNaN(nextWakeAt.getTime())) return;
+
+  // A pequena margem evita acordar alguns milissegundos antes do minuto salvo.
+  const delayMs = Math.max(0, nextWakeAt.getTime() - Date.now() + 250);
+  nextScheduleCheckAt = nextWakeAt.toISOString();
+  scheduleTimer = setTimeout(
+    () => {
+      scheduleTimer = null;
+      nextScheduleCheckAt = null;
+      requestScheduleRefresh("timer");
+    },
+    Math.min(delayMs, 2_147_000_000),
+  );
+}
+
+function reportSchedulerError(error) {
+  console.error(error instanceof Error ? error.message : error);
+}
+
+function requestScheduleRefresh(reason = "notificacao") {
+  clearScheduleTimer();
+  scheduleRefreshQueued = true;
   if (running || checkingSchedule) return;
 
-  let schedule;
+  queueMicrotask(() => {
+    if (!scheduleRefreshQueued || running || checkingSchedule) return;
+    runDueSchedule(reason).catch(reportSchedulerError);
+  });
+}
+
+async function runDueSchedule(reason = "timer") {
+  if (running || checkingSchedule) {
+    scheduleRefreshQueued = true;
+    return;
+  }
+
+  scheduleRefreshQueued = false;
+  let plan;
   checkingSchedule = true;
   try {
-    schedule = await fetchDueSchedule();
+    plan = await fetchSchedulePlan();
+    lastScheduleCheck = {
+      checkedAt: new Date().toISOString(),
+      local: localParts(new Date()),
+      reason,
+      status: plan.schedule ? "pronta" : "aguardando_horario",
+      scheduleKind: plan.schedule?.scheduleKind ?? null,
+      scheduledTime: plan.schedule?.horario ? String(plan.schedule.horario).slice(0, 5) : null,
+      nextScheduleCheckAt: plan.nextWakeAt?.toISOString() ?? null,
+      error: null,
+    };
+  } catch (error) {
+    lastScheduleCheck = {
+      checkedAt: new Date().toISOString(),
+      local: localParts(new Date()),
+      reason,
+      status: "erro",
+      scheduleKind: null,
+      scheduledTime: null,
+      nextScheduleCheckAt: null,
+      error: error instanceof Error ? error.message.slice(0, 500) : "Falha ao consultar agenda.",
+    };
+    // Recuperacao excepcional de conexao: nao e polling normal e so e usada
+    // quando a consulta ao banco falha.
+    armScheduleTimer(new Date(Date.now() + 60_000));
+    throw error;
   } finally {
     checkingSchedule = false;
   }
-  if (!schedule || running) return;
+
+  if (scheduleRefreshQueued) {
+    requestScheduleRefresh("notificacao_durante_consulta");
+    return;
+  }
+
+  const schedule = plan.schedule;
+  if (!schedule) {
+    armScheduleTimer(plan.nextWakeAt);
+    return;
+  }
 
   running = true;
   const isConstrujotaMercos = schedule.scheduleKind === "construjota_mercos";
@@ -301,6 +375,57 @@ async function runDueSchedule() {
   } finally {
     running = false;
     currentRun = null;
+    requestScheduleRefresh("apos_execucao");
+  }
+}
+
+function scheduleNotificationReconnect(error) {
+  scheduleNotificationsConnected = false;
+  if (error) reportSchedulerError(error);
+  if (scheduleNotificationReconnectTimer) return;
+  scheduleNotificationReconnectTimer = setTimeout(() => {
+    scheduleNotificationReconnectTimer = null;
+    connectScheduleNotifications().catch(() => {});
+  }, 5_000);
+}
+
+async function connectScheduleNotifications() {
+  if (scheduleNotificationClient) return;
+  await ensureSchemaOnce();
+
+  let client;
+  try {
+    client = await pool.connect();
+    scheduleNotificationClient = client;
+    client.on("notification", (message) => {
+      if (message.channel !== scheduleNotificationChannel) return;
+      requestScheduleRefresh("postgres_notify");
+    });
+    client.on("error", (error) => {
+      if (scheduleNotificationClient !== client) return;
+      scheduleNotificationClient = null;
+      try {
+        client.release(true);
+      } catch {
+        // A conexao ja pode ter sido removida pelo pool.
+      }
+      scheduleNotificationReconnect(error);
+    });
+    await client.query(`listen ${scheduleNotificationChannel}`);
+    scheduleNotificationsConnected = true;
+    console.log(`Agenda aguardando notificacoes PostgreSQL em ${scheduleNotificationChannel}.`);
+    requestScheduleRefresh("listener_conectado");
+  } catch (error) {
+    if (scheduleNotificationClient === client) scheduleNotificationClient = null;
+    if (client) {
+      try {
+        client.release(true);
+      } catch {
+        // Ignora liberacao duplicada durante reconexao.
+      }
+    }
+    scheduleNotificationReconnect(error);
+    throw error;
   }
 }
 
@@ -317,6 +442,12 @@ const server = createServer(async (req, res) => {
       currentRun,
       scheduleTimezone,
       construjotaMercosScheduleTimezone,
+      schedulerMode: "postgres_notify_timer",
+      scheduleNotificationChannel,
+      scheduleNotificationsConnected,
+      checkingSchedule,
+      nextScheduleCheckAt,
+      lastScheduleCheck,
       local: localParts(new Date()),
       construjotaMercosLocal: localParts(new Date(), construjotaMercosScheduleTimezone),
     });
@@ -341,12 +472,6 @@ server.listen(port, "0.0.0.0", () => {
   console.log(`Agenda de coleta ativa no fuso ${scheduleTimezone}.`);
   console.log(`Agenda ConstruJota Mercos ativa no fuso ${construjotaMercosScheduleTimezone}.`);
   console.log(`Horario local da agenda: ${JSON.stringify(localParts(new Date()))}.`);
-  setInterval(() => {
-    runDueSchedule().catch((error) => {
-      console.error(error instanceof Error ? error.message : error);
-    });
-  }, 60000);
-  runDueSchedule().catch((error) => {
-    console.error(error instanceof Error ? error.message : error);
-  });
+  requestScheduleRefresh("startup");
+  connectScheduleNotifications().catch(() => {});
 });

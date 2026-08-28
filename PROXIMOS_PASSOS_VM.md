@@ -15,8 +15,9 @@
 curl -s -X POST http://127.0.0.1:8787/run -H "content-type: application/json" -d '{}'
 ```
 
-- A agenda automatica agora e controlada pela tela **Agenda de Coleta**. O processo
-  `radar-worker` consulta essa agenda a cada minuto.
+- A agenda automatica agora e controlada pela tela **Agenda de Coleta**. Ao salvar, o PostgreSQL
+  notifica o `radar-worker`, que mantem um unico temporizador ate o horario exato, sem polling
+  frequente.
 - O cron antigo das 06:00 deve ser removido da VM para nao criar uma segunda coleta:
 
 ```bash
