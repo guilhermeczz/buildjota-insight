@@ -161,6 +161,11 @@ function mercosProductIdFromUrl(value: string) {
   return value.match(/\/produtos\/(\d+)\/?$/)?.[1] ?? null;
 }
 
+function databaseErrorCode(error: unknown) {
+  if (!error || typeof error !== "object" || !("code" in error)) return null;
+  return typeof error.code === "string" ? error.code : null;
+}
+
 function mercosStatusBadge(mapping: ConstruJotaMercosMapping | null) {
   if (!mapping?.url_produto) return <Badge variant="secondary">Sem URL</Badge>;
   if (mapping.ultimo_status === "sucesso") {
@@ -412,7 +417,7 @@ export default function Produtos() {
       if (error || !data) {
         setSaving(false);
         toast.error(
-          error?.code === "23505"
+          databaseErrorCode(error) === "23505"
             ? "Já existe um produto com esse SKU"
             : "Não foi possível atualizar o produto",
         );
@@ -443,7 +448,7 @@ export default function Produtos() {
     if (error || !data) {
       setSaving(false);
       toast.error(
-        error?.code === "23505"
+        databaseErrorCode(error) === "23505"
           ? "Já existe um produto com esse SKU"
           : "Não foi possível cadastrar o produto",
       );
