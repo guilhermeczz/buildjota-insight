@@ -830,7 +830,7 @@ export default function Produtos() {
               />
             </div>
             <div className="space-y-1.5 sm:col-span-2">
-              <Label>URL do produto no portal ConstruJota Mercos (opcional)</Label>
+              <Label>URL do produto no portal ConstruJota Mercos</Label>
               <Input
                 type="url"
                 value={form.url_construjota_mercos}
