@@ -149,7 +149,9 @@ somente depois de confirmar URL `/produtos/{id}`, bloco principal, `Cod.` exatam
 `sku_interno` e um unico preco vigente visivel.
 
 A sessao autenticada e armazenada em `.worker-auth/construjota-mercos.json`, arquivo ignorado
-pelo Git. Se a sessao expirar e redirecionar para `/entrar`, o login e repetido uma unica vez.
+pelo Git. Se a sessao expirar e redirecionar para `/entrar`, o contexto vencido e descartado e o
+login e repetido uma unica vez para o produto afetado. Uma nova expiracao posterior pode ser
+renovada sem invalidar os demais produtos da mesma execucao.
 Credenciais, cookies, tokens e respostas de login nao sao registrados em log ou diagnostico.
 Os tempos de navegacao, espera de renderizacao e novas tentativas sao limites tecnicos internos e
 nao precisam ser configurados no `.env` nem na interface. A configuracao operacional permite

@@ -397,11 +397,19 @@ export async function createConstrujotaMercosBrowser(options = {}) {
   const config = construjotaMercosConfig(options.config);
   await mkdir(dirname(config.authStatePath), { recursive: true });
   const browser = await chromium.launch({ headless: options.headed !== true });
-  const context = await newAuthenticatedContext(browser, config);
+  let context = await newAuthenticatedContext(browser, config);
   if (typeof options.setupContext === "function") await options.setupContext(context);
-  const page = await context.newPage();
+  let page = await context.newPage();
   page.setDefaultTimeout(config.actionTimeoutMs);
-  let reauthenticationUsed = false;
+
+  async function replaceExpiredContext() {
+    await context.close().catch(() => {});
+    await unlink(config.authStatePath).catch(() => {});
+    context = await newAuthenticatedContext(browser, config);
+    if (typeof options.setupContext === "function") await options.setupContext(context);
+    page = await context.newPage();
+    page.setDefaultTimeout(config.actionTimeoutMs);
+  }
 
   async function authenticate(force = false) {
     if (force) {
@@ -485,12 +493,14 @@ export async function createConstrujotaMercosBrowser(options = {}) {
 
   async function collect(mapping) {
     let result;
+    let reauthenticationUsed = false;
     try {
       result = await openAndInspect(mapping);
     } catch (error) {
       if (error instanceof SessionExpiredError && !reauthenticationUsed) {
         reauthenticationUsed = true;
         try {
+          await replaceExpiredContext();
           await authenticate(true);
           result = await openAndInspect(mapping);
         } catch (retryError) {

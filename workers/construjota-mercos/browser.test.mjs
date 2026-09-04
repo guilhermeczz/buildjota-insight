@@ -108,6 +108,14 @@ async function installFixtureRoutes(context, options = {}) {
     }
     if (url.pathname.startsWith("/produtos/")) {
       counters.productPages = (counters.productPages ?? 0) + 1;
+      if (options.expireProductPageNumbers?.includes(counters.productPages)) {
+        await route.fulfill({
+          status: 200,
+          contentType: "text/html; charset=utf-8",
+          body: '<script>localStorage.removeItem("mercos-fixture-auth");location.replace("/entrar")</script>',
+        });
+        return;
+      }
       if (options.expireFirstProduct && counters.productPages === 1) {
         await route.fulfill({
           status: 200,
@@ -272,6 +280,37 @@ test("classifies an asynchronous redirect to login as expired session and reauth
     assert.equal(result.status, "sucesso");
     assert.equal(result.preco, 13.69);
     assert.equal(counters.loginAttempts, 2);
+    assert.equal(counters.purchaseAttempts, 0);
+  } finally {
+    await collector.close();
+  }
+});
+
+test("renews the session once per product when it expires more than once during a long run", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mercos-repeated-expiry-test-"));
+  const counters = { purchaseAttempts: 0, loginAttempts: 0 };
+  const collector = await createConstrujotaMercosBrowser({
+    config: config(join(dir, "state.json")),
+    setupContext: (context) =>
+      installFixtureRoutes(context, { counters, expireProductPageNumbers: [1, 3] }),
+    onLogin: () => {
+      counters.loginAttempts += 1;
+    },
+  });
+  try {
+    const mapping = {
+      produto_id: "fixture-product",
+      sku_site: "503",
+      url_produto: `${fixtureBaseUrl}/produtos/237153522`,
+      produtos: { sku_interno: "503", preco_atual: 10 },
+    };
+    const first = await collector.collect({ ...mapping, id: "fixture-mapping-1" });
+    const second = await collector.collect({ ...mapping, id: "fixture-mapping-2" });
+
+    assert.equal(first.status, "sucesso");
+    assert.equal(second.status, "sucesso");
+    assert.equal(counters.loginAttempts, 3, "login inicial mais uma renovacao para cada produto");
+    assert.equal(counters.productPages, 4);
     assert.equal(counters.purchaseAttempts, 0);
   } finally {
     await collector.close();
