@@ -549,6 +549,51 @@ test("Marest ignores related and struck prices outside the current main price", 
   );
 });
 
+test("Marest imperial tape 22782 uses the promotion without dividing by pack quantity", async () => {
+  await withHtmlFixture(
+    "https://www.marest.com.br/product?sku=22782",
+    marestFixture({
+      sku: "22782",
+      title: "fita isolante imperial slim 18mmx20m 3m hb004216360",
+      priceMarkup: `
+        <p>Embalagem de venda: 10 UN</p>
+        <p class="prod-price" style="text-decoration: line-through">R$ 9,10</p>
+        <p class="prod-price">R$ 8,39</p><span>8% OFF</span>
+        <span>74 Disponiveis</span>`,
+      relatedMarkup: '<section><p class="prod-price">R$ 0,57</p></section>',
+    }),
+    async (page) => {
+      const result = await inspectMarestPrice(page, {
+        sku_concorrente: "22782",
+        produtos: { sku_interno: "988", nome: "3M FITA ISOLANTE IMPERIAL 20M (10)" },
+      });
+      assert.equal(result.price, 8.39);
+      assert.equal(result.observedSku, "22782");
+      assert.equal(result.mainPriceCount, 1);
+      assert.equal(isConfirmedPriceEvidence(result), true);
+    },
+  );
+});
+
+test("Marest does not accept truncated SKU 2278 for tape 22782", async () => {
+  const mapping = { sku_concorrente: "22782" };
+  const wrongProduct = marestFixture({
+    sku: "2278",
+    priceMarkup: '<p class="prod-price">R$ 0,57</p>',
+  });
+  for (const urlSku of ["2278", "22782"]) {
+    await withHtmlFixture(
+      `https://www.marest.com.br/product?sku=${urlSku}`,
+      wrongProduct,
+      async (page) => {
+        const result = await inspectMarestPrice(page, mapping);
+        assert.equal(result.price, null);
+        assert.equal(isConfirmedPriceEvidence(result), false);
+      },
+    );
+  }
+});
+
 test("Marest rejects conflicting main prices and a page from another SKU", async () => {
   const correctUrl = "https://www.marest.com.br/product?sku=3502&nome=3502";
   await withHtmlFixture(

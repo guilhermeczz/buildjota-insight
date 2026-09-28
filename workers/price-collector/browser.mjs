@@ -3,6 +3,12 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { credentialsFor, resolveConcorrenteKey } from "./config.mjs";
 import {
+  cofemaLoginResponseError,
+  inspectWithRecovery,
+  isCofemaLoginResponse,
+  isIncompletePriceEvidence,
+} from "./recovery.mjs";
+import {
   cofemaNameIdentityTokens,
   cofemaProductNamesMatch,
   inspectCofemaPrice,
@@ -12,6 +18,7 @@ import {
   construjaRateLimitRetrySeconds,
   isConstrujaLoginWallText,
   isConfirmedPriceEvidence,
+  isConfirmedUnavailableEvidence,
   marestAuthenticationError,
   persistenceFieldsForPriceEvidence,
 } from "./extract-price.mjs";
@@ -132,14 +139,16 @@ async function prepareAuthenticatedSession(context, page, statePath, concorrente
 function hasInvalidCredentialsError(error) {
   return (
     error instanceof Error &&
-    /Credenciais invalidas|credenciais recusadas|conta aguardando aprovacao/i.test(error.message)
+    /Credenciais invalidas|credenciais recusadas|autenticacao recusada|site exige atualizacao de senha|limite temporario de tentativas de login|conta aguardando aprovacao/i.test(
+      error.message,
+    )
   );
 }
 
 function isAuthStateError(error) {
   if (!(error instanceof Error)) return false;
 
-  return /Credenciais invalidas|credenciais recusadas|Credenciais nao configuradas|formulario de login|Login nao confirmado|sessao expirada|menu Area do Cliente|unidade configurada|Configuracao de unidade|Regiao .* nao selecionada|conta aguardando aprovacao/i.test(
+  return /Credenciais invalidas|credenciais recusadas|autenticacao recusada|site exige atualizacao de senha|Credenciais nao configuradas|formulario de login|Login nao confirmado|sessao expirada|menu Area do Cliente|unidade configurada|Configuracao de unidade|Regiao .* nao selecionada|conta aguardando aprovacao/i.test(
     error.message,
   );
 }
@@ -1247,11 +1256,7 @@ async function loginCofema(page, concorrente, credentials) {
     .getByRole("dialog", { name: /login do cliente/i })
     .getByRole("button", { name: /^entrar$/i });
   const authResponsePromise = page
-    .waitForResponse(
-      (response) =>
-        /\/api\/auth(?:$|\?)/i.test(response.url()) && response.request().method() === "POST",
-      { timeout: actionTimeoutMs * 2 },
-    )
+    .waitForResponse(isCofemaLoginResponse, { timeout: actionTimeoutMs * 2 })
     .catch(() => null);
 
   if (!(await submit.isVisible().catch(() => false))) {
@@ -1262,8 +1267,10 @@ async function loginCofema(page, concorrente, credentials) {
   if (authResponse) {
     console.log(`[COFEMA] Resposta da autenticacao: HTTP ${authResponse.status()}.`);
   }
-  if (authResponse && [400, 401, 403].includes(authResponse.status())) {
-    throw new Error("COFEMA: credenciais recusadas");
+  if (authResponse) {
+    const body = await authResponse.json().catch(() => null);
+    const authError = cofemaLoginResponseError(authResponse.status(), body);
+    if (authError) throw new Error(authError);
   }
 
   const logged = await waitForCofemaLogin(page);
@@ -1931,7 +1938,16 @@ async function openProductWithAuthenticatedSession(page, context, statePath, map
   const maximumAttempts = isConstruja(concorrente) ? 3 : 2;
 
   for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
-    await openProductPage(page, context, statePath, mapping, concorrente);
+    try {
+      await openProductPage(page, context, statePath, mapping, concorrente);
+    } catch (error) {
+      // Preferences/authentication can fail on an otherwise identifiable, sold-out
+      // product. Preserve that evidence before the login flow navigates away.
+      await throwIfProductUnavailable(page, mapping, concorrente);
+      throw error;
+    }
+
+    await throwIfProductUnavailable(page, mapping, concorrente);
 
     if (!(await shouldRetryLogin(page, mapping, concorrente))) return;
     if (attempt === maximumAttempts) return;
@@ -2792,15 +2808,43 @@ async function captureCompetitorFailureDiagnostics(page, mapping, competitorName
   console.log(`[${competitor}] Diagnostico sanitizado de falha salvo em ${diagnosticsDir}.`);
 }
 
-async function inspectCompetitorPrice(page, mapping, concorrente) {
-  if (isCofema(concorrente)) return inspectCofemaPrice(page, mapping);
-  if (isConstruja(concorrente)) return inspectConstrujaPrice(page, mapping);
-  if (isMarest(concorrente)) return inspectMarestPrice(page, mapping);
-  if (isMegaleste(concorrente)) return inspectMegalestePrice(page, mapping);
+async function inspectCompetitorPrice(page, mapping, concorrente, options = {}) {
+  if (isCofema(concorrente)) return inspectCofemaPrice(page, mapping, options);
+  if (isConstruja(concorrente)) return inspectConstrujaPrice(page, mapping, options);
+  if (isMarest(concorrente)) return inspectMarestPrice(page, mapping, options);
+  if (isMegaleste(concorrente)) return inspectMegalestePrice(page, mapping, options);
 
   throw new Error(
     `${resolveConcorrenteKey(concorrente?.nome)}: extrator seguro de preco nao configurado`,
   );
+}
+
+async function throwIfProductUnavailable(page, mapping, concorrente) {
+  const evidence = await inspectCompetitorPrice(page, mapping, concorrente, { waitTimeoutMs: 1 });
+  if (isConfirmedUnavailableEvidence(evidence)) {
+    throw new Error(`${resolveConcorrenteKey(concorrente.nome)}: PRODUTO INDISPONIVEL`);
+  }
+}
+
+async function confirmMissingMarestProduct(page, mapping, concorrente) {
+  const sku = String(mapping.sku_concorrente ?? "").trim();
+  if (!sku) return;
+  const searchUrl = new URL("/products", concorrente.site_url);
+  searchUrl.search = new URLSearchParams({
+    cat: "pesquisa",
+    desc: "pesquisa",
+    nomeOuSku: sku,
+    pg: "1",
+  }).toString();
+  await page.goto(searchUrl.toString(), {
+    waitUntil: "domcontentloaded",
+    timeout: navigationTimeoutMs,
+  });
+  const noResults = page.getByText(/Nenhum produto encontrado/i).first();
+  await noResults.waitFor({ state: "visible", timeout: productSignalTimeoutMs }).catch(() => null);
+  if ((await isMarestLoggedIn(page)) && (await noResults.isVisible().catch(() => false))) {
+    throw new Error(`MAREST: produto nao encontrado no catalogo (SKU ${sku})`);
+  }
 }
 
 function logConfirmedPriceEvidence(result) {
@@ -2844,7 +2888,7 @@ export async function collectPricesByBrowser(groups, options = {}) {
   return resultados;
 }
 
-async function collectGroup(browser, group, options = {}) {
+export async function collectGroup(browser, group, options = {}) {
   const statePath = storageStatePath(group.concorrente.nome);
   const context = await browser.newContext({
     userAgent: isCofema(group.concorrente) ? cofemaUserAgentForBrowser(browser) : userAgent,
@@ -2910,6 +2954,7 @@ async function collectGroup(browser, group, options = {}) {
           group.concorrente,
         );
 
+        await throwIfProductUnavailable(page, mapping, group.concorrente);
         if (await isLoginRequired(page, group.concorrente)) {
           throw new Error(
             isCofema(group.concorrente)
@@ -2925,7 +2970,28 @@ async function collectGroup(browser, group, options = {}) {
           throw new Error("COFEMA: produto nao corresponde ao mapeamento");
         }
 
-        const priceResult = await inspectCompetitorPrice(page, mapping, group.concorrente);
+        const priceResult = await inspectWithRecovery({
+          inspect: () => inspectCompetitorPrice(page, mapping, group.concorrente),
+          recover: async () => {
+            console.log(`${progressLabel}: pagina incompleta; repetindo a leitura uma vez.`);
+            await page.waitForTimeout(
+              isConstruja(group.concorrente) ? construjaProductIntervalMs : 1000,
+            );
+            await openProductWithAuthenticatedSession(
+              page,
+              context,
+              statePath,
+              mapping,
+              group.concorrente,
+            );
+            if (await isLoginRequired(page, group.concorrente)) {
+              throw new Error(`${group.concorrente.nome}: sessao expirada`);
+            }
+          },
+        });
+        if (isMarest(group.concorrente) && isIncompletePriceEvidence(priceResult)) {
+          await confirmMissingMarestProduct(page, mapping, group.concorrente);
+        }
         if (!isConfirmedPriceEvidence(priceResult)) {
           throw new Error(
             priceResult?.error ||
@@ -2988,12 +3054,31 @@ async function collectGroup(browser, group, options = {}) {
     }
 
     for (const mapping of group.mapeamentos) {
+      let message = error instanceof Error ? error.message : "Erro desconhecido";
+      // An authentication failure cannot prove stock status for an entire batch.
+      // Check only direct product pages, accepting availability evidence but never
+      // an unauthenticated price. Search-only catalogs still retain the auth error.
+      if (isAuthStateError(error) && shouldOpenDirectProductUrl(mapping, group.concorrente)) {
+        try {
+          await gotoProductPage(
+            page,
+            productUrlForMapping(mapping, group.concorrente),
+            group.concorrente,
+          );
+          const evidence = await inspectCompetitorPrice(page, mapping, group.concorrente);
+          if (isConfirmedUnavailableEvidence(evidence)) {
+            message = `${resolveConcorrenteKey(group.concorrente.nome)}: PRODUTO INDISPONIVEL`;
+          }
+        } catch {
+          // Missing product/access evidence must retain the original authentication error.
+        }
+      }
       resultados.push({
         mapeamento_id: mapping.id,
         preco_construjota: Number(mapping.produtos.preco_atual ?? 0),
         preco_concorrente: null,
         status: "erro",
-        mensagem_erro: error instanceof Error ? error.message : "Erro desconhecido",
+        mensagem_erro: message,
         concorrente: resolveConcorrenteKey(group.concorrente.nome),
         preservar_ultimo_preco: true,
       });

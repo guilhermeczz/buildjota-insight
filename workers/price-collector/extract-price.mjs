@@ -113,6 +113,14 @@ export function isConfirmedPriceEvidence(result) {
   );
 }
 
+export function isConfirmedUnavailableEvidence(result) {
+  return (
+    result?.unavailable === true &&
+    result.productConfirmed === true &&
+    result.priceScopeConfirmed === true
+  );
+}
+
 export function persistenceFieldsForPriceEvidence(result) {
   return {
     concorrente: String(result?.competitor ?? "")
@@ -219,7 +227,7 @@ function finalizeSingleMainPrice(base, details = {}) {
   };
 
   if (details.unavailable === true) {
-    return failPriceEvidence(base, `${base.competitor}: produto indisponivel`, shared);
+    return failPriceEvidence(base, `${base.competitor}: PRODUTO INDISPONIVEL`, shared);
   }
   if (!shared.priceScopeConfirmed) {
     return failPriceEvidence(
@@ -369,8 +377,12 @@ export async function inspectCofemaPrice(page, mapping, options = {}) {
               barcode: normalized.match(/codigo barras:\s*([a-z0-9._/-]+)/i)?.[1] ?? "",
               priceScopeConfirmed: true,
               unavailable:
-                /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|indisponivel|esgotado/.test(
+                /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|produto\s+(?:temporariamente\s+)?indisponivel|esgotado/.test(
                   summaryText,
+                ) ||
+                [...summary.querySelectorAll("*")].some(
+                  (element) =>
+                    isVisible(element) && /^indispon[ií]vel$/i.test(element.innerText.trim()),
                 ),
               prices: priceElements.map((element) => ({
                 rawText: currentText(element),
@@ -529,8 +541,12 @@ export async function inspectMarestPrice(page, mapping, options = {}) {
                   .match(/cod\.?\s*([a-z0-9._/-]+)/i)?.[1] ?? "",
               priceScopeConfirmed: Boolean(buyBlock),
               unavailable:
-                /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|indisponivel|esgotado/.test(
+                /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|produto\s+(?:temporariamente\s+)?indisponivel|esgotado/.test(
                   buyText,
+                ) ||
+                [...(buyBlock?.querySelectorAll("*") ?? [])].some(
+                  (element) =>
+                    isVisible(element) && /^indispon[ií]vel$/i.test(element.innerText.trim()),
                 ),
               prices: prices.map((element) => ({
                 rawText: currentText(element),
@@ -680,8 +696,12 @@ export async function inspectMegalestePrice(page, mapping, options = {}) {
                 Boolean(root.querySelector("input[name='qtd']")) &&
                 Boolean(root.querySelector("button.btn-cart-add")),
               unavailable:
-                /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|indisponivel|esgotado/.test(
+                /fora\s+(?:de|do)\s+estoque|sem\s+(?:estoque|saldo)|produto\s+(?:temporariamente\s+)?indisponivel|esgotado/.test(
                   text,
+                ) ||
+                [...root.querySelectorAll("*")].some(
+                  (element) =>
+                    isVisible(element) && /^indispon[ií]vel$/i.test(element.innerText.trim()),
                 ),
               prices: prices.map((element) => ({
                 rawText: currentText(element),
@@ -900,6 +920,17 @@ export async function inspectConstrujaPrice(page, mapping, options = {}) {
         `(esperado ${expectedSku}; URL ${urlSku}; exibido ${observedSku || "ausente"})`,
       identity,
     );
+  }
+  // A guest header/login prompt must not override stock information in the
+  // confirmed product's own purchase block.
+  if (unavailable) {
+    return finalizeSingleMainPrice(baseResult, {
+      ...identity,
+      unavailable,
+      prices,
+      productConfirmed: true,
+      priceScopeConfirmed,
+    });
   }
   if (isConstrujaLoginWallText(productText)) {
     return failed("CONSTRUJA: sessao expirada; preco exige login", {

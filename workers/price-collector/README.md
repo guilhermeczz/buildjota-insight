@@ -112,6 +112,28 @@ npm run worker:prices:headed -- --dry-run --cofema-fixture=missing
 Em falhas, screenshot e HTML higienizado sao salvos em `.worker-diagnostics/`, que e ignorada pelo
 Git. Credenciais, cookies e arquivos de sessao nao devem ser versionados.
 
+A resposta de login da COFEMA e identificada pela acao `loginCliente`, pois consultas de sessao e
+logout usam o mesmo endpoint. Recusa HTTP, exigencia de atualizacao de senha e indisponibilidade
+do servico recebem mensagens distintas, sem registrar o conteudo da resposta nem as credenciais.
+
+### Indisponibilidade e paginas incompletas
+
+Quando SKU/URL e bloco de compra confirmam falta de estoque, a mensagem e
+`CONCORRENTE: PRODUTO INDISPONIVEL`. Essa evidencia tem prioridade sobre avisos de login,
+inclusive quando uma pagina direta permite confirmar indisponibilidade apos falha de autenticacao.
+Precos publicos nao sao aceitos nesse fluxo. Sem evidencia do produto exato, o erro de autenticacao
+e preservado; uma pagina vazia nunca e considerada prova de falta de estoque.
+
+O historico continua usando o status de falha existente, com preco nulo e ultimo preco preservado.
+No relatorio, registros com essa mensagem aparecem como **Indisponivel**, inclusive os registros
+anteriores que ja informavam falta de estoque. Erros antigos de login nao sao reclassificados sem
+uma nova coleta.
+
+Ausencia do bloco principal ou de preco gera uma unica nova abertura autenticada da pagina.
+Indisponibilidade confirmada, SKU divergente e preco ambiguo nao provocam essa repeticao.
+Na MAREST, depois de duas leituras incompletas, a busca autenticada pelo SKU exato pode confirmar
+`produto nao encontrado no catalogo`; isso nao altera o mapeamento nem escolhe outro produto.
+
 ## Servidor do agendador
 
 Deixe este processo rodando no servidor/local:

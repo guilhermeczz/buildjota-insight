@@ -1198,10 +1198,21 @@ export default function Relatorios() {
                                 {erro.mapeamentos_sku?.concorrentes?.nome ?? emptyLabel}
                               </TableCell>
                               <TableCell>
-                                <Badge variant="destructive" className="mr-2">
-                                  Erro
+                                <Badge
+                                  variant={
+                                    /: produto indisponivel$/i.test(erro.mensagem_erro ?? "")
+                                      ? "secondary"
+                                      : "destructive"
+                                  }
+                                  className="mr-2"
+                                >
+                                  {/: produto indisponivel$/i.test(erro.mensagem_erro ?? "")
+                                    ? "Indisponível"
+                                    : "Erro"}
                                 </Badge>
-                                {erro.mensagem_erro ?? "Sem mensagem"}
+                                {/: produto indisponivel$/i.test(erro.mensagem_erro ?? "")
+                                  ? "PRODUTO INDISPONIVEL"
+                                  : (erro.mensagem_erro ?? "Sem mensagem")}
                               </TableCell>
                             </TableRow>
                           ))}
