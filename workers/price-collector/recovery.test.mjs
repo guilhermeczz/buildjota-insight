@@ -34,6 +34,29 @@ test("Cofema gives actionable auth errors without echoing response data", () => 
   assert.equal(cofemaLoginResponseError(200, { success: true }), "");
 });
 
+test("Cofema distinguishes service 404, account lookup and explicit credential rejection", () => {
+  assert.equal(
+    cofemaLoginResponseError(404, { success: false, error: "" }),
+    "COFEMA: falha no servico de autenticacao (HTTP 404)",
+  );
+  assert.match(
+    cofemaLoginResponseError(404, {
+      success: false,
+      error: "Cliente nao encontrado: private-account",
+    }),
+    /cadastro nao localizado/,
+  );
+  assert.match(
+    cofemaLoginResponseError(401, { success: false, error: "Usuário ou senha inválidos!" }),
+    /credenciais recusadas/,
+  );
+  assert.match(cofemaLoginResponseError(403, { success: false }), /bloqueado/);
+  assert.doesNotMatch(
+    cofemaLoginResponseError(404, { success: false, error: "private-account" }),
+    /private-account|credenciais recusadas|PRODUTO INDISPONIVEL/,
+  );
+});
+
 test("missing main price is retried once and the final evidence is returned", async () => {
   let reads = 0;
   let recoveries = 0;
