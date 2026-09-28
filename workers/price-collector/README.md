@@ -44,6 +44,9 @@ WORKER_CONSTRUJA_PRICE_SIGNAL_TIMEOUT_MS=12000
 WORKER_CONSTRUJA_PRODUCT_INTERVAL_MS=6500
 WORKER_CONSTRUJA_RATE_LIMIT_MAX_WAIT_SECONDS=900
 WORKER_CONSTRUJA_RATE_LIMIT_RETRIES=2
+WORKER_COFEMA_PRODUCT_INTERVAL_MS=6500
+WORKER_COFEMA_HTTP_RETRIES=2
+WORKER_COFEMA_HTTP_RETRY_DELAY_MS=15000
 WORKER_QUICK_LOAD_TIMEOUT_MS=3500
 WORKER_PRICE_SIGNAL_TIMEOUT_MS=4500
 WORKER_PRODUCT_SETTLE_MS=350
@@ -93,6 +96,14 @@ recuperacao: o worker valida a home, renova o login somente se necessario e reab
 uma vez. Um cabecalho que nao carregou recebe mensagem propria e nao apaga uma sessao valida.
 Erros HTTP da pagina do produto nao sao classificados como falha de login; respostas 404/410
 na URL direta iniciam a busca pelo SKU exato antes da verificacao da unidade.
+
+Navegacoes diretas de produto na COFEMA respeitam intervalo minimo de 6,5 segundos. Respostas
+HTTP 403/429/502/503/504 recebem no maximo duas novas tentativas na mesma URL e sessao, com
+pausas de 15 e 30 segundos. Uma recusa persistente conserva o erro HTTP e o ultimo preco;
+o proximo produto tambem respeita a pausa acumulada (60 segundos por padrao). O codigo HTTP
+isolado nao comprova a causa da recusa. O worker respeita `Retry-After`, em segundos ou data;
+se o site pedir mais de 120 segundos, suspende novas consultas desse grupo nesta execucao,
+registrando os itens restantes como nao coletados devido a pausa. Os valores acima sao opcionais.
 
 URLs de produto no novo dominio sao abertas diretamente. Se a URL estiver ausente, pertencer ao
 site antigo, retornar uma pagina invalida ou nao confirmar a identidade, o worker pesquisa por

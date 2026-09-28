@@ -16,6 +16,62 @@ export async function inspectWithRecovery({ inspect, recover }) {
   return inspect();
 }
 
+// Keep one policy per browser page/session. A cooldown also applies to the next
+// product when the current product exhausts its attempts.
+export function createCofemaProductNavigator({
+  navigate,
+  wait,
+  now = Date.now,
+  intervalMs = 6500,
+  retries = 2,
+  retryDelayMs = 15000,
+  maxWaitMs = 120000,
+}) {
+  let nextAllowedAt = 0;
+  let suspendedError = null;
+  const ready = async () => {
+    if (suspendedError) throw suspendedError;
+    const remainingMs = nextAllowedAt - now();
+    if (remainingMs > 0) await wait(remainingMs);
+  };
+  return {
+    ready,
+    async goto(url) {
+      for (let attempt = 0; ; attempt++) {
+        await ready();
+        nextAllowedAt = now() + intervalMs;
+        const response = await navigate(url);
+        if (!response || response.ok()) return response;
+        const status = response.status();
+        // The caller may search the exact SKU when an old product URL is gone.
+        if ([404, 410].includes(status)) return response;
+        const error = new Error(`COFEMA: pagina do produto retornou HTTP ${status}`);
+        if (![403, 429, 502, 503, 504].includes(status)) throw error;
+
+        const header = String((await response.headerValue("retry-after")) ?? "").trim();
+        let requestedMs = 0;
+        if (/^\d+$/.test(header)) requestedMs = Number(header) * 1000;
+        else if (header && Number.isFinite(Date.parse(header))) {
+          requestedMs = Math.max(0, Date.parse(header) - now());
+        }
+        const delayMs = Math.max(Math.min(retryDelayMs * 2 ** attempt, maxWaitMs), requestedMs);
+        nextAllowedAt = Math.max(nextAllowedAt, now() + delayMs);
+        if (delayMs > maxWaitMs) {
+          // Never shorten Retry-After or immediately hit the next product.
+          suspendedError = new Error(
+            `${error.message}; coleta COFEMA suspensa nesta execucao: pausa solicitada excede ${maxWaitMs / 1000}s`,
+          );
+          throw suspendedError;
+        }
+        if (attempt >= retries) throw error;
+        console.log(
+          `[COFEMA] HTTP ${status}; aguardando ${Math.ceil(delayMs / 1000)}s antes de repetir o mesmo produto (${attempt + 1}/${retries}).`,
+        );
+      }
+    },
+  };
+}
+
 export function isCofemaLoginResponse(response) {
   try {
     const request = response.request();

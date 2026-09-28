@@ -19,6 +19,9 @@ const settings = {
   WORKER_BLOCK_HEAVY_ASSETS: "false",
   WORKER_QUICK_LOAD_TIMEOUT_MS: "1000",
   WORKER_PRODUCT_SETTLE_MS: "0",
+  WORKER_COFEMA_PRODUCT_INTERVAL_MS: "0",
+  WORKER_COFEMA_HTTP_RETRY_DELAY_MS: "0",
+  WORKER_COFEMA_HTTP_RETRIES: "2",
 };
 
 test.before(async () => {
@@ -106,8 +109,12 @@ function fixtureBrowser(options = {}) {
         if (url.pathname.startsWith("/br/"))
           return route.fulfill({ status: 404, body: "Not found" });
         if (sku === options.expireOn && visit === 1) authenticated = false;
-        if (sku === options.httpErrorOn)
-          return route.fulfill({ status: 429, body: "Too many requests" });
+        if (sku === options.httpErrorOn && visit <= (options.httpErrorVisits ?? Infinity))
+          return route.fulfill({
+            status: options.httpStatus ?? 429,
+            body: "Request refused",
+            headers: options.retryAfter ? { "retry-after": options.retryAfter } : {},
+          });
         const hideHeader =
           sku === options.incompleteOn && (options.alwaysIncomplete || visit === 1);
         return route.fulfill({
@@ -178,6 +185,38 @@ test("HTTP product errors stay distinct from login and preserve the next product
   assert.equal(results[0].mensagem_erro, "COFEMA: pagina do produto retornou HTTP 429");
   assert.equal(results[1].status, "sucesso");
   assert.equal(fixture.counters.cookieClears, 0);
+  assert.equal(fixture.visits.get("112771"), 3);
+});
+
+test("a transient 403 retries the same SKU and confirms its price without reauthentication", async () => {
+  const fixture = fixtureBrowser({ httpErrorOn: "112771", httpStatus: 403, httpErrorVisits: 1 });
+  const results = await collectGroup(fixture, group(["112771", "112780"]));
+  assert.ok(results.every((result) => result.status === "sucesso"));
+  assert.equal(results[0].preco_concorrente, 2.95);
+  assert.equal(fixture.visits.get("112771"), 2);
+  assert.equal(fixture.counters.logins, 0);
+  assert.equal(fixture.counters.cookieClears, 0);
+});
+
+test("a persistent 403 retains an HTTP error and the previous price after bounded retries", async () => {
+  const fixture = fixtureBrowser({ httpErrorOn: "112771", httpStatus: 403 });
+  const results = await collectGroup(fixture, group(["112771", "112780"]));
+  assert.equal(results[0].mensagem_erro, "COFEMA: pagina do produto retornou HTTP 403");
+  assert.equal(results[0].preco_concorrente, null);
+  assert.equal(results[0].preservar_ultimo_preco, true);
+  assert.equal(results[1].status, "sucesso");
+  assert.equal(fixture.visits.get("112771"), 3);
+  assert.equal(fixture.counters.logins, 0);
+  assert.equal(fixture.counters.cookieClears, 0);
+});
+
+test("a long Retry-After suspends further product requests in the group", async () => {
+  const fixture = fixtureBrowser({ httpErrorOn: "112771", retryAfter: "600" });
+  const results = await collectGroup(fixture, group(["112771", "112780"]));
+  assert.ok(results.every((result) => /coleta COFEMA suspensa/.test(result.mensagem_erro)));
+  assert.equal(fixture.visits.get("112771"), 1);
+  assert.equal(fixture.visits.has("112780"), false);
+  assert.equal(fixture.counters.logins, 0);
 });
 
 test("an obsolete localized 404 URL searches and confirms the exact product before checking its unit", async () => {

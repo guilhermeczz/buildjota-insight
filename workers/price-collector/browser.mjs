@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { credentialsFor, resolveConcorrenteKey } from "./config.mjs";
 import {
   cofemaLoginResponseError,
+  createCofemaProductNavigator,
   inspectWithRecovery,
   isCofemaLoginResponse,
   isIncompletePriceEvidence,
@@ -55,6 +56,10 @@ const construjaRateLimitMaxWaitSeconds = envNumber(
   3600,
 );
 const construjaRateLimitRetries = envNumber("WORKER_CONSTRUJA_RATE_LIMIT_RETRIES", 2, 0, 5);
+const cofemaProductIntervalMs = envNumber("WORKER_COFEMA_PRODUCT_INTERVAL_MS", 6500, 0, 60000);
+const cofemaHttpRetries = envNumber("WORKER_COFEMA_HTTP_RETRIES", 2, 0, 3);
+const cofemaHttpRetryDelayMs = envNumber("WORKER_COFEMA_HTTP_RETRY_DELAY_MS", 15000, 0, 60000);
+const cofemaNavigators = new WeakMap();
 const quickLoadTimeoutMs = envNumber("WORKER_QUICK_LOAD_TIMEOUT_MS", 3500, 1000, 15000);
 const actionTimeoutMs = envNumber("WORKER_ACTION_TIMEOUT_MS", 5000, 1000, 15000);
 const productSignalTimeoutMs = envNumber("WORKER_PRICE_SIGNAL_TIMEOUT_MS", 4500, 1000, 15000);
@@ -1792,6 +1797,7 @@ async function configureRegionSelector(page, providerName, region) {
 }
 
 async function openProductPage(page, context, statePath, mapping, concorrente) {
+  if (isCofema(concorrente)) await cofemaNavigatorFor(page).ready();
   if (isCofema(concorrente) && !shouldOpenDirectProductUrl(mapping, concorrente)) {
     await openProductBySearch(page, context, statePath, mapping, concorrente);
     return;
@@ -1889,6 +1895,7 @@ async function waitWithProgress(page, totalMs, providerName) {
 }
 
 async function gotoProductPage(page, productUrl, concorrente) {
+  if (isCofema(concorrente)) return cofemaNavigatorFor(page).goto(productUrl);
   if (!isConstruja(concorrente)) {
     return page.goto(productUrl, {
       waitUntil: "domcontentloaded",
@@ -1935,6 +1942,26 @@ async function gotoProductPage(page, productUrl, concorrente) {
   }
 
   throw lastError ?? new Error("Pagina da CONSTRUJA nao respondeu");
+}
+
+function cofemaNavigatorFor(page) {
+  if (!cofemaNavigators.has(page)) {
+    cofemaNavigators.set(
+      page,
+      createCofemaProductNavigator({
+        navigate: (url) =>
+          page.goto(url, {
+            waitUntil: "domcontentloaded",
+            timeout: navigationTimeoutMs,
+          }),
+        wait: (ms) => waitWithProgress(page, ms, "COFEMA"),
+        intervalMs: cofemaProductIntervalMs,
+        retries: cofemaHttpRetries,
+        retryDelayMs: cofemaHttpRetryDelayMs,
+      }),
+    );
+  }
+  return cofemaNavigators.get(page);
 }
 
 function sameUrlIgnoringQuery(currentUrl, expectedUrl) {
