@@ -88,6 +88,12 @@ salva visitando a home e procurando os controles de cliente e unidade no cabecal
 existencia de `.worker-auth/cofema.json` nao e considerada autenticacao. Se a sessao venceu,
 cookies e storage da COFEMA sao limpos e o login e repetido uma vez.
 
+Durante a leitura de qualquer produto, uma falha ao confirmar sessao/unidade tambem passa pela
+recuperacao: o worker valida a home, renova o login somente se necessario e reabre o mesmo produto
+uma vez. Um cabecalho que nao carregou recebe mensagem propria e nao apaga uma sessao valida.
+Erros HTTP da pagina do produto nao sao classificados como falha de login; respostas 404/410
+na URL direta iniciam a busca pelo SKU exato antes da verificacao da unidade.
+
 URLs de produto no novo dominio sao abertas diretamente. Se a URL estiver ausente, pertencer ao
 site antigo, retornar uma pagina invalida ou nao confirmar a identidade, o worker pesquisa por
 SKU/codigo, referencia do fornecedor e nome. URLs recebidas com `/br/page/produto/...` sao

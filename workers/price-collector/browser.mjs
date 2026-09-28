@@ -1674,7 +1674,15 @@ async function ensurePreferencesForRead(page, concorrente) {
 
 async function configureCofema(page) {
   const current = await cofemaLocationText(page);
-  if (!current) throw new Error("COFEMA: login nao confirmado");
+  if (!current) {
+    const guest =
+      (await isCofemaLoginFormVisible(page)) ||
+      (await page
+        .getByRole("button", { name: /entre ou cadastre-se/i })
+        .isVisible()
+        .catch(() => false));
+    throw new Error(guest ? "COFEMA: sessao expirada" : "COFEMA: cabecalho de sessao nao carregou");
+  }
 
   if (!cofemaUnidade) {
     console.log(`[COFEMA] Unidade ativa mantida (${current}).`);
@@ -1800,7 +1808,16 @@ async function openProductPage(page, context, statePath, mapping, concorrente) {
     console.log(`[CONSTRUJA] Abrindo produto na mesma sessao: ${productUrl}`);
   }
 
-  await gotoProductPage(page, productUrl, concorrente);
+  const navigationResponse = await gotoProductPage(page, productUrl, concorrente);
+  if (isCofema(concorrente) && navigationResponse && !navigationResponse.ok()) {
+    const status = navigationResponse.status();
+    if ([404, 410].includes(status)) {
+      console.log(`[COFEMA] URL do produto retornou HTTP ${status}; buscando o SKU exato.`);
+      await openProductBySearch(page, context, statePath, mapping, concorrente);
+      return;
+    }
+    throw new Error(`COFEMA: pagina do produto retornou HTTP ${status}`);
+  }
   await dismissOverlays(page);
 
   if (await ensurePreferencesForRead(page, concorrente)) {
@@ -1873,11 +1890,10 @@ async function waitWithProgress(page, totalMs, providerName) {
 
 async function gotoProductPage(page, productUrl, concorrente) {
   if (!isConstruja(concorrente)) {
-    await page.goto(productUrl, {
+    return page.goto(productUrl, {
       waitUntil: "domcontentloaded",
       timeout: navigationTimeoutMs,
     });
-    return;
   }
 
   // Construja occasionally leaves a navigation without even committing a response. Give this
@@ -1938,25 +1954,38 @@ async function openProductWithAuthenticatedSession(page, context, statePath, map
   const maximumAttempts = isConstruja(concorrente) ? 3 : 2;
 
   for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+    let sessionNeedsRecovery = false;
     try {
       await openProductPage(page, context, statePath, mapping, concorrente);
     } catch (error) {
       // Preferences/authentication can fail on an otherwise identifiable, sold-out
       // product. Preserve that evidence before the login flow navigates away.
       await throwIfProductUnavailable(page, mapping, concorrente);
-      throw error;
+      // A missing session/unit header used to escape this recovery loop. The
+      // outer catch then erased the session and all later products inherited it.
+      sessionNeedsRecovery =
+        isCofema(concorrente) &&
+        /COFEMA: (?:login nao confirmado|sessao expirada|cabecalho de sessao nao carregou)/i.test(
+          error.message,
+        );
+      if (!sessionNeedsRecovery || attempt === maximumAttempts) throw error;
     }
 
     await throwIfProductUnavailable(page, mapping, concorrente);
 
-    if (!(await shouldRetryLogin(page, mapping, concorrente))) return;
+    if (!sessionNeedsRecovery && !(await shouldRetryLogin(page, mapping, concorrente))) return;
     if (attempt === maximumAttempts) return;
 
     console.log(
       `[${concorrente.nome}] Sessao nao permaneceu ativa no produto; ` +
         `reautenticando (${attempt + 1}/${maximumAttempts}).`,
     );
-    await resetAuthState(context, page, statePath, concorrente, "login vencido no produto");
+    // Cofema's login routine validates the session on the home page and only
+    // clears credentials if that validation fails. A broken product route or
+    // slow header must not destroy a valid session.
+    if (!isCofema(concorrente)) {
+      await resetAuthState(context, page, statePath, concorrente, "login vencido no produto");
+    }
     await page.waitForTimeout(attempt * 1000);
     await prepareAuthenticatedSession(context, page, statePath, concorrente);
   }
@@ -3016,7 +3045,7 @@ export async function collectGroup(browser, group, options = {}) {
         await captureCompetitorFailureDiagnostics(page, mapping, group.concorrente.nome).catch(
           () => null,
         );
-        if (isAuthStateError(error) && existsSync(statePath)) {
+        if (!isCofema(group.concorrente) && isAuthStateError(error) && existsSync(statePath)) {
           await resetAuthState(
             context,
             page,

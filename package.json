@@ -20,7 +20,7 @@
     "worker:construjota:headed": "node workers/construjota-mercos/index.mjs --dry-run --headed",
     "worker:construjota:discover": "node scripts/discover-construjota-mercos-links.mjs",
     "worker:server": "node workers/price-collector/server.mjs",
-    "test:prices": "node --test --test-concurrency=1 workers/price-collector/extract-price.test.mjs workers/price-collector/database.test.mjs workers/price-collector/recovery.test.mjs workers/price-collector/availability.test.mjs workers/construjota-mercos/extract.test.mjs workers/construjota-mercos/browser.test.mjs",
+    "test:prices": "node --test --test-concurrency=1 workers/price-collector/extract-price.test.mjs workers/price-collector/database.test.mjs workers/price-collector/recovery.test.mjs workers/price-collector/availability.test.mjs workers/price-collector/cofema-session.test.mjs workers/construjota-mercos/extract.test.mjs workers/construjota-mercos/browser.test.mjs",
     "test:schedule": "node --test workers/price-collector/schedule.test.mjs workers/construjota-mercos/schedule.test.mjs",
     "test:worker": "node --test workers/price-collector/schedule.test.mjs workers/price-collector/execution-policy.test.mjs workers/construjota-mercos/schedule.test.mjs workers/construjota-mercos/config.test.mjs workers/construjota-mercos/cli.test.mjs"
   },
