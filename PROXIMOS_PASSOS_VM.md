@@ -1,5 +1,14 @@
 # Proximos passos da VM
 
+## Memoria da conversa — 28/09/2026
+
+- A migracao da VM para uma VPS esta apenas em estudo. O usuario ainda nao contratou uma VPS nem decidiu migrar.
+- Manter o sistema na VM atual. Nao iniciar contratacao, migracao ou troca de dominio com base nessa avaliacao.
+- Quando o usuario decidir testar, preparar uma copia na VPS e validar acesso, banco e coletas com `--dry-run` antes da troca definitiva. Testar especialmente a COFEMA pelo novo IP; o sucesso na VM nao garante o mesmo resultado na VPS.
+- A referencia inicial discutida foi 4 vCPU, 8 GB de RAM, 80 GB SSD e Ubuntu 24.04 LTS; trata-se de uma estimativa, sem provedor ou plano escolhido.
+- Uma futura migracao deve incluir o banco completo, configuracoes locais e tratamento seguro das sessoes dos concorrentes. Evitar dois agendadores ativos; fazer backup final com as gravacoes pausadas antes da troca.
+- A ultima validacao da COFEMA na VM terminou com 22 sucessos e zero erros em 146 segundos, incluindo as quatro fitas 3M. Foi um `--dry-run`, sem gravacao de precos ou status no banco. O intervalo entre consultas estava ativo e nao foram necessarias novas tentativas nessa execucao.
+
 ## Estado atual
 
 - Projeto rodando na VM Ubuntu em `/home/guilherme/Projeto-Gui/buildjota-insight`.

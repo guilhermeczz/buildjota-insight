@@ -1202,6 +1202,7 @@ async function loginCofema(page, concorrente, credentials) {
   await clearCofemaLocalAuth(page);
   await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: navigationTimeoutMs });
   await dismissCofemaNotice(page, { waitForAppearance: true });
+  await dismissCofemaOnboarding(page, { waitForAppearance: true });
 
   await openCofemaLoginModal(page);
 
@@ -1286,6 +1287,7 @@ async function loginCofema(page, concorrente, credentials) {
     throw new Error("COFEMA: login nao confirmado");
   }
 
+  await dismissCofemaOnboarding(page, { waitForAppearance: true });
   await ensurePreferencesForRead(page, concorrente);
   console.log("[COFEMA] Login confirmado pelo cabecalho autenticado.");
 }
@@ -1560,7 +1562,102 @@ async function dismissCofemaNotice(page, options = {}) {
   throw new Error("COFEMA: modal de comunicado nao pode ser fechado");
 }
 
+async function dismissCofemaOnboarding(page, options = {}) {
+  let hostname = "";
+  try {
+    hostname = new URL(page.url()).hostname;
+  } catch {
+    return false;
+  }
+  if (!/(^|\.)cofema\.com\.br$/i.test(hostname)) return false;
+
+  if (options.waitForAppearance) {
+    await page.waitForTimeout(900);
+  }
+
+  const pageText = await page
+    .locator("body")
+    .innerText({ timeout: 1500 })
+    .catch(() => "");
+  const normalized = normalizeText(pageText);
+  if (!/buscar produtos/.test(normalized) && !/\b\d+\s+de\s+\d+\b/.test(normalized)) return false;
+
+  const skipButtons = page.getByRole("button", { name: /^\s*pular\s*$/i });
+  const count = await skipButtons.count().catch(() => 0);
+
+  for (let index = 0; index < count; index += 1) {
+    const control = skipButtons.nth(index);
+    if (!(await control.isVisible().catch(() => false))) continue;
+
+    const clicked = await control.click({ timeout: actionTimeoutMs }).then(
+      () => true,
+      () => false,
+    );
+    if (!clicked) continue;
+
+    await page.waitForTimeout(250);
+    console.log("[COFEMA] Tour de busca encerrado em Pular.");
+    return true;
+  }
+
+  const clickedByDom = await page
+    .evaluate(() => {
+      const isVisible = (node) => {
+        if (!(node instanceof HTMLElement)) return false;
+        const style = window.getComputedStyle(node);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const target = Array.from(document.querySelectorAll("button, a, [role='button']"))
+        .filter(isVisible)
+        .find((node) => /^\s*pular\s*$/i.test((node.textContent || "").trim()));
+      if (!(target instanceof HTMLElement)) return false;
+      target.click();
+      return true;
+    })
+    .catch(() => false);
+
+  if (clickedByDom) {
+    await page.waitForTimeout(250);
+    console.log("[COFEMA] Tour de busca encerrado em Pular.");
+    return true;
+  }
+
+  const tour = page
+    .locator("[role='dialog'], [class*='tour' i], [class*='popover' i], [class*='modal' i]")
+    .filter({ hasText: /buscar produtos/i })
+    .first();
+  if (await tour.isVisible().catch(() => false)) {
+    const closeControls = [
+      tour.getByRole("button", { name: /^(fechar|close)$/i }).first(),
+      tour.locator("button[aria-label*='fechar' i], button[aria-label*='close' i]").first(),
+      tour
+        .locator("button")
+        .filter({ hasText: /^[x×]$/i })
+        .first(),
+    ];
+
+    for (const control of closeControls) {
+      if (!(await control.isVisible().catch(() => false))) continue;
+      const clicked = await control.click({ timeout: actionTimeoutMs }).then(
+        () => true,
+        () => false,
+      );
+      if (!clicked) continue;
+
+      await page.waitForTimeout(250);
+      console.log("[COFEMA] Tour de busca fechado pelo X.");
+      return true;
+    }
+  }
+
+  return false;
+}
+
 async function dismissOverlays(page) {
+  await dismissCofemaOnboarding(page);
+
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const clicked =
       (await clickFirstVisible(page, [

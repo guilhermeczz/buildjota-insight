@@ -61,11 +61,25 @@ const loginForm = `${guestHeader}
       body:JSON.stringify({action:'loginCliente',codigoOuCnpj:document.querySelector('#codigo').value,pass:document.querySelector('#senha').value})});
     if(result.ok) location.href='/';
   }</script>`;
+const onboardingTour = (
+  options = {},
+) => `<div id="cofema-tour" role="dialog" aria-label="Buscar produtos"
+  style="position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.35)">
+  <div style="margin:90px auto;width:280px;background:#fff;padding:12px">
+    <button aria-label="Fechar" onclick="fetch('/tour-closed',{method:'POST'});document.querySelector('#cofema-tour').remove()">×</button>
+    <strong>Buscar produtos</strong>
+    <p>Digite código, nome, marca ou referência.</p>
+    <span>1 de 9</span>
+    <button onclick="document.querySelector('#cofema-tour').remove()">Anterior</button>
+    ${options.hideTourSkip ? "" : `<button onclick="fetch('/tour-skipped',{method:'POST'});document.querySelector('#cofema-tour').remove()">Pular</button>`}
+    <button>Próximo</button>
+  </div>
+</div>`;
 
 function fixtureBrowser(options = {}) {
   let authenticated = true;
   const visits = new Map();
-  const counters = { logins: 0, cookieClears: 0, homeVisits: 0 };
+  const counters = { logins: 0, cookieClears: 0, homeVisits: 0, tourSkips: 0, tourCloses: 0 };
   return {
     visits,
     counters,
@@ -85,13 +99,23 @@ function fixtureBrowser(options = {}) {
           authenticated = true;
           return route.fulfill({ json: { success: true } });
         }
+        if (url.pathname === "/tour-skipped") {
+          counters.tourSkips++;
+          return route.fulfill({ json: { ok: true } });
+        }
+        if (url.pathname === "/tour-closed") {
+          counters.tourCloses++;
+          return route.fulfill({ json: { ok: true } });
+        }
         if (url.pathname === "/") {
           counters.homeVisits++;
+          const showTour = authenticated && ["home", "always"].includes(options.onboardingOn);
           return route.fulfill({
             contentType: "text/html; charset=utf-8",
             body: authenticated
               ? authenticatedHeader +
-                `<input type="search" onkeydown="if(event.key==='Enter') location.href='/page/busca?q='+encodeURIComponent(this.value)">`
+                `<input type="search" onkeydown="if(event.key==='Enter') location.href='/page/busca?q='+encodeURIComponent(this.value)">` +
+                (showTour ? onboardingTour(options) : "")
               : loginForm,
           });
         }
@@ -117,10 +141,12 @@ function fixtureBrowser(options = {}) {
           });
         const hideHeader =
           sku === options.incompleteOn && (options.alwaysIncomplete || visit === 1);
+        const showProductTour = ["product", "always"].includes(options.onboardingOn);
         return route.fulfill({
           contentType: "text/html; charset=utf-8",
           body: `
           ${hideHeader ? "" : authenticated ? authenticatedHeader : guestHeader}
+          ${showProductTour ? onboardingTour(options) : ""}
           <main><div class="space-y-2"><h1>Produto ${sku}</h1><p>Código: ${sku}</p>
           ${authenticated ? '<div class="produto-preco"><div class="produto-preco-row">R$ 2,95</div></div>' : "<p>Faça login para ver os preços</p>"}
           </div></main>`,
@@ -228,4 +254,29 @@ test("an obsolete localized 404 URL searches and confirms the exact product befo
   assert.equal(results[0].preco_concorrente, 2.95);
   assert.equal(fixture.counters.logins, 0);
   assert.equal(fixture.counters.cookieClears, 0);
+});
+
+test("the COFEMA product-search tour is skipped after login", async () => {
+  const fixture = fixtureBrowser({ onboardingOn: "home" });
+  const results = await collectGroup(fixture, group(["112771"]));
+  assert.equal(results[0].status, "sucesso");
+  assert.equal(results[0].preco_concorrente, 2.95);
+  assert.ok(fixture.counters.tourSkips >= 1);
+});
+
+test("the COFEMA product-search tour is skipped on product pages", async () => {
+  const fixture = fixtureBrowser({ onboardingOn: "product" });
+  const results = await collectGroup(fixture, group(["112771"]));
+  assert.equal(results[0].status, "sucesso");
+  assert.equal(results[0].preco_concorrente, 2.95);
+  assert.ok(fixture.counters.tourSkips >= 1);
+});
+
+test("the COFEMA product-search tour is closed by X when Pular is unavailable", async () => {
+  const fixture = fixtureBrowser({ onboardingOn: "home", hideTourSkip: true });
+  const results = await collectGroup(fixture, group(["112771"]));
+  assert.equal(results[0].status, "sucesso");
+  assert.equal(results[0].preco_concorrente, 2.95);
+  assert.equal(fixture.counters.tourSkips, 0);
+  assert.ok(fixture.counters.tourCloses >= 1);
 });
