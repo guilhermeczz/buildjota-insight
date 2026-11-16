@@ -65,7 +65,7 @@ const actionTimeoutMs = envNumber("WORKER_ACTION_TIMEOUT_MS", 5000, 1000, 15000)
 const productSignalTimeoutMs = envNumber("WORKER_PRICE_SIGNAL_TIMEOUT_MS", 4500, 1000, 15000);
 const productSettleMs = envNumber("WORKER_PRODUCT_SETTLE_MS", 350, 0, 3000);
 const loginSettleMs = envNumber("WORKER_LOGIN_SETTLE_MS", 1200, 0, 5000);
-const cofemaBaseUrl = process.env.COFEMA_BASE_URL ?? "https://www.cofema.com.br";
+const cofemaBaseUrl = canonicalCofemaBaseUrl(process.env.COFEMA_BASE_URL);
 const cofemaLoginUrl = process.env.COFEMA_LOGIN_URL ?? "/";
 const cofemaUnidade = String(process.env.COFEMA_UNIDADE ?? "").trim();
 const marestRegiao = process.env.MAREST_REGIAO ?? "SP";
@@ -203,6 +203,23 @@ function absoluteUrl(value, fallbackBase) {
     return new URL(value).toString();
   } catch {
     return new URL(value, fallbackBase).toString();
+  }
+}
+
+function canonicalCofemaBaseUrl(value) {
+  const canonical = "https://www.cofema.com.br";
+
+  if (!value) return canonical;
+
+  try {
+    const url = new URL(value);
+    if (!/(^|\.)cofema\.com\.br$/i.test(url.hostname)) return canonical;
+    if (url.hostname.toLowerCase() !== "www.cofema.com.br") {
+      console.log(`[COFEMA] COFEMA_BASE_URL=${value} desatualizado; usando ${canonical}.`);
+    }
+    return canonical;
+  } catch {
+    return canonical;
   }
 }
 
