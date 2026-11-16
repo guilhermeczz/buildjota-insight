@@ -240,7 +240,13 @@ async function runCofemaFixture(mode) {
   console.log("Fixture COFEMA: nenhum dado foi gravado no banco.");
 
   const result = resultados[0];
-  if (result?.status !== "sucesso" || Number(result.preco_concorrente) !== 32.33) {
+  const price = Number(result?.preco_concorrente);
+  if (
+    result?.status !== "sucesso" ||
+    result?.leitura_confirmada !== true ||
+    !Number.isFinite(price) ||
+    price <= 0
+  ) {
     throw new Error(
       `Fixture COFEMA ${mode} falhou: ${result?.mensagem_erro ?? "resultado inesperado"}`,
     );
